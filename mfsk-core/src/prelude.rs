@@ -23,7 +23,7 @@
 //! slot[start..start + frame.len()].copy_from_slice(&frame);
 //!
 //! // Receive: one decoder, kept between periods.
-//! let mut decoder = Decoder::<Ft8>::new(DecodeParams::for_band((100.0, 3_000.0)));
+//! let mut decoder = Decoder::<Ft8>::with_defaults();
 //! let result = decoder.decode(&SlotInput::f32(&slot));
 //! assert_eq!(result.rows[0].decoded.text, tx.text());
 //! # }

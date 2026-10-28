@@ -13,7 +13,8 @@
 //!
 //! ```
 //! # #[cfg(all(feature = "ft4", any(feature = "fft-rustfft", feature = "fft-extern")))] {
-//! use mfsk_core::decoder::{DecodeParams, Decoder, SlotInput};
+//! use mfsk_core::Mode;
+//! use mfsk_core::decoder::{Decoder, SlotInput, default_params};
 //! use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
 //! use mfsk_core::ft4::Ft4;
 //! use mfsk_core::msg::wsjt77::pack77;
@@ -31,8 +32,8 @@
 //!     if start + i < audio.len() { audio[start + i] = s; }
 //! }
 //!
-//! // 2. Decode it back across the full FT4 band.
-//! let mut decoder = Decoder::<Ft4>::new(DecodeParams::for_band((100.0, 3_000.0)));
+//! // 2. Decode it back: the mode's defaults, with a band of your own (#711).
+//! let mut decoder = Decoder::<Ft4>::new(default_params(Mode::Ft4).band(100.0, 3_000.0));
 //! let result = decoder.decode(&SlotInput::i16(&audio));
 //! assert!(!result.rows.is_empty(), "roundtrip must decode");
 //! assert_eq!(result.rows[0].decoded.text, "CQ JA1ABC PM95");

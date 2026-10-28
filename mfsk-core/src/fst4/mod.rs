@@ -31,12 +31,14 @@
 //! ## Quick example
 //!
 //! ```no_run
-//! use mfsk_core::decoder::{DecodeParams, Decoder, SlotInput};
+//! use mfsk_core::Mode;
+//! use mfsk_core::decoder::{Decoder, SlotInput, default_params};
 //! use mfsk_core::fst4::Fst4s60;
 //!
 //! # let audio: Vec<i16> = vec![];
 //! // `audio` is 720_000 i16 samples at 12 kHz (60 s FST4-60A slot).
-//! let mut decoder = Decoder::<Fst4s60>::new(DecodeParams::for_band((100.0, 3_000.0)));
+//! // The mode's defaults, with a band of your own (#711).
+//! let mut decoder = Decoder::<Fst4s60>::new(default_params(Mode::Fst4S60).band(100.0, 3_000.0));
 //! let result = decoder.decode(&SlotInput::i16(&audio));
 //! for row in &result.rows {
 //!     let d = &row.decoded;

@@ -30,11 +30,11 @@ FT8 なら 15 秒、WSPR なら 110.6 秒、といった単位である。開き
 ングは純粋に加算的:
 
 ```rust
-use mfsk_core::decoder::{DecodeParams, Decoder, Row, SlotInput};
+use mfsk_core::decoder::{Decoder, Row, SlotInput};
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::decode::DecodeResult;
 
-let mut decoder = Decoder::<Ft8>::new(DecodeParams::for_band((100.0, 3000.0)));
+let mut decoder = Decoder::<Ft8>::with_defaults();
 let slot = SlotInput::i16(&audio);
 
 // バッチ: 最後にまとめて受け取る。
@@ -368,7 +368,8 @@ tokio-stream = "0.1"
 ### 5.1 橋渡し
 
 ```rust
-use mfsk_core::decoder::{DecodeParams, Decoder, Row, SlotInput};
+use mfsk_core::Mode;
+use mfsk_core::decoder::{DecodeParams, Decoder, Row, SlotInput, default_params};
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::decode::DecodeResult;
 use mfsk_core::msg::decoded::Decoded; // クレート提供の所有・Send な UI 行
@@ -438,7 +439,7 @@ pub fn spawn_ft8_worker(
 ```rust
 #[tokio::main]
 async fn main() {
-    let (slots, mut rx) = spawn_ft8_worker(DecodeParams::for_band((200.0, 3000.0)));
+    let (slots, mut rx) = spawn_ft8_worker(default_params(Mode::Ft8).band(200.0, 3000.0));
 
     // あなたのキャプチャパイプラインが供給する: スロット境界に整列した
     // 12 kHz モノラル i16 PCM の 15 秒スロット 1 つ（約 180 000 サンプル）。

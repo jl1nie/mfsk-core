@@ -762,7 +762,8 @@ assert!(wspr.set_ap_hint(None).is_err());
 ### 2.2 `DecodeParams` and `Depth`
 
 `DecodeParams` is `lib/jt9com.f90`'s `params` block (`#[non_exhaustive]`,
-built with `DecodeParams::for_band((lo, hi))` and chained setters). **Each
+built from the mode's defaults, `default_params(mode)`, or the bare `DecodeParams::for_band((lo, hi))`,
+and chained setters; to change only the band, start from the defaults: `default_params(mode).band(lo, hi)`, #711). **Each
 mode reads what its upstream decoder reads and ignores the rest, as `jt9`
 does**; a field does not make an option exist for a mode.
 
