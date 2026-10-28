@@ -568,7 +568,13 @@ impl<P: Decodable> Decoder<P> {
 
     /// Decode one period.
     pub fn decode(&mut self, slot: &SlotInput<'_>) -> SlotResult<P::Row> {
-        P::__decode(&self.params, &self.extras, &mut self.state, slot, None)
+        P::__decode(
+            &self.params.normalised(),
+            &self.extras,
+            &mut self.state,
+            slot,
+            None,
+        )
     }
 
     /// Decode one period of `i16` audio: [`Decoder::decode`] of
@@ -638,7 +644,7 @@ impl<P: Decodable> Decoder<P> {
             on_row(&r);
         };
         let mut out = P::__decode(
-            &self.params,
+            &self.params.normalised(),
             &self.extras,
             &mut self.state,
             slot,
@@ -754,7 +760,7 @@ impl<P: Decodable> Decoder<P> {
             }
         };
         let mut out = P::__decode_prefix(
-            &self.params,
+            &self.params.normalised(),
             &self.extras,
             &mut self.state,
             slot,

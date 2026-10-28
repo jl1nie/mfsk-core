@@ -336,6 +336,33 @@ impl DecodeParams {
         }
     }
 
+    /// The block a decoder hands its mode (#717): every value WSJT-X's GUI could
+    /// send passes through bit-identically, and the ones it could not (its `nfa`,
+    /// `nfb`, `nfqso`, `ntol` are integers) are made harmless. A band edge is
+    /// clamped into the 12 kHz baseband, `[0, 6000]` Hz, a NaN edge becoming that
+    /// side's end; a non-finite `rx_freq_hz` / `tx_freq_hz`, or a non-finite or
+    /// negative `tol_hz`, becomes unset. Measured before this: an infinite band top
+    /// panicked FT8, FST4 and Q65 and did not return from JT9 and JT65, a NaN Rx
+    /// frequency or tolerance lost the FST4W decode. An inverted or empty band is
+    /// left as it is (it decodes nothing and crashes nothing).
+    pub(crate) fn normalised(&self) -> Self {
+        const TOP_HZ: f32 = 6_000.0;
+        let edge = |hz: f32, if_nan: f32| {
+            if hz.is_nan() {
+                if_nan
+            } else {
+                hz.clamp(0.0, TOP_HZ)
+            }
+        };
+        let finite = |hz: Option<f32>| hz.filter(|f| f.is_finite());
+        let mut p = self.clone();
+        p.band_hz = (edge(self.band_hz.0, 0.0), edge(self.band_hz.1, TOP_HZ));
+        p.rx_freq_hz = finite(self.rx_freq_hz);
+        p.tx_freq_hz = finite(self.tx_freq_hz);
+        p.tol_hz = finite(self.tol_hz).filter(|&t| t >= 0.0);
+        p
+    }
+
     pub fn band(mut self, lo_hz: f32, hi_hz: f32) -> Self {
         self.band_hz = (lo_hz, hi_hz);
         self
@@ -432,5 +459,40 @@ impl SearchTuning {
             base.max_candidates = v;
         }
         base
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What the GUI can send passes through bit-identically (#717).
+    #[test]
+    fn normalised_leaves_a_valid_block_alone() {
+        let p = DecodeParams::for_band((200.0, 4_000.0))
+            .rx_freq(1_500.0)
+            .tol(0.0)
+            .tx_freq(1_200.0);
+        assert_eq!(p.normalised(), p);
+        let edges = DecodeParams::for_band((0.0, 6_000.0));
+        assert_eq!(edges.normalised(), edges);
+    }
+
+    #[test]
+    fn normalised_makes_the_rest_harmless() {
+        let p = DecodeParams::for_band((f32::NAN, f32::INFINITY))
+            .rx_freq(f32::NAN)
+            .tol(-1.0)
+            .tx_freq(f32::NEG_INFINITY)
+            .normalised();
+        assert_eq!(p.band_hz, (0.0, 6_000.0));
+        assert_eq!((p.rx_freq_hz, p.tol_hz, p.tx_freq_hz), (None, None, None));
+        let q = DecodeParams::for_band((-500.0, 9_000.0))
+            .tol(f32::INFINITY)
+            .normalised();
+        assert_eq!((q.band_hz, q.tol_hz), ((0.0, 6_000.0), None));
+        // An inverted band stays inverted: it decodes nothing and crashes nothing.
+        let r = DecodeParams::for_band((3_000.0, 200.0));
+        assert_eq!(r.normalised().band_hz, (3_000.0, 200.0));
     }
 }
