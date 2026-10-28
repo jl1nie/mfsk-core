@@ -103,6 +103,10 @@ for row in &result.rows {
 `DecodeParams::for_band` は構造体自身の既定値に帯域だけを載せたもので、モードの既定値ではない（AP モードは `Full`、
 FT8 の既定は `Off`。[§2.2](#22-decodeparams-と-depth)）。
 
+`Decoder::<Ft8>` はコンパイル時に型の決まるデコーダで、各行にモード固有の結果を持ち、`Extras` を持つ。モードを
+実行時に選ぶアプリ（モードのメニュー）は代わりに `AnyDecoder` を持つ。`AnyDecoder::with_defaults(Mode::Ft8)` は
+同じデコーダを 1 つの型の後ろに置いたもので、行は `Row<()>` になる（README のクイックスタート。[§2.1](#21-decoderp)）。
+
 **送信。** `encoder::encode` は、受信側の `AnyDecoder` に対する送信側である。モードは値
 （`registry::Mode`）、テキストは WSJT-X の Tx ボックスに出るままのメッセージで、結果はチャンネル
 シンボルと受信側が表示するはずの文面を持つ。ハッシュになるコール（`<W9XYZ>`）は
@@ -147,15 +151,13 @@ Q65 の平均はこれを必要とする。コールサイン表はデコーダ�
 コールが、次の周期のハッシュ化された `<...>` を解決する:
 
 ```rust
-use mfsk_core::decoder::{Decoder, SlotInput};
-use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
 use mfsk_core::ft8::Ft8;
-use mfsk_core::msg::wsjt77::{pack77, pack77_type4};
+use mfsk_core::prelude::*;
 
 /// FT8 フレームを 1 つ含む 15 秒の周期。受信機が渡すものと同じ形。
-fn period(msg77: &[u8; 77]) -> Vec<i16> {
-    let tones = message_to_tones::<Ft8>(msg77);
-    let frame = synthesize_i16::<Ft8>(&tones, 12_000, 1_500.0, 20_000);
+fn period(text: &str) -> Vec<i16> {
+    let tx = encode(Mode::Ft8, text).unwrap();
+    let frame = tx.synthesize_i16(&TxAudio::new(12_000, 1_500.0), 20_000);
     let mut audio = vec![0i16; 180_000];
     audio[6_000..6_000 + frame.len()].copy_from_slice(&frame);
     audio
@@ -165,11 +167,11 @@ fn period(msg77: &[u8; 77]) -> Vec<i16> {
 let mut rx = Decoder::<Ft8>::with_defaults();
 
 // 周期 0: JA1ABC が CQ を出す。デコーダがそのコールを覚える。
-let p0 = period(&pack77("CQ", "JA1ABC", "PM95").unwrap());
+let p0 = period("CQ JA1ABC PM95");
 rx.decode(&SlotInput::i16(&p0).period(0));
 
 // 周期 1: JA1ABC を 12 ビットのハッシュでしか名乗らない応答。
-let p1 = period(&pack77_type4("JL1NIE/1", "JA1ABC", "RR73", false).unwrap());
+let p1 = period("<JA1ABC> JL1NIE/1 RR73");
 let heard = rx.decode(&SlotInput::i16(&p1).period(1)).rows;
 assert!(heard.iter().any(|r| r.decoded.text.contains("<JA1ABC>")));
 

@@ -103,6 +103,10 @@ mode's other defaults, start from them: `Decoder::<Ft8>::new(mfsk_core::decoder:
 `DecodeParams::for_band` is the band alone on the struct's own defaults, not the mode's (its AP mode is `Full`,
 FT8's default `Off`; [§2.2](#22-decodeparams-and-depth)).
 
+`Decoder::<Ft8>` is the decoder typed at compile time: the mode's native result on each row and its `Extras`. An
+application that picks the mode at run time (a mode menu) holds an `AnyDecoder` instead, `AnyDecoder::with_defaults(Mode::Ft8)`:
+the same decoder behind one type, rows as `Row<()>` (README's quick start; [§2.1](#21-decoderp)).
+
 **Transmit.** `encoder::encode` is to sending what `AnyDecoder` is to receiving: the mode is a
 value (`registry::Mode`), the text is the message as WSJT-X's Tx box shows it, and the result
 carries the channel symbols and what a receiver will print. Hashed calls (`<W9XYZ>`) come back in
@@ -150,15 +154,13 @@ decoder, so a call heard in one period resolves a hashed `<...>` in the
 next:
 
 ```rust
-use mfsk_core::decoder::{Decoder, SlotInput};
-use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
 use mfsk_core::ft8::Ft8;
-use mfsk_core::msg::wsjt77::{pack77, pack77_type4};
+use mfsk_core::prelude::*;
 
 /// One 15 s period holding one FT8 frame, as a receiver hands it over.
-fn period(msg77: &[u8; 77]) -> Vec<i16> {
-    let tones = message_to_tones::<Ft8>(msg77);
-    let frame = synthesize_i16::<Ft8>(&tones, 12_000, 1_500.0, 20_000);
+fn period(text: &str) -> Vec<i16> {
+    let tx = encode(Mode::Ft8, text).unwrap();
+    let frame = tx.synthesize_i16(&TxAudio::new(12_000, 1_500.0), 20_000);
     let mut audio = vec![0i16; 180_000];
     audio[6_000..6_000 + frame.len()].copy_from_slice(&frame);
     audio
@@ -168,11 +170,11 @@ fn period(msg77: &[u8; 77]) -> Vec<i16> {
 let mut rx = Decoder::<Ft8>::with_defaults();
 
 // Period 0: JA1ABC calls CQ. The decoder learns the call.
-let p0 = period(&pack77("CQ", "JA1ABC", "PM95").unwrap());
+let p0 = period("CQ JA1ABC PM95");
 rx.decode(&SlotInput::i16(&p0).period(0));
 
 // Period 1: a reply that names JA1ABC only by a 12-bit hash.
-let p1 = period(&pack77_type4("JL1NIE/1", "JA1ABC", "RR73", false).unwrap());
+let p1 = period("<JA1ABC> JL1NIE/1 RR73");
 let heard = rx.decode(&SlotInput::i16(&p1).period(1)).rows;
 assert!(heard.iter().any(|r| r.decoded.text.contains("<JA1ABC>")));
 

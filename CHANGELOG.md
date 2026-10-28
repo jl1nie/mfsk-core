@@ -62,8 +62,9 @@
 
 ### Documentation
 
-- **The quick starts take one path** (#708): README encodes with `encode` + `TxAudio` as rustdoc and `LIBRARY.md` §1 already did (its hand-written
-  pack77 → tones → waveform became a pointer to §5), and all three decode from the mode's defaults (`with_defaults()`, not `for_band`'s AP `Full`).
+- **The quick starts take one path** (#708): README and `LIBRARY.md` §1.1 encode with `encode` + `TxAudio` as rustdoc and §1 already did (README's
+  hand-written pack77 → tones → waveform became a pointer to §5), all decode from the mode's defaults (`with_defaults()`, not `for_band`'s AP `Full`),
+  and rustdoc / §1 say when to hold an `AnyDecoder` (mode picked at run time, README's path) instead of `Decoder::<Ft8>`.
   The rustdoc `Cargo.toml` snippets said `0.12`; `tests/doc_dependency_versions.rs` reads the `mfsk-core = "X"` / `{ version = "X" … }` lines of
   rustdoc, README and `docs/reference/*.md` against the crate's `major.minor`. §2.4's `AnyDecoder::decode_with` callback is `Row<()>`; §1.4 says the reference describes `main`.
 

@@ -304,6 +304,11 @@
 //! # }
 //! ```
 //!
+//! `Decoder::<Ft8>` is typed at compile time (the mode's native result and
+//! `Extras`); an application that picks the mode at run time holds an
+//! [`decoder::AnyDecoder`] (`AnyDecoder::with_defaults(Mode::Ft8)`), the same
+//! decoder behind one type, as the README's quick start does.
+//!
 //! [`encoder::encode`] is the application's route. A protocol builder uses
 //! [`engine::tx`] (`message_to_tones::<P>` + `synthesize::<P>`) directly, which
 //! is what `encode` calls.
