@@ -314,8 +314,11 @@ pub struct DecodeParams {
 }
 
 impl DecodeParams {
-    /// A block over `band_hz` with the GUI's defaults: `Depth::Deep`, AP
-    /// `Full`, no station or QSO, no activity, no Rx/Tx frequency.
+    /// The bare block over `band_hz`: `Depth::Deep`, AP `Full`, no station or
+    /// QSO, no activity, no Rx/Tx frequency. **Not a mode's defaults**: FT8's and
+    /// JT65's GUI start with AP off, and every mode has its own band. To change only
+    /// the band, start from [`default_params`](super::default_params)`(mode).band(lo, hi)`,
+    /// or `params_mut()` of a [`Decoder::with_defaults`](super::Decoder::with_defaults) (#711).
     pub fn for_band(band_hz: (f32, f32)) -> Self {
         Self {
             band_hz,

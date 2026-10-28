@@ -26,12 +26,14 @@
 //! Decode the top-scoring message in a 15-second slot:
 //!
 //! ```no_run
-//! use mfsk_core::decoder::{DecodeParams, Decoder, SlotInput};
+//! use mfsk_core::Mode;
+//! use mfsk_core::decoder::{Decoder, SlotInput, default_params};
 //! use mfsk_core::ft8::Ft8;
 //!
 //! # let audio: Vec<i16> = vec![];
 //! // `audio` is 180_000 i16 samples at 12 kHz (15 s, slot-aligned).
-//! let mut decoder = Decoder::<Ft8>::new(DecodeParams::for_band((100.0, 3_000.0)));
+//! // The mode's defaults, with a band of your own (#711).
+//! let mut decoder = Decoder::<Ft8>::new(default_params(Mode::Ft8).band(100.0, 3_000.0));
 //! let result = decoder.decode(&SlotInput::i16(&audio));
 //! for row in &result.rows {
 //!     let d = &row.decoded;

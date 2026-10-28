@@ -62,6 +62,10 @@
 
 ### Documentation
 
+- **Changing only the band keeps the mode's defaults** (#711, part 1): `DecodeParams::for_band`'s rustdoc called its block "the GUI's defaults",
+  but it is the bare block (AP `Full`; FT8's and JT65's GUI start with AP off). The protocol modules' rustdoc examples, the prelude's and
+  `STREAMING.md`'s (and `.ja.md`) now build from `default_params(mode).band(lo, hi)` or `with_defaults()` (WSPR, which reads no band);
+  `tests/default_params.rs` checks that `band()` touches nothing else and that `for_band` is not a mode's defaults. No decoder changed.
 - **The quick starts take one path** (#708): README and `LIBRARY.md` §1.1 encode with `encode` + `TxAudio` as rustdoc and §1 already did (README's
   hand-written pack77 → tones → waveform became a pointer to §5), all decode from the mode's defaults (`with_defaults()`, not `for_band`'s AP `Full`),
   and rustdoc / §1 say when to hold an `AnyDecoder` (mode picked at run time, README's path) instead of `Decoder::<Ft8>`.

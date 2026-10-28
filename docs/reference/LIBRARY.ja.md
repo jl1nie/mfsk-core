@@ -743,7 +743,8 @@ assert!(wspr.set_ap_hint(None).is_err());
 ### 2.2 `DecodeParams` と `Depth`
 
 `DecodeParams` は `lib/jt9com.f90` の `params` ブロックである（`#[non_exhaustive]`。
-`DecodeParams::for_band((lo, hi))` とチェーンするセッターで作る）。**各モードは、自分の
+モードの既定値 `default_params(mode)` か素の `DecodeParams::for_band((lo, hi))` から、
+チェーンするセッターで作る。帯域だけ変えるなら既定値から始める: `default_params(mode).band(lo, hi)`、#711）。**各モードは、自分の
 本家デコーダが読むものを読み、残りは無視する（`jt9` と同じ）**: フィールドがあるからと
 いって、そのモードにオプションが存在することにはならない。
 

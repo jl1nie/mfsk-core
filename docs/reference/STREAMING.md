@@ -30,11 +30,11 @@ The batch API and the streaming API are the **same decoder**. Streaming
 is purely additive:
 
 ```rust
-use mfsk_core::decoder::{DecodeParams, Decoder, Row, SlotInput};
+use mfsk_core::decoder::{Decoder, Row, SlotInput};
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::decode::DecodeResult;
 
-let mut decoder = Decoder::<Ft8>::new(DecodeParams::for_band((100.0, 3000.0)));
+let mut decoder = Decoder::<Ft8>::with_defaults();
 let slot = SlotInput::i16(&audio);
 
 // Batch: get everything at the end.
@@ -391,7 +391,8 @@ tokio-stream = "0.1"
 ### 5.1 The bridge
 
 ```rust
-use mfsk_core::decoder::{DecodeParams, Decoder, Row, SlotInput};
+use mfsk_core::Mode;
+use mfsk_core::decoder::{DecodeParams, Decoder, Row, SlotInput, default_params};
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::decode::DecodeResult;
 use mfsk_core::msg::decoded::Decoded; // the crate's owned, Send UI row
@@ -465,7 +466,7 @@ pub fn spawn_ft8_worker(
 ```rust
 #[tokio::main]
 async fn main() {
-    let (slots, mut rx) = spawn_ft8_worker(DecodeParams::for_band((200.0, 3000.0)));
+    let (slots, mut rx) = spawn_ft8_worker(default_params(Mode::Ft8).band(200.0, 3000.0));
 
     // Your capture pipeline supplies this: one 15 s slot of 12 kHz mono
     // i16 PCM, aligned to the slot boundary (~180 000 samples).

@@ -20,7 +20,8 @@
 ))]
 
 use mfsk_core::Mode;
-use mfsk_core::decoder::{ApMode, Depth, default_params};
+use mfsk_core::decoder::{ApMode, DecodeParams, Decoder, Depth, default_params};
+use mfsk_core::ft8::Ft8;
 
 /// Fails if a scan mode's default band is copied by hand and drifts from the
 /// search default its decoder was written against.
@@ -80,4 +81,36 @@ fn default_params_did_not_move() {
         assert_eq!(p.depth, Depth::Deep, "{name}: depth");
         assert_eq!(p.ap, ap, "{name}: ap");
     }
+}
+
+/// The documented way to change only the band, `default_params(mode).band(lo, hi)`,
+/// keeps every other default of the mode; `for_band` is the bare block and does
+/// not (#711). Fails if `band` starts touching another field, or if `for_band`
+/// becomes a mode's defaults and the docs' distinction goes stale.
+#[test]
+fn band_keeps_the_modes_other_defaults_and_for_band_does_not() {
+    for &m in Mode::ALL {
+        let mut want = default_params(m);
+        want.band_hz = (300.0, 2_700.0);
+        assert_eq!(
+            default_params(m).band(300.0, 2_700.0),
+            want,
+            "{}: band() changed more than the band",
+            m.name()
+        );
+    }
+    for m in [Mode::Ft8, Mode::Jt65] {
+        let bare = DecodeParams::for_band(default_params(m).band_hz);
+        assert_eq!(bare.ap, ApMode::Full, "{}", m.name());
+        assert_ne!(
+            bare,
+            default_params(m),
+            "{}: for_band is not the mode's defaults",
+            m.name()
+        );
+    }
+    // A decoder's own defaults are `default_params`, edited in place the same way.
+    let mut d = Decoder::<Ft8>::with_defaults();
+    d.params_mut().band_hz = (300.0, 2_700.0);
+    assert_eq!(*d.params(), default_params(Mode::Ft8).band(300.0, 2_700.0));
 }
