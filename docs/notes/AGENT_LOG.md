@@ -14,3 +14,4 @@ then compare.
 | 2026-10-28 | #712 Row/SlotResult::new + #708 quick starts (part) | design | 5 | claude-opus-5-5: 477k (+16.1M cached) | 62f30928 | yes | found: false §1.4 banner (0.14 lacks Encoded::tones), CHANGELOG overstated scope, tautological asserts; 2 minor | 0 | 0 | #708 left open: recording example (#709), external-app check |
 | 2026-10-28 | #711 part 1: band from mode defaults (docs + test) | design | 2 | claude-opus-5-5: 576k (+31.8M cached) | 62f30928 | yes | none | 0 | 0 | probe: inf band panics FT8/FST4/Q65, hangs JT9/JT65; FST4W NaN rx/tol drops decode |
 | 2026-10-28 | #717 normalise DecodeParams at the Decoder | design | 3 | claude-opus-5-5: 930k (+43.0M cached) | 62f30928 | yes | none | 0 | 0 | found by #711 probe; CHANGELOG had two Skimmer headings, docs went in a 2nd commit |
+| 2026-10-31 | release 0.15.0 (PR #719, tier-C, tag) | design | 3 | claude-sonnet-5-5: 148k (+3.3M cached) | e2eea6e0 | yes | n/a | 0 | ? |  |
