@@ -59,7 +59,7 @@ This document is the Rust host API. Other audiences:
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.14", features = ["ft8", "ft4", "wspr"] }
+mfsk-core = { version = "0.15", features = ["ft8", "ft4", "wspr"] }
 ```
 
 Pull in only the protocol features you need; the examples below enable

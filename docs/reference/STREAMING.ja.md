@@ -359,7 +359,7 @@ mfsk-core は*あなたが*供給するクロージャを通じて結果を配�
 ```toml
 [dependencies]
 # デコード行を JSON 化したいなら `features = ["serde"]` を足す。
-mfsk-core = "0.14"
+mfsk-core = "0.15"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 # 任意、§5.3 の Stream アダプタ用のみ:
 tokio-stream = "0.1"

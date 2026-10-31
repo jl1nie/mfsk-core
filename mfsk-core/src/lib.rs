@@ -274,7 +274,7 @@
 //! ```toml
 //! # Cargo.toml
 //! [dependencies]
-//! mfsk-core = { version = "0.14", features = ["ft8", "ft4"] }
+//! mfsk-core = { version = "0.15", features = ["ft8", "ft4"] }
 //! ```
 //!
 //! Round-trip a synthesised FT8 frame through the decoder:
@@ -318,7 +318,7 @@
 //! ```toml
 //! # Cargo.toml — TX-only, no_std + alloc, no FFT backend needed
 //! [dependencies]
-//! mfsk-core = { version = "0.14", default-features = false, features = ["alloc", "ft8"] }
+//! mfsk-core = { version = "0.15", default-features = false, features = ["alloc", "ft8"] }
 //! ```
 //!
 //! Encoding (`message_to_tones` / `synthesize_i16`) never touches `std` — no

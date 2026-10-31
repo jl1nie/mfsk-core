@@ -3,7 +3,7 @@
 0.12.0, split out from the top-level `CHANGELOG.md` when 0.14.0 was prepared. `CHANGELOG.md`
 keeps the two latest minor series; the release PR of each new minor moves the oldest series
 here (`CLAUDE.md`, "Releases"). Full detail preserved verbatim, just relocated. See
-[`../../CHANGELOG.md`](../../CHANGELOG.md) for 0.13.0 onward,
+[`../../CHANGELOG.md`](../../CHANGELOG.md) for 0.14.0 onward,
 [`CHANGELOG-0.11.md`](CHANGELOG-0.11.md) for what came before.
 
 ## 0.12.0 — measured against WSJT-X 3.2.0-rc1 on defined tasks: behind on none but legacy JT65, faster on all but WSPR; FT8 and FT4 subtract by default (breaking); WSJT-X 3.2's JTTY and Q65 additions; wideband IQ input (#534); one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394); the CoreS3 receives FT8, FT4 and JTTY

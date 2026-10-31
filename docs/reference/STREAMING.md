@@ -382,7 +382,7 @@ Three facts drive the shape:
 ```toml
 [dependencies]
 # add `features = ["serde"]` if you want to serialize decode rows to JSON.
-mfsk-core = "0.14"
+mfsk-core = "0.15"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 # Optional, only for the Stream adaptor in §5.3:
 tokio-stream = "0.1"
