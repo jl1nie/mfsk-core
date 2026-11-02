@@ -37,6 +37,12 @@ bindings/swift/.build/
 # 641b5ff3 and lived on main until 2026-09-15.
 timer.out
 
+# The rest of what `jt9` drops into its working directory (MSK144_BENCHMARK.md
+# "Foot-gun"). Root only: the tier-C sweep directories track their copies on
+# purpose (TIER_C_MANUAL.md §3.4). Both were committed by accident in aefed48.
+/decoded.txt
+/jt9_wisdom.dat
+
 # Provenance stamp the tier-C corpus generators write beside their WAVs
 # (scripts/lib/corpus-stamp.sh). Local to the corpus, like the WAVs.
 embedded-poc/assets/*_sweep/.corpus-stamp
