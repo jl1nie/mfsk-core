@@ -117,3 +117,7 @@ are write-only (22 files decode identically with them). Tier C was not run.
 ## SNR against `jt9` (dense corpus, 200 files, before cause 7)
 
 Reported SNR of the 3 644 decodes both make, `jt9` v3.2.0-rc1 and `Decoder` default: mean difference ours - `jt9` +0.02 dB (sd 0.31, mean absolute 0.10), identical in 3 297, within 1 dB in 3 640. Both sit about 0.4 dB under the injected SNR (ours -0.39, `jt9` -0.42, sd 0.57 / 0.59); by band the bias runs from +0.1 dB (-30..-20) to -0.6 dB (above 0). Ours decoded 25 signals `jt9` did not, `jt9` 3 that ours did not.
+
+## Open work
+
+[#722](https://github.com/jl1nie/mfsk-core/issues/722): what `sic_early`, `sic_rounds` and `decode_block` should each promise (the pins, the crowded-neighbour regression test, `Depth::Fast` and `decode_block` docs, the CoreS3 check of the -5 ms DT). [#721](https://github.com/jl1nie/mfsk-core/issues/721) (the causes and the method) is addressed by PR #723; its remaining to-do is the real-recording row in `BENCHMARKS.md`.
