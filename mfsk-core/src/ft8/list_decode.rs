@@ -504,7 +504,8 @@ fn a7_decode(
     Some(A7Hit {
         message77: m77,
         freq_hz: freq,
-        dt_sec: dt,
+        // ft8_a7.f90: `xdt=(ibest-1)*dt2 - 0.5`, as ft8b.f90.
+        dt_sec: dt + crate::ft8::refine_fine::XDT_OFFSET_S,
         hard_errors,
         snr_db,
     })

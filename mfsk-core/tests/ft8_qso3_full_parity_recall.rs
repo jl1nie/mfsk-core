@@ -14,8 +14,8 @@
 //!
 //! Checked through `common::golden::assert_golden` against the
 //! 20-entry known-real-signal union in `common::ft8_qso3` — see that
-//! module's doc comment for provenance. Full parity means exactly
-//! that: this config reaches **all 20/20** with zero extras, in both
+//! module's doc comment for provenance. This config reached **all 20/20**
+//! with zero extras until 2026-11-03, in both
 //! host f32 and fixed-point (verified 2026-08-14 — `DecodeDepth::FULL`'s
 //! OSD dispatch operates on `&[f32]` regardless of the embedded `LlrT`
 //! choice, so the numeric path doesn't leave anything on the table
@@ -45,15 +45,25 @@ use common::load_wav_i16;
 
 const QSO3_PATH: &str = asset_path!("qso3_busy.wav");
 
-/// Full parity: all 20 known-real signals, including `K1BZM DK8NE -10`
-/// which ship config's `DecodeDepth::EMBEDDED` structurally cannot
-/// reach (no OSD). Measured 2026-08-14: 20/20, zero extras, in both
-/// host f32 (~140ms) and fixed-point (`LlrT = Q11i16` on host, the
-/// same numeric path embedded ships, ~160ms) on an AMD Ryzen 9 9900X.
-/// For comparison, real `jt9 -8 -d3`'s own measured total file decode
-/// time is ~1.1s (`FT8_BENCHMARK.md`) — full parity here runs ~7-8x
-/// faster than jt9 itself.
-const MIN_GOLDEN_HITS: usize = 20;
+/// 19 of the 20 known-real signals, including `K1BZM DK8NE -10` which
+/// ship config's `DecodeDepth::EMBEDDED` structurally cannot reach (no
+/// OSD). Measured 2026-08-14: 20/20, zero extras, in both host f32
+/// (~140ms) and fixed-point (`LlrT = Q11i16` on host, the same numeric
+/// path embedded ships, ~160ms) on an AMD Ryzen 9 9900X. For comparison,
+/// real `jt9 -8 -d3`'s own measured total file decode time is ~1.1s
+/// (`FT8_BENCHMARK.md`) — this runs ~7-8x faster than jt9 itself.
+///
+/// **19 since 2026-11-03** (`WA2FZW DL5AXX RR73` is the one that went). A decode is
+/// now reported at, and subtracted from, WSJT-X's `xdt = (ibest-1)*dt2`
+/// (`refine_fine::XDT_OFFSET_S`); before, the subtraction started 5 ms late and left
+/// strong signals 15 dB above where `jt9` takes them, which kept this marginal
+/// decode (nsync 9, OSD, 16 hard errors in `jt9`) alive by accident. `jt9` makes it
+/// at its early stage and keeps the strong neighbours' residue out of the way by
+/// re-subtracting them with a refined DT (`lrefinedt`) before its next stage. This
+/// driver is a flat multi-pass with only the in-pass subtraction, and the budget of
+/// the target it mirrors has no room for that second subtraction: it is a simplified
+/// version of `SicEarly`, which still decodes all 21 of `jt9`'s on this file.
+const MIN_GOLDEN_HITS: usize = 19;
 
 #[test]
 fn qso3_full_parity_meets_wsjtx_golden_floor() {

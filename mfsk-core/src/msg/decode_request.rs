@@ -1344,6 +1344,19 @@ impl<'a, P: SupportsSicRounds, Pol: MessagePolicy> DecodeRequest<'a, P, Pol> {
     /// decode attempt, which is an unrelated concept that happens to reuse
     /// the same word in WSJT-X's own source.
     ///
+    /// # On FT8 this is the simplified strategy
+    ///
+    /// FT8's faithful strategy is [`Self::sic_early`], the checkpoint emulation of
+    /// `jt9 -d2/-d3`. `.sic_rounds(n)` is the flat, cheaper one: `n` searches over the
+    /// whole audio, each decode subtracted at once (`ft8b.f90`'s in-pass subtraction, DT not
+    /// refined) and nothing re-subtracted between rounds. `jt9` re-subtracts what it has
+    /// decoded, with a refined DT (`lrefinedt`), between its stages; without that, a weak
+    /// signal within about 10 Hz of a much stronger one can stay buried in the stronger
+    /// one's residue. Measured 2026-11-03: `qso3_busy.wav` 19 messages against `sic_early`'s
+    /// 21 (= `jt9 -8 -d 3`); ft8_lib's 22 recordings 381 against 390 of `jt9`'s 401; 902
+    /// crowded synthetic signals 828 against 861 (`jt9`: 860); about 0.45 times the time.
+    /// Use `sic_early` when recall in a crowded band matters.
+    ///
     /// `n` is folded into strategy selection (rather than an independently
     /// settable field) so `.sic_rounds(_).sic_early()` can't compile a
     /// combination where the round count is silently ignored — see issue

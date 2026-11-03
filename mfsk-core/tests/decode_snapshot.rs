@@ -33,6 +33,16 @@
 //!
 //! Measured against `jt9` in `tests/ft8_real_recordings_vs_jt9.rs`.
 //!
+//! A second one, the same day (`XDT_OFFSET_S`): a decode is reported at, and subtracted from,
+//! WSJT-X's `xdt = (ibest-1)*dt2`, one 200 Hz sample (5 ms) before the start the correlation found;
+//! it was 5 ms late. Every FT8 fixture's `dt_sec` column moves (median -5.0 ms, a few rows -10 ms
+//! where a candidate landed one step over), and the residual after a subtraction changes, so `snr`,
+//! `sync_score`, `hard_errors` and `pass` move on rows decoded after one. Messages: `WA2FZW DL5AXX RR73`
+//! leaves `ft8_sic_rounds_3` and `ft8_eme_delay` (the flat `sic_rounds` strategy, which has no
+//! re-subtraction with a refined DT between rounds), `CQ DX DL8YHR JO41` joins `ft8_osd_off`.
+//! `iq_direct_ft8` and `iq_pfb_ft8` move the same way; the FT4, FST4, JT65, JT9, Q65 and WSPR
+//! fixtures did not.
+//!
 //! Row format, one per line, sorted. Frame family (FT8/FT4/FST4): text,
 //! then `freq_hz`, `dt_sec`, `snr_db`, `sync_score` as f32 bit patterns in
 //! hex, then `hard_errors` and `pass`. Other families and the IQ path: the

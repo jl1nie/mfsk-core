@@ -19,10 +19,13 @@
 //!    original frequency).
 //! 3. ±4 idt re-search, tweaked by the winning Stage-2 `delfbest`.
 //!
-//! The output `dt_sec` follows the host convention
-//! `(ibest - 0.5) / 200`. The caller decides whether to also accept
-//! sub-sample dt refinement (parabolic) on the final score; this module
-//! returns integer dt for closer match to WSJT-X.
+//! The output `dt_sec` is the start the correlation found, `ibest / 200 - 0.5`: the position the
+//! symbol spectra are taken at (`ft8b.f90`: `i1=ibest+(k-1)*32`). WSJT-X does **not** report that
+//! value: `xdt = (ibest-1)*dt2` is one 200 Hz sample earlier, and that is the DT it prints and
+//! the start `subtractft8` removes the signal from. [`XDT_OFFSET_S`] is that difference; add it
+//! where a result is made, and take it off again where a result is used to re-extract spectra.
+//! The caller decides whether to also accept sub-sample dt refinement (parabolic) on the final
+//! score; this module returns integer dt for closer match to WSJT-X.
 
 use num_complex::Complex;
 #[cfg(not(feature = "std"))]
@@ -152,13 +155,21 @@ pub const CD0_LEN: usize = 3200;
 /// Downsampled sample rate (Hz).
 pub const DS_RATE: f32 = 200.0;
 
+/// `ft8b.f90` / `ft8_a7.f90` / `ft8c.f90`: `xdt = (ibest-1)*dt2`. Reported DT and the subtraction
+/// start are one 200 Hz sample (5 ms) before the start `ibest` found by [`fine_refine_3stage`];
+/// the symbol spectra stay at `ibest`. Added to [`FineRefine::dt_sec`] it gives WSJT-X's DT.
+///
+/// Measured against `jt9` on a clean +38 dB signal: subtracting at `ibest` leaves the signal
+/// -15.6 dB below the original, at `xdt` -55.9 dB (`jt9`: -55.8 dB). A 5 ms error in the reference
+/// is a phase error of up to 1.4 rad between the lowest and highest tone of an FT8 symbol.
+pub const XDT_OFFSET_S: f32 = -1.0 / DS_RATE;
+
 /// Result of [`fine_refine_3stage`].
 #[derive(Debug, Clone, Copy)]
 pub struct FineRefine {
-    /// Refined dt offset relative to the slot's nominal TX start (seconds).
-    /// Equivalent to WSJT-X's `xdt = (ibest-1) * dt2` minus the 0.5 s
-    /// `TX_START_OFFSET_S`, exposed as `dt_sec` for symmetry with the
-    /// rest of mfsk-core.
+    /// Refined dt offset relative to the slot's nominal TX start (seconds),
+    /// at the detected start `ibest`: `ibest / 200 - 0.5`. WSJT-X's own
+    /// `xdt - 0.5` is `dt_sec + `[`XDT_OFFSET_S`] (one sample earlier).
     pub dt_sec: f32,
     /// Refined frequency offset relative to the candidate's initial
     /// `freq_hz`. The caller adds this to its initial frequency.

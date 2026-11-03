@@ -649,7 +649,7 @@ pub fn xsnr2_db_simple(spec: &Spectrogram, result: &DecodeResult, cell_scale: f3
     // xsig at the 79 decoded-tone (freq, m) positions.
     let itone = crate::engine::tx::message_to_tones::<crate::ft8::Ft8>(result.message77());
     let carrier_bin_f = result.freq_hz / df;
-    let t0 = (TX_START_OFFSET_S + result.dt_sec) / tstep;
+    let t0 = (TX_START_OFFSET_S + result.dt_sec - crate::ft8::refine_fine::XDT_OFFSET_S) / tstep;
     let mut xsig: f32 = 0.0;
     for k in 0..NN {
         let t = itone[k] as f32;
@@ -762,11 +762,13 @@ pub(crate) fn compute_xsig_wsjtx(
     let mut cs: Box<[[Cmplx<f32>; 8]; 79]> = alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
         .try_into()
         .unwrap();
+    // The spectra are taken at `ibest`, one sample after the reported `xdt` (`ft8b.f90`).
+    let dt_at_ibest = result.dt_sec - crate::ft8::refine_fine::XDT_OFFSET_S;
     fill_symbol_spectra(
         &mut cs,
         audio,
         result.freq_hz,
-        result.dt_sec,
+        dt_at_ibest,
         SymMask::SyncOnly,
         fft_cache,
     );
@@ -777,7 +779,7 @@ pub(crate) fn compute_xsig_wsjtx(
         &mut cs,
         audio,
         result.freq_hz,
-        result.dt_sec,
+        dt_at_ibest,
         SymMask::DataOnly,
         fft_cache,
     );
@@ -2296,7 +2298,8 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     Some(DecodeResult {
         info: bp.info.into_boxed_slice(),
         freq_hz: cand.freq_hz,
-        dt_sec: refined_dt,
+        // ft8b.f90 `xdt=(ibest-1)*dt2`: what is reported, and where the signal is subtracted from.
+        dt_sec: refined_dt + crate::ft8::refine_fine::XDT_OFFSET_S,
         hard_errors: bp.hard_errors,
         sync_score: cand.score,
         pass: pass_id,

@@ -27,15 +27,25 @@ SNR, spacing and DT drawn from these recordings, one factor at a time; all five 
 (`DO2JHE LZ1JZ -13`) is decided by it: `jt9`'s LLRs through this crate's OSD decode it, this crate's own did not.
 The complex symbol spectra `cs` are identical on both sides (checked), so the downsample path is not the cause.
 
-## Found, not landed: DT is one 200 Hz sample late
+## Cause 2, fixed: DT was one 200 Hz sample late (`XDT_OFFSET_S`)
 
-`ft8b.f90` returns `xdt = (ibest-1)*dt2`; `fine_refine_3stage` returns `ibest/200 - 0.5` (its own doc says `(ibest-1)`). Reported DT and the
-subtraction start are 5 ms late against `jt9`'s, the symbol extraction (which uses `ibest`) is not. A clean +38 dB signal is subtracted to
--15.6 dB here and -55.8 dB by `jt9`; with the one-sample change -55.9 dB. Experiment (not in the tree): 390 / 401, outputs `jt9` lacks 8,
-reported DT bias +5.1 -> +0.3 ms, SNR unchanged. Needs the snapshot DT columns, the consumers of `DecodeResult::dt_sec` as a start time,
-`decode_block`, and a review.
+`ft8b.f90`, `ft8_a7.f90` and `ft8c.f90` return `xdt = (ibest-1)*dt2`; `fine_refine_3stage` returned `ibest/200 - 0.5` (its own doc said
+`(ibest-1)`). Reported DT and the subtraction start were 5 ms late against `jt9`'s; the symbol extraction (which uses `ibest`, as `jt9`
+does) was not. A 5 ms error is a phase error of up to 1.4 rad between the lowest and highest tone of a symbol: a clean +38 dB signal was
+subtracted to -15.6 dB here and -55.8 dB by `jt9`; now -55.9 dB. Default strategy: 386 -> 390 of `jt9`'s 401 on the 22 recordings,
+outputs `jt9` lacks 11 -> 8, reported DT bias +5.1 -> +0.3 ms, SNR unchanged; 902 crowded synthetic signals 855 -> 861 (`jt9` 860).
 
-## Still different (after `LlrTail`: 15 `jt9`-only decodes)
+**What it uncovered: `sic_rounds` and `decode_block` are the simplified strategies.** Neither re-subtracts with a refined DT between
+rounds; `jt9` does (`lrefinedt` when it rebuilds the audio for its second stage), and so does `sic_early`. With the 5 ms error,
+a strong signal left 15 dB of residue and a weak signal 10 Hz away stayed decodable by accident (`ZL7CE JR3AX -10` at +6.8 dB beside
+`OH9I BG5TKD 73` at +29.5 dB: coarse score 31 in round 1; `jt9`'s own early passes give 3.5 and the new rule 3.5, then 28 after the refined
+re-subtraction). With the right alignment the flat strategies trail: `sic_rounds(3)` 902 synthetic 838 -> 828 (`sic_early` 861), `qso3_busy.wav`
+20 -> 19 (`WA2FZW DL5AXX RR73`; `sic_early`: all 21 of `jt9`'s), 22 recordings 376 -> 381 (`sic_early` 390). Making `sic_rounds` subtract
+with the DT-refining variant brings it to `jt9`'s level (860 / 902, 21 on `qso3_busy.wav`, 380) at 343 ms per file against 194 (`sic_early`: 433);
+not done: `sic_rounds` stays the cheap, simplified strategy, and `decode_block` has no budget for a second subtraction. Their pins moved:
+`sic_rounds(3)` golden 20 -> 19 messages, the `decode_block` full-parity floor 20 -> 19.
+
+## Still different (after `LlrTail`: 15 `jt9`-only decodes; with the DT change 11)
 
 policy rejects a decoded `<...> DA0FONTANE` (empty hash table): 1; no candidate: 1; sync gate: 2-3; BP/OSD finds no codeword on the same
 candidate, 7-9 (LLRs equal in 2, differing even in `llra`/`llrd` in 8: the residual after subtraction). Candidate lists agree 88.8 % on the
