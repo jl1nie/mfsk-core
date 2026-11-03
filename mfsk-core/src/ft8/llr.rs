@@ -157,6 +157,140 @@ mod tests {
         assert!(!any_large, "zero input should not produce large LLRs");
     }
 
+    /// A direct port of `ft8b.f90` lines 186-257 (the `nsym` 1/2/3 bit metrics, `llrd`, `llre`,
+    /// `normalizebmet`, `scalefac`), 1-based indices and all, to check the shared implementation
+    /// against it on random spectra. The point of it is the last group of each 29-symbol half:
+    /// `do k=1,29,nsym` runs it on into the next frame symbol (a Costas one), which the generic
+    /// sweep only does for `LlrTail::ContinueIntoNext`. Against jt9's own LLRs (its `ft8b` traced on
+    /// ft8_lib's 22 recordings, 638 candidates at the first search of the first period) the patch it
+    /// had before agreed on every sign in 45 % (`llrb`) and 40 % (`llrc`) of them; this one, 94 %.
+    #[test]
+    fn llr_sets_match_ft8b_f90_including_the_last_group_of_each_half() {
+        // ft8b.f90 `graymap`, written out so a wrong `Ft8::GRAY_MAP` cannot pass on both sides.
+        let gray: [u8; 8] = [0, 1, 3, 2, 5, 6, 4, 7];
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut rnd = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            // sum of 4 uniforms: bell-shaped enough to give the metrics a spread
+            (0..4)
+                .map(|k| ((state >> (k * 16)) & 0xFFFF) as f32 / 65535.0)
+                .sum::<f32>()
+                - 2.0
+        };
+        for trial in 0..24 {
+            let squared = trial % 2 == 1;
+            let mut cs = vec![[Cmplx::<f32>::default(); 8]; 79];
+            for row in cs.iter_mut() {
+                for c in row.iter_mut() {
+                    *c = Cmplx {
+                        re: rnd(),
+                        im: rnd(),
+                    };
+                }
+            }
+            let cs: Box<[[Cmplx<f32>; 8]; 79]> = cs.try_into().unwrap();
+            // cs(tone, ks) of the Fortran, ks 1-based
+            let z = |tone: usize, ks: usize| (cs[ks - 1][tone].re, cs[ks - 1][tone].im);
+            let (mut a, mut b, mut c, mut d) = ([0f32; 180], [0f32; 180], [0f32; 180], [0f32; 180]);
+            for nsym in 1..=3usize {
+                let nt = 1usize << (3 * nsym);
+                for ihalf in 1..=2usize {
+                    let mut k = 1;
+                    while k <= 29 {
+                        let ks = if ihalf == 1 { k + 7 } else { k + 43 };
+                        let s2: Vec<f32> = (0..nt)
+                            .map(|i| {
+                                let (i1, i2, i3) = (i / 64, (i & 63) / 8, i & 7);
+                                let (re, im) = match nsym {
+                                    1 => z(gray[i3] as usize, ks),
+                                    2 => {
+                                        let (x, y) = (
+                                            z(gray[i2] as usize, ks),
+                                            z(gray[i3] as usize, ks + 1),
+                                        );
+                                        (x.0 + y.0, x.1 + y.1)
+                                    }
+                                    _ => {
+                                        let (x, y, w) = (
+                                            z(gray[i1] as usize, ks),
+                                            z(gray[i2] as usize, ks + 1),
+                                            z(gray[i3] as usize, ks + 2),
+                                        );
+                                        (x.0 + y.0 + w.0, x.1 + y.1 + w.1)
+                                    }
+                                };
+                                let m = (re * re + im * im).sqrt();
+                                if squared { m * m } else { m }
+                            })
+                            .collect();
+                        let i32_ = 1 + (k - 1) * 3 + (ihalf - 1) * 87;
+                        let ibmax = [2, 5, 8][nsym - 1];
+                        for ib in 0..=ibmax {
+                            let bit = ibmax - ib;
+                            let ones = (0..nt)
+                                .filter(|i| i >> bit & 1 == 1)
+                                .map(|i| s2[i])
+                                .fold(f32::NEG_INFINITY, f32::max);
+                            let zeros = (0..nt)
+                                .filter(|i| i >> bit & 1 == 0)
+                                .map(|i| s2[i])
+                                .fold(f32::NEG_INFINITY, f32::max);
+                            let bm = ones - zeros;
+                            if i32_ + ib > 174 {
+                                continue;
+                            }
+                            match nsym {
+                                1 => {
+                                    a[i32_ + ib] = bm;
+                                    let den = ones.max(zeros);
+                                    d[i32_ + ib] = if den > 0.0 { bm / den } else { 0.0 };
+                                }
+                                2 => b[i32_ + ib] = bm,
+                                _ => c[i32_ + ib] = bm,
+                            }
+                        }
+                        k += nsym;
+                    }
+                }
+            }
+            let mut e = [0f32; 180];
+            for i in 1..=174 {
+                e[i] = [a[i], b[i], c[i]]
+                    .into_iter()
+                    .fold(a[i], |best, v| if v.abs() > best.abs() { v } else { best });
+            }
+            let norm = |v: &[f32; 180]| -> Vec<f32> {
+                let x = &v[1..=174];
+                let (m, m2) = (
+                    x.iter().sum::<f32>() / 174.0,
+                    x.iter().map(|y| y * y).sum::<f32>() / 174.0,
+                );
+                let var = m2 - m * m;
+                let sig = if var > 0.0 { var.sqrt() } else { m2.sqrt() };
+                x.iter().map(|y| y / sig * 2.83).collect()
+            };
+            let ours: LlrSet = compute_llr_metric(&cs, squared);
+            let ours_e: [f32; LDPC_N] = compute_llre_metric(&cs, squared);
+            for (name, want, got) in [
+                ("llra", norm(&a), &ours.llra[..]),
+                ("llrb", norm(&b), &ours.llrb[..]),
+                ("llrc", norm(&c), &ours.llrc[..]),
+                ("llrd", norm(&d), &ours.llrd[..]),
+                ("llre", norm(&e), &ours_e[..]),
+            ] {
+                for (i, (w, g)) in want.iter().zip(got).enumerate() {
+                    assert!(
+                        (w - g).abs() < 2e-3,
+                        "trial {trial} squared={squared} {name} bit {}: ft8b.f90 {w}, ours {g}",
+                        i + 1
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn llr_length_is_174() {
         let cs: Box<[[Cmplx<f32>; 8]; 79]> =

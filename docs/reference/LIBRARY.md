@@ -2439,6 +2439,7 @@ pub trait SyncFrontEnd: Protocol {
     const NFFT_PER_SYMBOL_FACTOR: u32;
     const NSTEP_PER_SYMBOL: u32;
     const NDOWN: u32;
+    const LLR_TAIL: LlrTail = LlrTail::OverlapLastData;  // FT8 ContinueIntoNext: ft8b.f90's last nsym-group runs on into the next frame symbol
 }
 
 pub trait FrameLayout: Copy + Default + 'static {

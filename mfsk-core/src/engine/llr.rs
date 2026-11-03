@@ -489,7 +489,20 @@ fn fill_bmet_for_nsym<P: SyncFrontEnd, S: SpecScalar>(
         // nsym` whose later bits overwrite the prior group's overlap
         // and whose new bits fill the tail. Identity for chunks that
         // are exact multiples of `nsym` (k == chunk_len there).
-        if k < chunk_len && chunk_len >= nsym {
+        //
+        // `LlrTail::ContinueIntoNext` (FT8, `ft8b.f90`'s `do k=1,29,nsym`) instead starts the last
+        // group at the first uncovered symbol and lets it run on into the next frame symbol. Its
+        // bits past this chunk are written first and overwritten when the next chunk is swept
+        // (or dropped past the end of the codeword), as the Fortran does. Where the group would
+        // run past the frame there is no next symbol to sum, so the overlap patch applies.
+        if k < chunk_len
+            && P::LLR_TAIL == crate::engine::LlrTail::ContinueIntoNext
+            && chunk_start_sym + k + nsym <= P::N_SYMBOLS as usize
+        {
+            let ks = chunk_start_sym + k;
+            let i_bit_base = chunk_bit_base + k * bps;
+            process_group(ks, i_bit_base, bmet_primary, &mut bmet_norm_holder);
+        } else if k < chunk_len && chunk_len >= nsym {
             let tail_k = chunk_len - nsym;
             let ks = chunk_start_sym + tail_k;
             let i_bit_base = chunk_bit_base + tail_k * bps;

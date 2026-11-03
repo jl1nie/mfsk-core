@@ -67,7 +67,7 @@ pub mod sync2d;
 pub mod tx;
 
 pub use protocol::{
-    BpKind, DecodeContext, FecCodec, FecOpts, FecResult, FrameLayout, MessageCodec, MessageFields,
-    ModulationParams, Protocol, ProtocolId, SAMPLE_RATE_HZ, SpectrumWindow, SyncBlock,
-    SyncFrontEnd, SyncMode, tone_spacing_hz,
+    BpKind, DecodeContext, FecCodec, FecOpts, FecResult, FrameLayout, LlrTail, MessageCodec,
+    MessageFields, ModulationParams, Protocol, ProtocolId, SAMPLE_RATE_HZ, SpectrumWindow,
+    SyncBlock, SyncFrontEnd, SyncMode, tone_spacing_hz,
 };

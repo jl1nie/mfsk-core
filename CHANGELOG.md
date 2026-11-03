@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **FT8's multi-symbol bit metrics follow `ft8b.f90` at the end of each half** (new `engine::LlrTail`, defaulted `SyncFrontEnd::LLR_TAIL`; FT8 sets `ContinueIntoNext`, every other protocol keeps the overlap patch it had). `do k=1,29,nsym` runs the last group on into the next (Costas) symbol; the shared sweep re-anchored it on the last data symbols instead (made for FT4, #18). Bits 79-87 and 166-174 of `llrb`/`llrc`/`llre` differed from `jt9`'s in a few signs on identical audio (all-sign agreement with jt9's traced LLRs on 638 candidates: 45 % / 40 % / 66 % before, 94 % / 94 % / 95 % after), enough to lose OSD decodes near 29 hard errors. On ft8_lib's 22 recordings `mfsk-core` now decodes 386 of `jt9 -8 -d 3`'s 401 messages, was 383; FT4/FST4/FST4W unchanged. Also reaches the a7 list decoder (`ft8_a7.f90`/`ft8c.f90` use the same loop).
+- **Tests:** `ft8::llr` checks all five LLR sets against a direct port of `ft8b.f90`; `ft8_real_recordings_vs_jt9` holds `jt9`'s decodes of the two vendored recordings (it names the lost `DO2JHE LZ1JZ -13` on the old code); `sic_early_eq_mode_reaches_sic_engine` no longer pins one noise seed (its "reliably" was 1 draw of 12). 20 FT8 snapshot fixtures moved, no message added or lost (`decode_snapshot.rs` header lists the rows). Measurement and what is still different: `docs/notes/FT8_REAL_VS_JT9.md`.
+
 ## 0.15.0 — the public surface narrowed to what applications use: `engine::pipeline` crate-private and no public path behind `internal-testing` (breaking), `#[non_exhaustive]` on the growing option/result/error types (breaking), registry capability bits that describe the API (breaking), candidates and decode method readable from a result, `Row::new` / `SlotResult::new`, a parameter block WSJT-X's GUI cannot send no longer crashes a decoder, `RR73` and `/R` `/P` AP follow WSJT-X 3.3 beta
 
 ### Breaking changes

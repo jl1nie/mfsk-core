@@ -97,6 +97,8 @@ impl crate::engine::SyncFrontEnd for Ft8 {
     const NFFT_PER_SYMBOL_FACTOR: u32 = 2; // NFFT1 = 2 × NSPS = 3840
     const NSTEP_PER_SYMBOL: u32 = 4; // quarter-symbol coarse-sync step
     const NDOWN: u32 = 60; // 12 000 / 60 = 200 Hz baseband
+    // `ft8b.f90`: `do k=1,29,nsym` runs the last group on into the next (Costas) symbol.
+    const LLR_TAIL: crate::engine::LlrTail = crate::engine::LlrTail::ContinueIntoNext;
 }
 
 impl crate::engine::tx::FskWaveform for Ft8 {

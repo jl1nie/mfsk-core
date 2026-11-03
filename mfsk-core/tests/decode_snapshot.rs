@@ -12,6 +12,27 @@
 //! (`MFSK_WRITE_SNAPSHOT=1`); after it, only the calls change. A
 //! difference is a behaviour change, never a reason to rewrite a fixture.
 //!
+//! One deliberate behaviour change since, recorded here so the history of the fixtures stays
+//! readable (2026-11-03, `LlrTail`): FT8's multi-symbol bit metrics (`llrb`, `llrc`, and `llre`
+//! built from them) now treat the last group of each 29-symbol half as `ft8b.f90` does, running
+//! it on into the next (Costas) symbol, where the FT4 overlap patch had been used. Only the 20
+//! `ft8_*.txt` fixtures moved (the FT4, FST4, JT65, JT9, Q65, WSPR and IQ ones did not), and in
+//! them no message appeared or went. The rows that changed, all on `qso3_busy.wav`
+//! (`hard_errors`/`pass` before -> after):
+//!
+//! - `K1BZM DK8NE -10`, 6 fixtures: 20/20 -> 18/17 (4), 19/20 -> 17/17 (1), 21/20 -> 19/17 (1); OSD
+//!   zsave2 of `llrb` becomes zsave1 of `llrd`. 18 is `jt9`'s own value for it.
+//! - `XE2X HA2NP RR73`, 5 fixtures: 17/14 (OSD) -> 19/4 (BP on `llre`) (4); in `ft8_wsjtx_d1` it is
+//!   decoded from a different candidate, 2853.625 Hz / DT 0.205 -> 2854.75 Hz / 0.19, 16/3 -> 19/4.
+//!   `jt9` decodes it by BP, 18.
+//! - `CQ DX DL8YHR JO41`: 25 -> 26 in 12 fixtures, 24 -> 25 in `ft8_wsjtx_d2`, and in `ft8_eq_local`
+//!   17/4 (BP) -> 25/15 (OSD): a weaker decode, and it was a BP decode before. `jt9` decodes it by
+//!   OSD, 23.
+//! - `K1BZM EA3CJ JN01` and `KD2UGC F6GCP R-23` in `ft8_wsjtx_d1`: SNR and sync score move in the
+//!   fourth digit (EA3CJ -6.470 -> -6.498 dB).
+//!
+//! Measured against `jt9` in `tests/ft8_real_recordings_vs_jt9.rs`.
+//!
 //! Row format, one per line, sorted. Frame family (FT8/FT4/FST4): text,
 //! then `freq_hz`, `dt_sec`, `snr_db`, `sync_score` as f32 bit patterns in
 //! hex, then `hard_errors` and `pass`. Other families and the IQ path: the

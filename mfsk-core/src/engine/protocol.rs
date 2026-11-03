@@ -822,6 +822,31 @@ pub trait Protocol: ModulationParams + FrameLayout + 'static {
     const ID: ProtocolId;
 }
 
+/// What the multi-symbol bit metrics do with the data symbols left over when a chunk of data
+/// symbols is not a whole number of `nsym`-symbol groups (`engine::llr`).
+///
+/// FT8's 29-symbol halves leave one symbol at `nsym` = 2 and two at `nsym` = 3. The two WSJT-X
+/// code paths differ there, and the choice moves the bit metrics of the last two or three data
+/// symbols of each half (1-based bits 79-87 and 166-174 of FT8's 174). The FT8 a7 list decoder
+/// (`ft8_a7.f90`, `ft8c.f90`) uses the same loop and follows it:
+///
+/// - [`LlrTail::ContinueIntoNext`]: the last group starts at the first uncovered symbol and runs on
+///   into the following frame symbol, a Costas one in FT8, which is summed in whatever tone it
+///   carries. `ft8b.f90`'s `do k=1,29,nsym` with `s2(i)=abs(cs(..,ks)+cs(..,ks+1)+cs(..,ks+2))`.
+///   Bits past the end of the chunk are overwritten by the next chunk or dropped past the codeword.
+/// - [`LlrTail::OverlapLastData`]: one more group, anchored on the last `nsym` data symbols,
+///   overwrites the overlap and fills the tail. `get_ft4_bitmetrics.f90` runs over the whole frame
+///   and covers every symbol; this patches the chunk-restricted loop to the same coverage (#18).
+///
+/// Identity for a chunk that is a multiple of `nsym`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LlrTail {
+    /// `ft8b.f90`: the last group continues into the next frame symbol.
+    ContinueIntoNext,
+    /// `get_ft4_bitmetrics.f90`'s coverage: an overlapping group on the last data symbols.
+    OverlapLastData,
+}
+
 /// The geometry of the shared coarse-sync front end (`engine::sync`,
 /// `engine::llr::symbol_spectra`, the generic decode pipeline): how long each
 /// per-symbol FFT is, how often it is taken, and how far the signal is
@@ -836,6 +861,12 @@ pub trait Protocol: ModulationParams + FrameLayout + 'static {
 /// actually uses (`NSTEP_PER_SYMBOL` 2 against 4, `NDOWN` 8 against 432); see
 /// #419.
 pub trait SyncFrontEnd: Protocol {
+    /// How the multi-symbol bit metrics (`nsym` > 1) cover the data symbols a chunk cannot
+    /// split into whole groups. See [`LlrTail`]. Defaults to the overlap patch every protocol
+    /// but FT8 has always had. It is a property of the bit metrics (like `ModulationParams::LLR_*`),
+    /// not of the coarse-sync geometry; it lives here because only the protocols that decode through
+    /// the shared front end go through `engine::llr`'s sweep.
+    const LLR_TAIL: LlrTail = LlrTail::OverlapLastData;
     /// Per-symbol FFT size = `NSPS * NFFT_PER_SYMBOL_FACTOR`.
     /// FT8 = 2 (window is 2·NSPS), FT4 = 4 (window is 4·NSPS) — trade-off
     /// between frequency resolution and time localisation.

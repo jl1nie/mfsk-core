@@ -2738,11 +2738,20 @@ mod tests {
     ///
     /// Reproduces `ft8-bench`'s own "BPF edge" scenario (4-pole
     /// Butterworth 1000-1500 Hz, target at the passband's -3 dB edge,
-    /// 1000 Hz), calibrated against a real ground-truth sweep to a target
-    /// SNR (-22 dB, WSJT-X convention) where `eq_mode(Off)` reliably
-    /// misses the signal and `eq_mode(Local)` reliably recovers it through
-    /// `.sic_early()` — proving the fix actually reaches the SIC engine, not
-    /// just that the builder method compiles.
+    /// 1000 Hz) at -21.5 dB (WSJT-X convention), where the signal is near
+    /// threshold and `eq_mode(Off)` and `eq_mode(Local)` each decode about
+    /// 38 % of noise draws, **not the same draws**: measured over 80 seeds
+    /// (2026-11-03) `Local` alone decodes 10 and `Off` alone 9. If `eq_mode`
+    /// did not reach the SIC engine the two would be identical on every seed,
+    /// so the test searches a fixed seed list for one that `Local` decodes
+    /// and `Off` does not — proof the option arrives, not that `Local` is
+    /// better (it is not, on this fixture).
+    ///
+    /// This used to pin one seed at -22 dB, written as "`Off` reliably misses,
+    /// `Local` reliably recovers". Over 12 seeds that was 1 draw against 2, and
+    /// the pinned seed was one of the 1; a change of the FT8 multi-symbol bit
+    /// metrics (`LlrTail`) moved it. The fixture had been calibrated to a
+    /// coincidence.
     #[test]
     fn sic_early_eq_mode_reaches_sic_engine() {
         use crate::msg::wsjt77::pack77;
@@ -2773,7 +2782,7 @@ mod tests {
         const BPF_HI: f64 = 1_500.0;
         const REF_BW: f32 = 2_500.0;
         // WSJT-X SNR convention (matches `ft8-bench::simulator::generate_frame`).
-        const TARGET_SNR_DB: f32 = -22.0;
+        const TARGET_SNR_DB: f32 = -21.5;
 
         let m77 = pack77("CQ", "K1ABC", "FN42").expect("pack77");
         let tones = crate::engine::tx::message_to_tones::<crate::ft8::Ft8>(&m77);
@@ -2781,30 +2790,31 @@ mod tests {
         let amplitude = (4.0 * snr_linear * REF_BW / FS).sqrt();
         let sig = crate::engine::tx::synthesize::<crate::ft8::Ft8>(&tones, 12_000, F0, amplitude);
 
-        let n = 15 * 12_000;
-        let mut mix = vec![0.0f32; n];
-        let off = 6_000usize;
-        let n_sig = sig.len().min(n - off);
-        mix[off..off + n_sig].copy_from_slice(&sig[..n_sig]);
-
-        let mut rng = Rng(0xC0FF_EE12_3456_789A);
-        for s in mix.iter_mut() {
-            *s += rng.gaussian();
-        }
-
-        let mut bpf = TestBpf::design(4, BPF_LO, BPF_HI, FS as f64);
-        let filtered = bpf.filter(&mix);
-
-        // Quantise to i16 with WSJT-X-style headroom (peak -> 29000).
-        let peak = filtered.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
-        let iq_scale = if peak > 1e-6 { 29_000.0 / peak } else { 1.0 };
-        let audio: Vec<i16> = filtered
-            .iter()
-            .map(|&s| (s * iq_scale).clamp(-32_768.0, 32_767.0) as i16)
-            .collect();
-
-        let find = |eq: EqMode| -> Option<DecodeResult> {
-            let results = DecodeRequest::<Ft8>::new(
+        // One noise draw per seed; 0 is the seed the fixture used to pin.
+        let decodes_at = |seed: u64, eq: EqMode| -> bool {
+            let n = 15 * 12_000;
+            let mut mix = vec![0.0f32; n];
+            let off = 6_000usize;
+            let n_sig = sig.len().min(n - off);
+            mix[off..off + n_sig].copy_from_slice(&sig[..n_sig]);
+            let mut rng = Rng(if seed == 0 {
+                0xC0FF_EE12_3456_789A
+            } else {
+                0x1234_5678_9ABC_DEF0 ^ seed.wrapping_mul(0x9E37_79B9)
+            });
+            for s in mix.iter_mut() {
+                *s += rng.gaussian();
+            }
+            let mut bpf = TestBpf::design(4, BPF_LO, BPF_HI, FS as f64);
+            let filtered = bpf.filter(&mix);
+            // Quantise to i16 with WSJT-X-style headroom (peak -> 29000).
+            let peak = filtered.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
+            let iq_scale = if peak > 1e-6 { 29_000.0 / peak } else { 1.0 };
+            let audio: Vec<i16> = filtered
+                .iter()
+                .map(|&s| (s * iq_scale).clamp(-32_768.0, 32_767.0) as i16)
+                .collect();
+            DecodeRequest::<Ft8>::new(
                 &audio,
                 (BPF_LO as f32) - 50.0,
                 (BPF_HI as f32) + 50.0,
@@ -2814,20 +2824,19 @@ mod tests {
             .eq_mode(eq)
             .sic_early()
             .decode()
-            .results;
-            results.into_iter().find(|r| *r.message77() == m77)
+            .results
+            .iter()
+            .any(|r| *r.message77() == m77)
         };
 
+        // 10 of the first 80 seeds are `Local`-only at this SNR (2026-11-03); 64 seeds, stopping at
+        // the first, leave the odds of none under a different but equally sensitive decoder below 1 %.
+        let found = (0..64u64)
+            .find(|&seed| decodes_at(seed, EqMode::Local) && !decodes_at(seed, EqMode::Off));
         assert!(
-            find(EqMode::Off).is_none(),
-            "expected the BPF-edge signal to NOT decode with eq_mode(Off) \
-             (test fixture drifted off the calibrated marginal point)"
-        );
-        assert!(
-            find(EqMode::Local).is_some(),
-            "expected eq_mode(Local) to decode the same BPF-edge signal \
-             that eq_mode(Off) misses through .sic_early() — eq_mode is not \
-             reaching the SIC engine"
+            found.is_some(),
+            "no seed in 0..64 where eq_mode(Local) decodes the BPF-edge signal and eq_mode(Off) does not — \
+             eq_mode is not reaching the SIC engine (on every seed the two agree)"
         );
     }
 
