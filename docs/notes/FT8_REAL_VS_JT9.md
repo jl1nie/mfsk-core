@@ -55,3 +55,10 @@ configuration only. A "low nsync with high SNR" rule does not separate them (44 
 
 One band session, 22 files, one reference decoder; the labelled corpora are white noise. The `jt9` trace build and our local trace patch
 are write-only (22 files decode identically with them). Tier C was not run.
+
+## Open work
+
+[#721](https://github.com/jl1nie/mfsk-core/issues/721): the 11 `jt9` decodes still missing, the causes found, the predictions with the test that would settle each, and the
+method. [#722](https://github.com/jl1nie/mfsk-core/issues/722): what `sic_early`, `sic_rounds` and `decode_block` should each promise. The DT change
+(`XDT_OFFSET_S`, below as "Cause 2") is on the branch `wip/ft8-xdt-offset` (`a3fa8af7`), not merged until it has been reviewed; on `main` this note's
+"Cause 2" and the `sic_rounds` / `decode_block` findings are still the "found, not landed" text.
