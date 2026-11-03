@@ -22,7 +22,7 @@ members  = [
 #
 # `apps/skimmer/gui` is the Tauri app: it needs a webview (WebView2 /
 # webkit2gtk) and Node for its front end, which host CI does not have.
-exclude  = ["embedded-poc", "bench/wasm", "wasm-smoke", "apps/skimmer/gui"]
+exclude  = ["embedded-poc", "bench/wasm", "bench/ft8-compare", "wasm-smoke", "apps/skimmer/gui"]
 resolver = "2"
 
 # Single source of truth for the crate version. `mfsk-core`,

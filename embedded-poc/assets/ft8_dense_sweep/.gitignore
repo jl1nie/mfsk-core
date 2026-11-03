@@ -1,0 +1,4 @@
+# gen_ft8_dense_wavs.py-generated dense-band corpus (WAVs and truth.csv) -- regenerate with
+#   scripts/gen_ft8_dense_wavs.py <ft8sim> embedded-poc/assets/ft8_dense_sweep
+*.wav
+truth.csv

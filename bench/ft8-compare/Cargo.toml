@@ -1,0 +1,19 @@
+[package]
+name = "ft8-compare"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Not part of the mfsk-core workspace (see root Cargo.toml exclude): runs mfsk-core and the crates.io crate rust-ft8 on the same WAV files and writes one CSV row per decode. See README.md."
+
+# Own workspace root: this directory sits under the repo root but is excluded from it.
+[workspace]
+
+[dependencies]
+mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["std", "ft8", "fft-rustfft"] }
+# Pinned: the comparison is of this exact release.
+rust-ft8 = "=0.2.1"
+rayon = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
