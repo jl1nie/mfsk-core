@@ -33,6 +33,32 @@
 //!
 //! Measured against `jt9` in `tests/ft8_real_recordings_vs_jt9.rs`.
 //!
+//! A second one, the same day (`XDT_OFFSET_S`): a decode is reported at, and subtracted from,
+//! WSJT-X's `xdt = (ibest-1)*dt2`, one 200 Hz sample (5 ms) before the start the correlation found;
+//! it was 5 ms late. Every FT8 fixture's `dt_sec` column moves (median -5.0 ms, a few rows -10 ms
+//! where a candidate landed one step over), and the residual after a subtraction changes, so `snr`,
+//! `sync_score`, `hard_errors` and `pass` move on rows decoded after one. Messages: `WA2FZW DL5AXX RR73`
+//! leaves `ft8_sic_rounds_3` and `ft8_eme_delay` (the flat `sic_rounds` strategy, which has no
+//! re-subtraction with a refined DT between rounds), `CQ DX DL8YHR JO41` joins `ft8_osd_off`.
+//! `iq_direct_ft8` and `iq_pfb_ft8` move the same way; the FT4, FST4, JT65, JT9, Q65 and WSPR
+//! fixtures did not.
+//!
+//! A third (#721): a re-decoded message is subtracted again before it is dropped as a duplicate
+//! (`ft8b.f90`), `coarse_sync`'s lag grid is `sync8.f90`'s (two steps, 80 ms, off before), and the
+//! blind-CQ AP pass has no `nsync >= 12` gate. All 21 FT8 fixtures and the two IQ-FT8 ones move in
+//! `sync_score`, `snr`, `hard_errors` and
+//! `pass`. Messages: `WA2FZW DL5AXX RR73` returns to `ft8_sic_rounds_3` and `ft8_eme_delay`, which
+//! also gains `K1JT HA5WA 73`; no message left any fixture. JT65's two fixtures differ here only in
+//! the last float bits (another machine wrote them) and were not rewritten.
+//!
+//! A fourth (#721): `coarse_sync` dedupes on the integer-lag DT `(lag-0.5)*tstep`, as `sync8.f90:143`
+//! does, not on the parabolically interpolated one, so a weak candidate 3-4 Hz from a strong signal
+//! stays in the list and is decoded (and subtracted) from the residue as `jt9` does; and
+//! `decode_block_multipass` subtracts a re-found message before dropping it. All 18 FT8 fixtures that
+//! carry rows move in `sync_score`, `snr`, `hard_errors` and `pass`; no message appeared or left any
+//! of them. One row changes `freq_hz` / `dt_sec` (14 fixtures): `K1BZM DK8NE -10` is decoded from
+//! another candidate, 245.375 Hz / DT 0.500 -> 244.250 Hz / 0.505, 22 -> 18 hard errors (`jt9`: 18).
+//!
 //! Row format, one per line, sorted. Frame family (FT8/FT4/FST4): text,
 //! then `freq_hz`, `dt_sec`, `snr_db`, `sync_score` as f32 bit patterns in
 //! hex, then `hard_errors` and `pass`. Other families and the IQ path: the

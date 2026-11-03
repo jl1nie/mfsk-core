@@ -1025,7 +1025,9 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
                 &fft_cache,
                 depth,
                 strictness,
-                known,
+                // Empty: a message already decoded must still come back, so
+                // that it can be subtracted below before it is dropped.
+                &[],
                 eq_mode,
                 ap_hint,
                 &mut bp_scratch,
@@ -1037,10 +1039,21 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
                 None => continue,
             };
             // Dedup against `known` (an earlier stage) and this loop's
-            // own earlier passes.
+            // own earlier passes — after subtracting it, as WSJT-X does:
+            // `ft8b.f90:463-467` subtracts every valid decode, and only
+            // then does `ft8_decode.f90` drop a text it already has
+            // (`ldupe`). The same text is two things there: a signal left
+            // in the residual by an earlier, shallower subtraction (a later
+            // pass re-finds it; this second subtraction is where WSJT-X's
+            // depth comes from), or the same transmission at another
+            // frequency (splatter, harmonics). Not subtracting either kept
+            // both in the residual, over the weaker signals beside them
+            // (#721: `K3ZK IK2ZDT RR73` at +2 dB, 10 Hz from a copy of
+            // `K4VBM HA8EK RR73`, never reached the decoder).
             if crate::engine::pipeline::has_message77(known, &r)
                 || crate::engine::pipeline::has_message77(&all_results, &r)
             {
+                subtract_signal_lpf(residual, &r);
                 continue;
             }
             // `xsig` for the xsnr2 gate below — must run *before* the
@@ -2891,6 +2904,79 @@ mod tests {
         let dt = results[0].dt_sec;
         eprintln!("DT = {dt:+.3} s (expected ≈ 0.0)");
         assert!(dt.abs() < 0.5, "DT={dt} is too far from 0");
+    }
+
+    /// A decoded signal is reported at, and subtracted from, WSJT-X's `xdt = (ibest-1)*dt2`
+    /// (`ft8b.f90`), one 200 Hz sample before the start the correlation found. This crate reported
+    /// and subtracted at `ibest`: 5 ms late, which for FT8's 6.25 Hz tone spacing is a phase error
+    /// of up to 1.4 rad between the lowest and the highest tone of a symbol. A clean strong signal
+    /// was taken out to -15.6 dB where `jt9` takes it to -55.8 dB (the noise), and what stayed
+    /// behind seeded candidates, LLRs and decodes in the searches that follow a subtraction.
+    ///
+    /// DT 0.30 s sits on the 5 ms grid, so a correct decode reports it to a millisecond or so.
+    /// The residual is measured in the time domain over the signal's own span, against its own
+    /// original, noise included: -39.3 dB with the rule above, -16.4 dB at `ibest` (2026-11-03), so
+    /// -30 dB is 9 dB from the one and 14 dB from the other.
+    #[test]
+    fn decoded_signal_is_reported_and_subtracted_at_xdt() {
+        use crate::msg::wsjt77::pack77_type1;
+
+        let msg = pack77_type1("CQ", "JA1ABC", "PM95").unwrap();
+        let itone = crate::engine::tx::message_to_tones::<crate::ft8::Ft8>(&msg);
+        const F0: f32 = 1503.7;
+        const DT: f32 = 0.30;
+        let pcm = crate::engine::tx::synthesize::<crate::ft8::Ft8>(&itone, 12_000, F0, 1.0);
+        let start = ((0.5 + DT) * 12_000.0).round() as usize;
+
+        let mut state = 0x2545_F491_4F6C_DD1Du64; // xorshift; sum of 12 uniforms ~ N(0, 1)
+        let mut gauss = move || {
+            let mut a = 0.0f32;
+            for _ in 0..12 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                a += (state >> 40) as f32 / (1u64 << 24) as f32;
+            }
+            a - 6.0
+        };
+        let mut audio = vec![0i16; 180_000];
+        for (i, a) in audio.iter_mut().enumerate() {
+            let sig = pcm.get(i.wrapping_sub(start)).copied().unwrap_or(0.0);
+            *a = (6000.0 * sig + 20.0 * gauss()).round() as i16;
+        }
+
+        let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.0, 200)
+            .decode()
+            .results;
+        let r = results
+            .iter()
+            .find(|r| *r.message77() == msg)
+            .expect("a +40 dB signal must decode");
+        assert!(
+            (r.dt_sec - DT).abs() <= 0.002,
+            "reported DT {:+.4} s, sent {DT:+.4} s: WSJT-X reports (ibest-1)*dt2 - 0.5",
+            r.dt_sec
+        );
+        assert!(
+            (r.freq_hz - F0).abs() <= 0.6,
+            "frequency {} Hz, sent {F0}",
+            r.freq_hz
+        );
+
+        let mut left = audio.clone();
+        crate::ft8::subtract::subtract_signal_lpf(&mut left, r);
+        let span = start..(start + pcm.len()).min(audio.len());
+        let energy = |v: &[i16]| {
+            v[span.clone()]
+                .iter()
+                .map(|&x| f64::from(x) * f64::from(x))
+                .sum::<f64>()
+        };
+        let db = 10.0 * (energy(&left) / energy(&audio)).log10();
+        assert!(
+            db < -30.0,
+            "{db:.1} dB left after subtracting the decode (-39 dB at xdt, -16 dB at ibest)"
+        );
     }
 
     /// `.eme_delay(true)` shifts a delivered decode's `dt_sec` by exactly

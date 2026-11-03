@@ -27,6 +27,19 @@ use crate::engine::sync::SyncCandidate;
 
 // ── Coarse sync ─────────────────────────────────────────────────────────────
 
+/// Smallest candidate list for which the dedupe compares `sync8.f90`'s integer-lag DT.
+///
+/// `sync8.f90:143` drops a candidate within 4 Hz and `tdiff < 0.04` s of a stronger one, on
+/// `(jpeak-0.5)*tstep`. This crate's candidate DT is parabolically interpolated, and deduping on
+/// that dropped weak candidates `jt9` keeps (`191111_110615`: 903.125 / 909.375 Hz beside a +22 dB
+/// signal, whose residue `jt9` decodes and subtracts; #721). The faithful rule keeps a few more
+/// near-duplicates of strong signals, which a lean list has no slot for: at the embedded
+/// `PASS1_LIMIT_DEFAULT` of 30 they pushed `OH3NIV ZS6S -03` (`qso1.wav`, score 2.06, rank 27 before)
+/// out, 4 -> 3 of 5 in `ft8_decode_block_real_qso`. `jt9` has `MAXCAND` 600; the host configs ask for
+/// 60 (research) to 200+ (default), the embedded ones for 30. Below this the interpolated DT is
+/// compared, as before.
+pub(crate) const FAITHFUL_DEDUPE_MIN_CAND: usize = 60;
+
 /// Costas-array correlation search across the spectrogram. Mirrors
 /// WSJT-X `lib/ft8/sync8.f90` — 16-bin sliding-window allsum noise
 /// estimator with `tone_step_bins = 2.0` exactly at NFFT_SPEC=3840.
@@ -191,8 +204,9 @@ pub fn coarse_sync_with_allsum_and_lag(
 ///
 /// **How much fewer, in the shipped configuration: one.** Under
 /// `fixed-point` `NSSY = NSPS / NSTEP = 2`, so block 2 runs from
-/// `jstrt + 2*72 = 150` to `162`, the real rows end at 173, and the
-/// widest lag the ±1.0 s search reaches is 13 — which leaves
+/// `jstrt + 2*72 = 150` to `162` (`nstep-half` keeps the rounded
+/// `jstrt` of 6, see `coarse_sync_inner`), the real rows end at 173, and
+/// the widest lag the ±1.0 s search reaches is 13 — which leaves
 /// `(173 - 163) / 2 + 1 = 6` of 7 symbols. That bounds every
 /// "the score is noisier" argument about this population at
 /// `sqrt(20/21)`, i.e. 2 %.
@@ -496,8 +510,33 @@ fn coarse_sync_inner(
 ) -> Vec<SyncCandidate> {
     let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
     let tstep = NSTEP as f32 / SAMPLE_RATE_HZ;
-    let jstrt = (TX_START_OFFSET_S / tstep).round() as i32;
-    let requested_jz = (sync_lag_override_s.unwrap_or_else(sync_lag_s) / tstep).round() as i32;
+    // `sync8.f90`: `jstrt=0.5/tstep` assigns a real to an integer, which
+    // truncates (12.5 -> 12 at NSTEP = NSPS/4), and its spectrum index `m`
+    // is 1-based where this one is 0-based: lag 0 is row `jstrt - 1`. This
+    // used to be `round(0.5/tstep)` = 13 on a 0-based row, which put every
+    // lag two steps (80 ms) away from upstream's on identical `sync2d`
+    // values: the reported coarse DT was 80 ms early, the `±MLAG` primary
+    // window covered a different second, and `ft8b`'s ±10-sample search
+    // started from another place (#721: `CQ IZ8IQO JM89`, jt9 lag 29, here
+    // 27). `JZ=62` is likewise 2.5/tstep truncated, not rounded to 63.
+    //
+    // That grid is upstream's at `NSTEP = NSPS/4` only. Under `nstep-half`
+    // (the fixed-point embedded build, NSTEP = NSPS/2, 80 ms steps) WSJT-X
+    // has no grid to follow, and the same formula would start lag 0 at
+    // 0.40 s, a -60 ms coarse-DT bias that the board's driver (no `ft8b`
+    // ±10-sample search) cannot absorb: `true_ship_driver_meets_fixed_golden_floor`
+    // fell 7 -> 2 of 20 on `qso3_busy.wav`. It keeps the rounded origin
+    // (0.48 s, +20 ms) it was tuned on.
+    #[cfg(not(feature = "nstep-half"))]
+    let (jstrt, requested_jz) = (
+        (TX_START_OFFSET_S / tstep) as i32 - 1,
+        (sync_lag_override_s.unwrap_or_else(sync_lag_s) / tstep) as i32,
+    );
+    #[cfg(feature = "nstep-half")]
+    let (jstrt, requested_jz) = (
+        (TX_START_OFFSET_S / tstep).round() as i32,
+        (sync_lag_override_s.unwrap_or_else(sync_lag_s) / tstep).round() as i32,
+    );
     let Some(jz) = bounded_sync_lag_steps(spec.n_time, jstrt, requested_jz) else {
         return Vec::new();
     };
@@ -883,7 +922,16 @@ fn coarse_sync_inner(
         }
     };
 
-    let mut cands: Vec<SyncCandidate> = Vec::new();
+    // Each candidate carries the DT of its integer lag, `(lag-0.5)*tstep`
+    // as `sync8.f90:123` reports it, next to the interpolated `dt_sec`.
+    // With a list of `FAITHFUL_DEDUPE_MIN_CAND` or more the dedupe below
+    // compares the integer-lag DT, as `sync8.f90:143` does (a lean list
+    // keeps comparing the interpolated one, see the const): with the interpolated one a weak candidate 3 Hz from a strong
+    // signal at a 0.04 s lag step (`dt` 0.94 vs 0.90 in `jt9`, 0.931 here)
+    // fell inside the 0.04 s window and was dropped, and with it the
+    // second and third decode (and subtraction) of that signal
+    // (`191111_110615`, 903.125 / 909.375 Hz beside 906.25 Hz; #721).
+    let mut cands: Vec<(SyncCandidate, f32)> = Vec::new();
     for fi in 0..n_freq {
         let i_carrier = ia + fi;
         let freq_hz = i_carrier as f32 * df;
@@ -892,11 +940,14 @@ fn coarse_sync_inner(
         let norm_p = red_primary[fi] / base_primary;
         if norm_p.is_finite() && norm_p >= sync_min {
             let dt_lag = lag_p as f32 + dt_quanta_at(fi, lag_p);
-            cands.push(SyncCandidate {
-                freq_hz,
-                dt_sec: (dt_lag - 0.5) * tstep,
-                score: norm_p,
-            });
+            cands.push((
+                SyncCandidate {
+                    freq_hz,
+                    dt_sec: (dt_lag - 0.5) * tstep,
+                    score: norm_p,
+                },
+                (lag_p as f32 - 0.5) * tstep,
+            ));
         }
 
         // Secondary candidate only when the full-window peak actually
@@ -907,11 +958,14 @@ fn coarse_sync_inner(
             let norm_s = red_secondary[fi] / base_secondary;
             if norm_s.is_finite() && norm_s >= sync_min {
                 let dt_lag = lag_s as f32 + dt_quanta_at(fi, lag_s);
-                cands.push(SyncCandidate {
-                    freq_hz,
-                    dt_sec: (dt_lag - 0.5) * tstep,
-                    score: norm_s,
-                });
+                cands.push((
+                    SyncCandidate {
+                        freq_hz,
+                        dt_sec: (dt_lag - 0.5) * tstep,
+                        score: norm_s,
+                    },
+                    (lag_s as f32 - 0.5) * tstep,
+                ));
             }
         }
     }
@@ -929,18 +983,22 @@ fn coarse_sync_inner(
     // (haven't fully traced; the algorithms are equivalent on every
     // small-case scenario I worked through). We accept the recall
     // delta for the ~150 us host (~150 ms Core2) saving.
-    cands.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    cands.sort_by(|a, b| b.0.score.partial_cmp(&a.0.score).unwrap());
+    let lag_dedupe = max_cand >= FAITHFUL_DEDUPE_MIN_CAND;
     let mut out: Vec<SyncCandidate> = Vec::with_capacity(max_cand);
-    for c in cands {
+    let mut out_raw: Vec<(f32, f32)> = Vec::with_capacity(max_cand);
+    for (c, raw_dt) in cands {
         if c.score < sync_min {
             break;
         }
-        let near = out
+        let key_dt = if lag_dedupe { raw_dt } else { c.dt_sec };
+        let near = out_raw
             .iter()
-            .any(|k| (c.freq_hz - k.freq_hz).abs() < 4.0 && (c.dt_sec - k.dt_sec).abs() < 0.04);
+            .any(|k| (c.freq_hz - k.0).abs() < 4.0 && (key_dt - k.1).abs() < 0.04);
         if near {
             continue;
         }
+        out_raw.push((c.freq_hz, key_dt));
         out.push(c);
         if out.len() >= max_cand {
             break;

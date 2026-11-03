@@ -476,6 +476,10 @@ fn decode_block_multipass<S: AudioSample>(
             #[cfg_attr(feature = "fixed-point", allow(unused_mut))]
             for mut r in single_results {
                 if crate::engine::pipeline::has_message77(&all, &r) {
+                    // Subtracted before it is dropped: `ft8b.f90:463-467` subtracts every
+                    // valid decode and `ft8_decode.f90` drops the duplicate afterwards
+                    // (`ldupe`); same as `decode.rs`'s SIC loop (#721).
+                    crate::ft8::subtract::subtract_signal_lpf(work.as_mut_slice(), &r);
                     continue;
                 }
                 if trace {
@@ -649,7 +653,7 @@ pub fn xsnr2_db_simple(spec: &Spectrogram, result: &DecodeResult, cell_scale: f3
     // xsig at the 79 decoded-tone (freq, m) positions.
     let itone = crate::engine::tx::message_to_tones::<crate::ft8::Ft8>(result.message77());
     let carrier_bin_f = result.freq_hz / df;
-    let t0 = (TX_START_OFFSET_S + result.dt_sec) / tstep;
+    let t0 = (TX_START_OFFSET_S + result.dt_sec - crate::ft8::refine_fine::XDT_OFFSET_S) / tstep;
     let mut xsig: f32 = 0.0;
     for k in 0..NN {
         let t = itone[k] as f32;
@@ -762,11 +766,13 @@ pub(crate) fn compute_xsig_wsjtx(
     let mut cs: Box<[[Cmplx<f32>; 8]; 79]> = alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
         .try_into()
         .unwrap();
+    // The spectra are taken at `ibest`, one sample after the reported `xdt` (`ft8b.f90`).
+    let dt_at_ibest = result.dt_sec - crate::ft8::refine_fine::XDT_OFFSET_S;
     fill_symbol_spectra(
         &mut cs,
         audio,
         result.freq_hz,
-        result.dt_sec,
+        dt_at_ibest,
         SymMask::SyncOnly,
         fft_cache,
     );
@@ -777,7 +783,7 @@ pub(crate) fn compute_xsig_wsjtx(
         &mut cs,
         audio,
         result.freq_hz,
-        result.dt_sec,
+        dt_at_ibest,
         SymMask::DataOnly,
         fft_cache,
     );
@@ -1718,40 +1724,28 @@ where
 // call sites below and at `osd_strategy::try_fallback`'s OSD gate.
 // `Normal` still returns the same 36.
 
-/// Minimum `sync_quality` (nsync, 0..=21) required to attempt the
-/// always-on blind-CQ AP pass (Step 4 "Pass 12", issue #190). Real
-/// WSJT-X's `sync8`'s own `syncmin` pre-filter keeps the candidate
-/// count that ever reaches `ft8b`'s (always-on, no `ap_hint` needed)
-/// iaptype-1 pass much smaller than mfsk-core's own coarse-sync +
-/// wide `max_cand` lets through; without an equivalent filter here,
-/// `decode_frame_subtract_staged`'s 3-checkpoint scan of
-/// `qso3_busy.wav` sends 188 candidates through this pass (measured),
-/// nearly all of them (140/188) sitting at nsync 7-9 — and **none**
-/// of them, at any nsync value observed on that file, actually
-/// produced a decode via this pass (all 22 decodes came from earlier
-/// steps). The 3 trials issue #190 traced this fix against
-/// (`ccir_moderate_m19_{01,05,14}.wav`) needed nsync 14/16/18 to
-/// succeed. Gating at 12 — comfortably below that observed floor,
-/// comfortably above the noise-dominated 7-9 cluster — cuts
-/// `qso3_busy.wav`'s Step-4 candidate count from 188 to 34 (measured)
-/// with zero recall change on any golden test, while leaving the
-/// CCIR-sweep fix fully intact.
-///
-/// **FT4/FST4 analog**: they now push the same
-/// `ApHint::new().with_call1("CQ")` hypothesis onto their own AP list
-/// unconditionally, gated on `osd_escalation_gates`' attempt threshold
-/// rather than on a constant of their own.
-///
-/// This comment used to name `msg::pipeline_ap::ap_passes`' `pass 7`
-/// (CQ + DX call) as the analog. **It is not**: pass 7 requires the
-/// correspondent's callsign, which makes it upstream's iaptype 2/3.
-/// Nothing corresponded to iaptype 1 — the pass that needs no
-/// knowledge of the station — so a blind FT4/FST4 decode ran no AP at
-/// all, and that was worth 1.1 dB of AWGN sensitivity on FT4
-/// (`docs/historical/FT4_BENCHMARK_LOG.md` §48). Review all three when
-/// adjusting any (issue #285, split from #192).
-#[cfg(feature = "fft-rustfft")]
-const BLIND_CQ_MIN_NSYNC: u32 = 12;
+// The blind-CQ AP pass (Step 4 "Pass 12", issue #190) runs on every
+// candidate that reached the ladder, as `ft8b.f90` runs iaptype 1 on every
+// candidate past its own `nsync > syncmin` bail-out. Until #721 it also
+// needed `nsync >= 12` (`BLIND_CQ_MIN_NSYNC`), a cost gate measured on
+// `qso3_busy.wav` (188 -> 34 candidates through the pass) at a time when
+// the AP OSD was a raw order-2 search that passed the CRC on 22 % of noise
+// draws (#456). That gate has no upstream counterpart and cost real
+// decodes: `jt9` makes `CQ DO6AZ JO50` (websdr_test5, nsync 9, OSD at 26
+// hard errors) and `CQ IZ8IQO JM89` (websdr_test2, nsync 14 there, 11 here
+// before the lag-grid fix) by exactly this pass. Without it, on ft8_lib's
+// 22 recordings: +1 of `jt9`'s decodes, ~+10 % decode time; the labelled
+// busy and dense corpora (7000 signals, 200 noise-only files): no new
+// false decode.
+//
+// **FT4/FST4 analog**: they push the same `ApHint::new().with_call1("CQ")`
+// hypothesis onto their own AP list unconditionally, gated on
+// `osd_escalation_gates`' attempt threshold. `msg::pipeline_ap::ap_passes`'
+// `pass 7` (CQ + DX call) is *not* the analog: it needs the correspondent's
+// callsign, which makes it upstream's iaptype 2/3; nothing else corresponds
+// to iaptype 1, so a blind FT4/FST4 decode ran no AP at all, which was worth
+// 1.1 dB of AWGN sensitivity on FT4 (`docs/historical/FT4_BENCHMARK_LOG.md`
+// §48). Review all three when adjusting any (issue #285, split from #192).
 
 /// FT8 applies its codec verdict by default — see
 /// `FrameDecodable::MESSAGE_FILTER_DEFAULT` for the measurement that
@@ -2135,13 +2129,9 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
             }
         }
         // Pass 12: blind-CQ (WSJT-X iaptype 1) — tried regardless of
-        // `ap_hint` (see the module comment above), gated on nsync to
-        // bound the cost of scanning it over every failing candidate
-        // in a busy-band multipass decode (see `BLIND_CQ_MIN_NSYNC`'s
-        // doc comment).
-        if q >= BLIND_CQ_MIN_NSYNC
-            && let Some(cq) = ApHint::blind_cq(ap_hint)
-        {
+        // `ap_hint` (see the module comment above), on every candidate
+        // that reached the ladder, as upstream does (#721).
+        if let Some(cq) = ApHint::blind_cq(ap_hint) {
             ap_passes.push((cq, 12));
         }
 
@@ -2296,7 +2286,14 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     Some(DecodeResult {
         info: bp.info.into_boxed_slice(),
         freq_hz: cand.freq_hz,
-        dt_sec: refined_dt,
+        // ft8b.f90 `xdt=(ibest-1)*dt2`: what is reported, and where the signal is subtracted from.
+        // `refined_dt` is in `ibest` convention where a fine sync ran (the host path:
+        // `fine_refine_3stage` / `fine_sync_12k`). Without one (the embedded driver, whose
+        // `fine_refine_pass1` is a no-op) it is the coarse grid DT, and the -5 ms is applied to it
+        // as well: a deliberate simplification, 5 ms against a 40 ms grid, kept so that every
+        // reader of `dt_sec` (`xsnr2_db_simple`, `compute_xsig_wsjtx`) compensates the same way.
+        // Not checked on the CoreS3 (`time_sync::record_decode_dt`); #722.
+        dt_sec: refined_dt + crate::ft8::refine_fine::XDT_OFFSET_S,
         hard_errors: bp.hard_errors,
         sync_score: cand.score,
         pass: pass_id,

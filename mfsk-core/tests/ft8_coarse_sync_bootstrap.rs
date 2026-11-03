@@ -8,7 +8,7 @@
 //! N_confirmed = 0.
 //!
 //! `engine::sync::bootstrap_dt_median(&cands, K=5)` is the published
-//! helper both consumers use. This test gates K=5 |Δ| < 100 ms vs
+//! helper both consumers use. This test gates K=5 |Δ| (`BOOTSTRAP_MAX_DELTA_SEC`) vs
 //! the confirmed-decode DT median on three reference recordings —
 //! one busy band (15 decodes) and two sparse JTDX captures (4-5
 //! decodes). The K=5 cutoff is empirical: K=10+ washes out under
@@ -70,8 +70,17 @@ fn median(mut xs: Vec<f32>) -> Option<f32> {
 /// `191111_110130.wav`, shifting the confirmed-decode median
 /// +0.910 → +0.940 s and with it |Δ| 0.090 → 0.120. The old budget
 /// only ever had 10 ms of headroom on this fixture.
+///
+/// 130 -> 180 ms with #721, when `coarse_sync`'s lag grid became
+/// `sync8.f90`'s (it had been two steps, 80 ms, off). On
+/// `191111_110130.wav` the top 5 took in a `2134.4 Hz / -0.70 s`
+/// candidate and |Δ| went 0.120 -> 0.164 s. That is one fixture's top 5;
+/// over ft8_lib's 22 recordings against `jt9`'s DT median the estimator
+/// improved: median |Δ| 0.140 -> 0.080 s, files over 130 ms 11 -> 9
+/// (the old grid's coarse DT carried an 80 ms bias). 180 ms is the new
+/// worst case here plus the same small margin.
 #[cfg(not(feature = "fixed-point"))]
-const BOOTSTRAP_MAX_DELTA_SEC: f32 = 0.130;
+const BOOTSTRAP_MAX_DELTA_SEC: f32 = 0.180;
 
 /// `fixed-point`'s `coarse_sync` quantises candidate magnitudes
 /// through `SpecCell = u16` / `CoarseAcc = i32` (see
@@ -137,7 +146,7 @@ fn bootstrap_dt_median_top5_matches_confirmed() {
 /// Pins the boundary the module doc describes: the same estimator,
 /// on the same recording, over a candidate list built at the FT8
 /// *decode* default window instead of [`BOOTSTRAP_LAG_S`], is wrong
-/// by more than a full second — so a future caller that "simplifies"
+/// by more than half a second — so a future caller that "simplifies"
 /// `check_one` back to the plain `coarse_sync` entry fails here
 /// rather than silently shipping a broken cold-start alignment.
 ///
@@ -164,8 +173,13 @@ fn bootstrap_dt_median_is_invalid_over_the_wide_decode_window() {
     let dt_wide = bootstrap_dt_median(&wide, 5).expect("wide window has candidates");
     println!("qso3_busy.wav  K5 narrow={dt_narrow:+.3}s  K5 wide={dt_wide:+.3}s");
 
+    // More than a second until #721; +0.64 s since (narrow +0.30, wide
+    // +0.94, confirmed +0.25). The strongest ghost sat at lag 63, one step
+    // past `sync8.f90`'s `JZ=62`, which the old rounded window reached; the
+    // ghosts left (+2.38 s, +2.22 s) still drag the wide median off by more
+    // than the bootstrap budget, so the boundary this pins still holds.
     assert!(
-        (dt_wide - dt_narrow).abs() > 1.0,
+        (dt_wide - dt_narrow).abs() > 0.5,
         "the wide-window top-5 DT median no longer diverges from the narrow-window one \
          (narrow={dt_narrow:+.3}s wide={dt_wide:+.3}s) — if coarse_sync's far-lag ghost \
          ranking changed, re-derive whether bootstrap_dt_median still needs a pinned window"

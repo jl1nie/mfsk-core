@@ -230,3 +230,64 @@ fn ft8_ap_noise_slots_measure() {
         );
     }
 }
+
+/// Tier B guard for the blind-CQ pass (#721): it runs on every ladder candidate now (no
+/// `nsync >= 12` cost gate, as `ft8b.f90`'s iaptype 1), roughly five times as many candidates as
+/// before reach an AP pass, so the whole pipeline must still return nothing from noise. 24 slots of
+/// white noise per condition, fixed seeds, the sweep's request `(sync_min 0.8, 50)`; `max_extra: 0`.
+/// This is a regression guard, not a rate measurement: at the measured ~1e-4 CRC-valid rate per
+/// AP candidate it cannot show a small increase; `ft8_ap_noise_slots_measure` (3 000 slots) does.
+#[test]
+fn ft8_noise_slots_decode_nothing() {
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
+    use mfsk_core::ft8::Ft8;
+    use mfsk_core::msg::ap::ApHint;
+    use mfsk_core::msg::wsjt77::unpack77;
+    const SAMPLES: usize = 180_000;
+    const PER_THREAD: usize = 2;
+    const THREADS: usize = 12;
+    for (label, hint) in [
+        ("no hint", None),
+        (
+            "CQ,JL1NIE",
+            Some(ApHint::new().with_call1("CQ").with_call2("JL1NIE")),
+        ),
+    ] {
+        let hint = &hint;
+        let msgs: Vec<String> = std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..THREADS)
+                .map(|t| {
+                    sc.spawn(move || {
+                        let mut rng = Rng(0x5EED_0721_0000_0001u64 ^ (t as u64 + 1));
+                        let mut out = Vec::new();
+                        for _ in 0..PER_THREAD {
+                            let audio: Vec<i16> = (0..SAMPLES)
+                                .map(|_| (1000.0 * rng.gauss()).clamp(-32000.0, 32000.0) as i16)
+                                .collect();
+                            let mut req = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 50);
+                            if let Some(h) = hint.as_ref() {
+                                req = req.ap_hint(h);
+                            }
+                            for d in req.decode().results {
+                                out.push(format!(
+                                    "{} (pass {}, {} hard errors)",
+                                    unpack77(d.message77()).unwrap_or_default(),
+                                    d.pass,
+                                    d.hard_errors
+                                ));
+                            }
+                        }
+                        out
+                    })
+                })
+                .collect();
+            hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+        assert!(
+            msgs.is_empty(),
+            "{label}: {} decodes from {} noise slots: {msgs:?}",
+            msgs.len(),
+            THREADS * PER_THREAD
+        );
+    }
+}

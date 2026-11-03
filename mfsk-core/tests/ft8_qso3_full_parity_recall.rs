@@ -14,8 +14,8 @@
 //!
 //! Checked through `common::golden::assert_golden` against the
 //! 20-entry known-real-signal union in `common::ft8_qso3` — see that
-//! module's doc comment for provenance. Full parity means exactly
-//! that: this config reaches **all 20/20** with zero extras, in both
+//! module's doc comment for provenance. This config reached **all 20/20**
+//! with zero extras until 2026-11-03, in both
 //! host f32 and fixed-point (verified 2026-08-14 — `DecodeDepth::FULL`'s
 //! OSD dispatch operates on `&[f32]` regardless of the embedded `LlrT`
 //! choice, so the numeric path doesn't leave anything on the table
@@ -45,14 +45,19 @@ use common::load_wav_i16;
 
 const QSO3_PATH: &str = asset_path!("qso3_busy.wav");
 
-/// Full parity: all 20 known-real signals, including `K1BZM DK8NE -10`
-/// which ship config's `DecodeDepth::EMBEDDED` structurally cannot
-/// reach (no OSD). Measured 2026-08-14: 20/20, zero extras, in both
-/// host f32 (~140ms) and fixed-point (`LlrT = Q11i16` on host, the
-/// same numeric path embedded ships, ~160ms) on an AMD Ryzen 9 9900X.
-/// For comparison, real `jt9 -8 -d3`'s own measured total file decode
-/// time is ~1.1s (`FT8_BENCHMARK.md`) — full parity here runs ~7-8x
-/// faster than jt9 itself.
+/// 19 of the 20 known-real signals, including `K1BZM DK8NE -10` which
+/// ship config's `DecodeDepth::EMBEDDED` structurally cannot reach (no
+/// OSD). Measured 2026-08-14: 20/20, zero extras, in both host f32
+/// (~140ms) and fixed-point (`LlrT = Q11i16` on host, the same numeric
+/// path embedded ships, ~160ms) on an AMD Ryzen 9 9900X. For comparison,
+/// real `jt9 -8 -d3`'s own measured total file decode time is ~1.1s
+/// (`FT8_BENCHMARK.md`) — this runs ~7-8x faster than jt9 itself.
+///
+/// 20 again (#721). The reported DT moved to WSJT-X's `xdt = (ibest-1)*dt2`
+/// (`refine_fine::XDT_OFFSET_S`) on 2026-11-03, which dropped `WA2FZW DL5AXX RR73` (nsync 9, OSD,
+/// 16 hard errors in `jt9`) for a while: the 5 ms error had been keeping it alive by accident.
+/// Subtracting a re-found message before it is dropped as a duplicate (`ft8b.f90:463-467`, as
+/// `jt9` does and as `sic_inner_passes_with_cache` now does) brings it back: 20/20, no extras.
 const MIN_GOLDEN_HITS: usize = 20;
 
 #[test]
