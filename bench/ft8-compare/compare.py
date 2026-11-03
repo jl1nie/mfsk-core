@@ -50,7 +50,7 @@ def main():
             by[r["decoder"]][r["file"]].append((norm(r["message"]), float(r["freq_hz"]), float(r["dt_s"]), int(float(r["snr_db"]))))
     files = sorted({f for d in by.values() for f in d} | set(ms["mfsk"]))
     wall = {l.split()[0]: float(l.split()[1]) for l in open(os.path.join(jdir, "jt9_wall.txt"))}
-    decs = ["jt9", "mfsk"] + (["mfsk-sic3", "mfsk-single"] if "mfsk-sic3" in by else []) + ["rf8-default", "rf8-deep"]
+    decs = ["jt9", "mfsk"] + (["mfsk-sic3", "mfsk-single"] if "mfsk-sic3" in by else []) + [d for d in ("rf8-default", "rf8-deep") if d in ms]
     tot = {d: collections.Counter() for d in decs}
     rows = []
     for f in files:

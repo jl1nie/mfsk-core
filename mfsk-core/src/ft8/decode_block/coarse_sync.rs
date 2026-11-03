@@ -191,8 +191,9 @@ pub fn coarse_sync_with_allsum_and_lag(
 ///
 /// **How much fewer, in the shipped configuration: one.** Under
 /// `fixed-point` `NSSY = NSPS / NSTEP = 2`, so block 2 runs from
-/// `jstrt + 2*72 = 150` to `162`, the real rows end at 173, and the
-/// widest lag the ±1.0 s search reaches is 13 — which leaves
+/// `jstrt + 2*72 = 150` to `162` (`nstep-half` keeps the rounded
+/// `jstrt` of 6, see `coarse_sync_inner`), the real rows end at 173, and
+/// the widest lag the ±1.0 s search reaches is 13 — which leaves
 /// `(173 - 163) / 2 + 1 = 6` of 7 symbols. That bounds every
 /// "the score is noisier" argument about this population at
 /// `sqrt(20/21)`, i.e. 2 %.
@@ -496,8 +497,33 @@ fn coarse_sync_inner(
 ) -> Vec<SyncCandidate> {
     let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
     let tstep = NSTEP as f32 / SAMPLE_RATE_HZ;
-    let jstrt = (TX_START_OFFSET_S / tstep).round() as i32;
-    let requested_jz = (sync_lag_override_s.unwrap_or_else(sync_lag_s) / tstep).round() as i32;
+    // `sync8.f90`: `jstrt=0.5/tstep` assigns a real to an integer, which
+    // truncates (12.5 -> 12 at NSTEP = NSPS/4), and its spectrum index `m`
+    // is 1-based where this one is 0-based: lag 0 is row `jstrt - 1`. This
+    // used to be `round(0.5/tstep)` = 13 on a 0-based row, which put every
+    // lag two steps (80 ms) away from upstream's on identical `sync2d`
+    // values: the reported coarse DT was 80 ms early, the `±MLAG` primary
+    // window covered a different second, and `ft8b`'s ±10-sample search
+    // started from another place (#721: `CQ IZ8IQO JM89`, jt9 lag 29, here
+    // 27). `JZ=62` is likewise 2.5/tstep truncated, not rounded to 63.
+    //
+    // That grid is upstream's at `NSTEP = NSPS/4` only. Under `nstep-half`
+    // (the fixed-point embedded build, NSTEP = NSPS/2, 80 ms steps) WSJT-X
+    // has no grid to follow, and the same formula would start lag 0 at
+    // 0.40 s, a -60 ms coarse-DT bias that the board's driver (no `ft8b`
+    // ±10-sample search) cannot absorb: `true_ship_driver_meets_fixed_golden_floor`
+    // fell 7 -> 2 of 20 on `qso3_busy.wav`. It keeps the rounded origin
+    // (0.48 s, +20 ms) it was tuned on.
+    #[cfg(not(feature = "nstep-half"))]
+    let (jstrt, requested_jz) = (
+        (TX_START_OFFSET_S / tstep) as i32 - 1,
+        (sync_lag_override_s.unwrap_or_else(sync_lag_s) / tstep) as i32,
+    );
+    #[cfg(feature = "nstep-half")]
+    let (jstrt, requested_jz) = (
+        (TX_START_OFFSET_S / tstep).round() as i32,
+        (sync_lag_override_s.unwrap_or_else(sync_lag_s) / tstep).round() as i32,
+    );
     let Some(jz) = bounded_sync_lag_steps(spec.n_time, jstrt, requested_jz) else {
         return Vec::new();
     };

@@ -1071,7 +1071,7 @@ C では、デコーダを持つ全モードが `MFSK_CAP_BUDGET` を公開し�
 
 | extra | 対象 | 効果 |
 |---|---|---|
-| `Tuning::strategy` | FT8: `Ft8Strategy::{SinglePass, SicRounds(n), SicEarly}`、FT4: `Ft4Strategy::{SinglePass, SicRounds(n)}`、FST4: `Fst4Strategy::SinglePass` | `match` で振り分け、モードごとに monomorphize される enum なので、選ばれない戦略はコストがゼロ。`SicRounds(n)` はフラットな逐次干渉除去（n は 1..=3 に丸める）で、FT8 では簡略版（ラウンド間の再減算がないので、はるかに強い信号の近くでは `SicEarly` に劣る。`qso3_busy.wav` では `SicEarly` の 21 件に対し 19 件）、`SicEarly` はチェックポイントエミュレーション（`jt9 -d2/-d3`）で、3 チェックポイント固定の構造。FT4 に `SicEarly` は無く、FST4 に減算は無い（本家に無いことをそのまま写している） |
+| `Tuning::strategy` | FT8: `Ft8Strategy::{SinglePass, SicRounds(n), SicEarly}`、FT4: `Ft4Strategy::{SinglePass, SicRounds(n)}`、FST4: `Fst4Strategy::SinglePass` | `match` で振り分け、モードごとに monomorphize される enum なので、選ばれない戦略はコストがゼロ。`SicRounds(n)` はフラットな逐次干渉除去（n は 1..=3 に丸める）で、FT8 では簡略版（ラウンド間の再減算がないので、はるかに強い信号の近くでは `SicEarly` に劣る。ft8_lib の実録音 22 本で `jt9` の 401 件中 `SicEarly` 400 件に対し 388 件、混雑した合成信号 902 個で 862 個に対し 837 個）、`SicEarly` はチェックポイントエミュレーション（`jt9 -d2/-d3`）で、3 チェックポイント固定の構造。FT4 に `SicEarly` は無く、FST4 に減算は無い（本家に無いことをそのまま写している） |
 | `a7` | FT8（`bool`、オフ） | WSJT-X の **a7** リスト復号（`ft8_a7.f90`）。このデコーダ自身の周期 *n* − 2（同じ系列の 1 周期前）の復号結果を入力にする（`SlotInput::period` が要る）。その各組が次に送りうるメッセージを、前回の周波数と DT で照合する（pass id 30） |
 | `sniper` | FT8（`Option<Sniper { search_hz }>`、250 Hz） | 下記の roofing filter モード。`rx_freq_hz` が要る |
 | `noise_blanker` | FST4（`Option<NoiseBlanker>`） | WSJT-X の **NB**（`blanker.f90`）: スロット FFT の前に最も大きいサンプルをゼロにする。`Percent(n)` は `n` % を消す（0..=25）。`Sweep { step, ftol_hz }` は 0、step、… 20 % でデコードし、0 より上のレベルは `rx_freq_hz` の `ftol_hz` 以内でだけ行う（最大 21 回のデコード）。WSJT-X の既定の NB 0 % と同じくオフ |

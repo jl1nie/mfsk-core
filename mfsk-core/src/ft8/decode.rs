@@ -1025,7 +1025,9 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
                 &fft_cache,
                 depth,
                 strictness,
-                known,
+                // Empty: a message already decoded must still come back, so
+                // that it can be subtracted below before it is dropped.
+                &[],
                 eq_mode,
                 ap_hint,
                 &mut bp_scratch,
@@ -1037,10 +1039,21 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
                 None => continue,
             };
             // Dedup against `known` (an earlier stage) and this loop's
-            // own earlier passes.
+            // own earlier passes — after subtracting it, as WSJT-X does:
+            // `ft8b.f90:463-467` subtracts every valid decode, and only
+            // then does `ft8_decode.f90` drop a text it already has
+            // (`ldupe`). The same text is two things there: a signal left
+            // in the residual by an earlier, shallower subtraction (a later
+            // pass re-finds it; this second subtraction is where WSJT-X's
+            // depth comes from), or the same transmission at another
+            // frequency (splatter, harmonics). Not subtracting either kept
+            // both in the residual, over the weaker signals beside them
+            // (#721: `K3ZK IK2ZDT RR73` at +2 dB, 10 Hz from a copy of
+            // `K4VBM HA8EK RR73`, never reached the decoder).
             if crate::engine::pipeline::has_message77(known, &r)
                 || crate::engine::pipeline::has_message77(&all_results, &r)
             {
+                subtract_signal_lpf(residual, &r);
                 continue;
             }
             // `xsig` for the xsnr2 gate below — must run *before* the

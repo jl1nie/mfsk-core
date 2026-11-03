@@ -7,10 +7,13 @@
 //!    set the pre-#218 `.flat()` did. Verified directly against a clean
 //!    `main` worktree checkout at the commit this branch forked from
 //!    (`1ef7ecf`) before this golden was written — not just asserted.
-//!    That set was 20 messages. It is 19 since 2026-11-03: `WA2FZW DL5AXX RR73`
-//!    went when decodes began to be subtracted at WSJT-X's `xdt` instead of 5 ms
-//!    late (see `SIC_ROUNDS_3_GOLDEN`). `.sic_rounds(n)` is the simplified, flat
-//!    strategy; `.sic_early()` is the faithful one and decodes all 21 of `jt9`'s.
+//!    That set was 20 messages. It was 19 for one commit on 2026-11-03:
+//!    `WA2FZW DL5AXX RR73` went when decodes began to be subtracted at WSJT-X's
+//!    `xdt` instead of 5 ms late, and came back with #721 (a re-decoded message
+//!    is subtracted again before it is dropped as a duplicate, as `ft8b.f90`
+//!    does, and the coarse-sync lag grid is `sync8.f90`'s). `.sic_rounds(n)` is
+//!    the simplified, flat strategy; `.sic_early()` is the faithful one and
+//!    decodes all 21 of `jt9`'s.
 //! 2. **`sic_rounds_recall_is_monotonic`** — fewer rounds must never surface
 //!    a decode a higher round count misses: `sic_rounds(1)`'s message set
 //!    is a subset of `sic_rounds(2)`'s, which is a subset of
@@ -59,6 +62,7 @@ const SIC_ROUNDS_3_GOLDEN: &[&str] = &[
     "W0RSJ EA3BMU RR73",
     "W1DIG SV9CVY -14",
     "W1FC F5BZB -08",
+    "WA2FZW DL5AXX RR73",
     "WM3PEN EA6VQ -09",
     "XE2X HA2NP RR73",
 ];

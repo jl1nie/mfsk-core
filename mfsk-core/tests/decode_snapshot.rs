@@ -43,6 +43,14 @@
 //! `iq_direct_ft8` and `iq_pfb_ft8` move the same way; the FT4, FST4, JT65, JT9, Q65 and WSPR
 //! fixtures did not.
 //!
+//! A third (#721): a re-decoded message is subtracted again before it is dropped as a duplicate
+//! (`ft8b.f90`), `coarse_sync`'s lag grid is `sync8.f90`'s (two steps, 80 ms, off before), and the
+//! blind-CQ AP pass has no `nsync >= 12` gate. All 21 FT8 fixtures and the two IQ-FT8 ones move in
+//! `sync_score`, `snr`, `hard_errors` and
+//! `pass`. Messages: `WA2FZW DL5AXX RR73` returns to `ft8_sic_rounds_3` and `ft8_eme_delay`, which
+//! also gains `K1JT HA5WA 73`; no message left any fixture. JT65's two fixtures differ here only in
+//! the last float bits (another machine wrote them) and were not rewritten.
+//!
 //! Row format, one per line, sorted. Frame family (FT8/FT4/FST4): text,
 //! then `freq_hz`, `dt_sec`, `snr_db`, `sync_score` as f32 bit patterns in
 //! hex, then `hard_errors` and `pass`. Other families and the IQ path: the

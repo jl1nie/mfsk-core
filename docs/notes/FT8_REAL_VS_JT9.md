@@ -10,6 +10,8 @@ The evaluation sheet's "the same sensitivity as `jt9`" rests on one injected sig
 |---|---:|---:|
 | `mfsk-core` before | 383 (95.5 %) | 13 |
 | `mfsk-core` with `LlrTail` (this change) | 386 (96.3 %) | 11 |
+| + DT at `xdt` (cause 2) | 390 (97.3 %) | 8 |
+| + causes 3-6 (#721) | **400 (99.8 %)** | 8 |
 | `rust-ft8` 0.2.1, passes 2 / passes 3 + deep | 303 (75.6 %) / 326 (81.3 %) | 11 / 19 |
 
 `rust-ft8`'s own 88.95 % is against ft8_lib's text files; on those `jt9` itself gets 71 % (they hold signals `jt9` never makes), so the text
@@ -45,13 +47,37 @@ with the DT-refining variant brings it to `jt9`'s level (860 / 902, 21 on `qso3_
 not done: `sic_rounds` stays the cheap, simplified strategy, and `decode_block` has no budget for a second subtraction. Their pins moved:
 `sic_rounds(3)` golden 20 -> 19 messages, the `decode_block` full-parity floor 20 -> 19.
 
-## Still different (after `LlrTail`: 15 `jt9`-only decodes; with the DT change 11)
+## Causes 3-6, fixed (#721): what the 11 remaining `jt9`-only decodes were
 
-policy rejects a decoded `<...> DA0FONTANE` (empty hash table): 1; no candidate: 1; sync gate: 2-3; BP/OSD finds no codeword on the same
-candidate, 7-9 (LLRs equal in 2, differing even in `llra`/`llrd` in 8: the residual after subtraction). Candidate lists agree 88.8 % on the
-first search (same scores, so the coarse sync is the same measure) and 61-69 % after subtractions.
+Found stage by stage with the `JT9_TRACE` build and `bench/ft8-compare/ft8-trace-probe.patch`, each checked on the
+labelled busy and dense corpora (`scripts/gen_ft8_{busy,dense}_wavs.py`, v3.2.0-rc1 `ft8sim`; 7000 signals, 200
+noise-only files): recall equal or higher in every set, no false decode added, the one noise-only decode (also
+`jt9`'s) unchanged.
 
-## The outputs `jt9` lacks (with the DT change: 8)
+| # | cause | upstream | recovered | effect on 22 files |
+|---|---|---|---|---|
+| 3 | a re-decoded message was dropped as a duplicate **unsubtracted**: the same signal re-found in a later pass (its second subtraction is where `jt9`'s depth comes from), or a splattering signal's copies (`K4VBM HA8EK RR73` decoded at six frequencies, 2079-2480 Hz, one of them 10 Hz from `K3ZK IK2ZDT RR73` at +2 dB) | `ft8b.f90:463-467` subtracts every valid decode; `ft8_decode.f90` drops the duplicate afterwards | K3ZK, DL8FBD, K6DRY, both OE4ATS, UB3AQS | 390 -> 396, ~+6 % time |
+| 4 | the coarse-sync lag grid was two steps (80 ms) off on identical `sync2d` values (`jstrt` rounded 12.5 -> 13 on a 0-based row; window +-63) | `sync8.f90`: `jstrt=0.5/tstep` truncates to 12, 1-based `m`; `JZ=62` | PY1NMG, IZ8IQO (jt9 lag 29, here 27), IT9EJP; UB3AQS lost again (below) | +2, ~+3 % |
+| 5 | the blind-CQ AP pass needed `nsync >= 12`, a cost gate of this crate's | iaptype 1 on every candidate past `nsync > syncmin` | CQ DO6AZ (nsync 9, OSD 26 hard errors) | +1, ~+10 % |
+| 6 | `<...> DA0FONTANE` decoded by BP and refused: not the empty hash table (the issue's guess), but the callsign grammar's 7-character limit on the `i3=4` call | `ft8b.f90` keeps what `unpack77` renders; `c58` holds 11 characters | DA0FONTANE | +1; random-payload survival +1.3 % (`i3=4` 1.2 -> 4.5 %) |
+
+The one left, `CQ UB3AQS KO85` (`191111_110615`, -12 dB, 1047 Hz), sits 9 Hz from one of seven copies of `PA3EPP SP8NFO KN09`
+(coarse sync 3330 at 906 Hz). `jt9` subtracts the 906 Hz signal three times in its first pass, this crate twice (the
+order of a crowded pass decides which candidate comes back), and after the first pass `jt9`'s `sync2d` peak at UB3AQS is
+11.3 against 7.5 here. Cause 3 recovered it and cause 4 lost it again by changing that order; not a separate defect.
+
+Strategies (#722): `sic_rounds(3)` 381 -> 388 of 401, `qso3_busy.wav` back to 20 messages (`sic_early` 21), 902 crowded
+synthetic signals 828 -> 837 (`sic_early` 862, `jt9` 860), ~0.5x `sic_early`'s time. The embedded `decode_block` still drops
+a duplicate unsubtracted: its budget has no room for another 180 000-point FFT pair per duplicate.
+
+Side effect on the cold-start DT bootstrap (`engine::sync::bootstrap_dt_median`, K = 5, +-1.0 s list): its coarse DT moved
++80 ms with cause 4. Against `jt9`'s DT median over the 22 recordings: median error 0.140 -> 0.080 s, files over 130 ms
+11 -> 9; on the fixture `191111_110130.wav` 0.120 -> 0.164 s (`ft8_coarse_sync_bootstrap`'s budget 130 -> 180 ms;
+fixed-point 0.128 s, under its unchanged 130 ms). Not yet checked on the CoreS3.
+
+Speed, single thread, this box (Ryzen 7 3700X, not the 9900X of `BENCHMARKS.md`): 1.07 -> 1.25 s per file; `jt9` 3.2 s.
+
+## The outputs `jt9` lacks (with the DT change: 8; after #721 also 8)
 
 No ground truth, so by independent evidence: both callsigns (or the whole text) decoded elsewhere in the corpus by `jt9`; the same
 callsigns in an ordered QSO sequence; the reference text; labelled-corpus odds (`bench/ft8-compare/phantom_stats.py` on `ft8_busy_sweep`,
@@ -60,6 +86,13 @@ copies with 0.5 sigma extra noise (known phantoms 0-2/16; confirmed weak signals
 (two in the reference text); `SP7NHS YC2FCE -15` is undecided (no callsign seen elsewhere, 6/16). The phantoms seen along the way
 (`35J89OLNIMBS5`, `CQ F5ADE JN06`, `0K8SEL/P BB6PSE R CQ78`, `GJ0KYZ VK2LAW QF56`) are unattested and transient: present in one
 configuration only. A "low nsync with high SNR" rule does not separate them (44 confirmed decodes have nsync <= 9 and median SNR -1 dB).
+
+After #721 (8, a different set): gone, all at the edge of `jt9`'s own reach, `GM0LIR UA9SIX -09` (DT +2.5, past the
++-62-lag window now that it is `sync8.f90`'s), `R2ATW IZ0VLL -08`, `EA8BEV LU3DW RR73`; new, each attested:
+`CU2DX R2DQA KO96` (CU2DX on 1011 Hz, DT 0.2 in other recordings; KO96 is an R2 grid), `EA8PP JH0INP PM96` (`jt9`'s exact
+text in another recording, same 940 Hz / DT -0.6), `DK5OK DB4BU R-04` (the QSO `jt9` decodes next: `DB4BU DK5OK RR73`,
+`DK5OK DB4BU 73`, 1822 Hz), `EA8PP JA6VQA -16` (OSD at 21 hard errors; `JA6VQA EA8PP R-24` / `73` elsewhere). Kept:
+`SP7NHS YC2FCE -15` (still undecided), `CQ EA5OL IM99`, `UA9SIX GM0LIR R-07`, `CQ CU2DX HM77`.
 
 ## Limits
 

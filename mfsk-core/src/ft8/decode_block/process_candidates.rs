@@ -1720,40 +1720,28 @@ where
 // call sites below and at `osd_strategy::try_fallback`'s OSD gate.
 // `Normal` still returns the same 36.
 
-/// Minimum `sync_quality` (nsync, 0..=21) required to attempt the
-/// always-on blind-CQ AP pass (Step 4 "Pass 12", issue #190). Real
-/// WSJT-X's `sync8`'s own `syncmin` pre-filter keeps the candidate
-/// count that ever reaches `ft8b`'s (always-on, no `ap_hint` needed)
-/// iaptype-1 pass much smaller than mfsk-core's own coarse-sync +
-/// wide `max_cand` lets through; without an equivalent filter here,
-/// `decode_frame_subtract_staged`'s 3-checkpoint scan of
-/// `qso3_busy.wav` sends 188 candidates through this pass (measured),
-/// nearly all of them (140/188) sitting at nsync 7-9 — and **none**
-/// of them, at any nsync value observed on that file, actually
-/// produced a decode via this pass (all 22 decodes came from earlier
-/// steps). The 3 trials issue #190 traced this fix against
-/// (`ccir_moderate_m19_{01,05,14}.wav`) needed nsync 14/16/18 to
-/// succeed. Gating at 12 — comfortably below that observed floor,
-/// comfortably above the noise-dominated 7-9 cluster — cuts
-/// `qso3_busy.wav`'s Step-4 candidate count from 188 to 34 (measured)
-/// with zero recall change on any golden test, while leaving the
-/// CCIR-sweep fix fully intact.
-///
-/// **FT4/FST4 analog**: they now push the same
-/// `ApHint::new().with_call1("CQ")` hypothesis onto their own AP list
-/// unconditionally, gated on `osd_escalation_gates`' attempt threshold
-/// rather than on a constant of their own.
-///
-/// This comment used to name `msg::pipeline_ap::ap_passes`' `pass 7`
-/// (CQ + DX call) as the analog. **It is not**: pass 7 requires the
-/// correspondent's callsign, which makes it upstream's iaptype 2/3.
-/// Nothing corresponded to iaptype 1 — the pass that needs no
-/// knowledge of the station — so a blind FT4/FST4 decode ran no AP at
-/// all, and that was worth 1.1 dB of AWGN sensitivity on FT4
-/// (`docs/historical/FT4_BENCHMARK_LOG.md` §48). Review all three when
-/// adjusting any (issue #285, split from #192).
-#[cfg(feature = "fft-rustfft")]
-const BLIND_CQ_MIN_NSYNC: u32 = 12;
+// The blind-CQ AP pass (Step 4 "Pass 12", issue #190) runs on every
+// candidate that reached the ladder, as `ft8b.f90` runs iaptype 1 on every
+// candidate past its own `nsync > syncmin` bail-out. Until #721 it also
+// needed `nsync >= 12` (`BLIND_CQ_MIN_NSYNC`), a cost gate measured on
+// `qso3_busy.wav` (188 -> 34 candidates through the pass) at a time when
+// the AP OSD was a raw order-2 search that passed the CRC on 22 % of noise
+// draws (#456). That gate has no upstream counterpart and cost real
+// decodes: `jt9` makes `CQ DO6AZ JO50` (websdr_test5, nsync 9, OSD at 26
+// hard errors) and `CQ IZ8IQO JM89` (websdr_test2, nsync 14 there, 11 here
+// before the lag-grid fix) by exactly this pass. Without it, on ft8_lib's
+// 22 recordings: +1 of `jt9`'s decodes, ~+10 % decode time; the labelled
+// busy and dense corpora (7000 signals, 200 noise-only files): no new
+// false decode.
+//
+// **FT4/FST4 analog**: they push the same `ApHint::new().with_call1("CQ")`
+// hypothesis onto their own AP list unconditionally, gated on
+// `osd_escalation_gates`' attempt threshold. `msg::pipeline_ap::ap_passes`'
+// `pass 7` (CQ + DX call) is *not* the analog: it needs the correspondent's
+// callsign, which makes it upstream's iaptype 2/3; nothing else corresponds
+// to iaptype 1, so a blind FT4/FST4 decode ran no AP at all, which was worth
+// 1.1 dB of AWGN sensitivity on FT4 (`docs/historical/FT4_BENCHMARK_LOG.md`
+// §48). Review all three when adjusting any (issue #285, split from #192).
 
 /// FT8 applies its codec verdict by default — see
 /// `FrameDecodable::MESSAGE_FILTER_DEFAULT` for the measurement that
@@ -2137,13 +2125,9 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
             }
         }
         // Pass 12: blind-CQ (WSJT-X iaptype 1) — tried regardless of
-        // `ap_hint` (see the module comment above), gated on nsync to
-        // bound the cost of scanning it over every failing candidate
-        // in a busy-band multipass decode (see `BLIND_CQ_MIN_NSYNC`'s
-        // doc comment).
-        if q >= BLIND_CQ_MIN_NSYNC
-            && let Some(cq) = ApHint::blind_cq(ap_hint)
-        {
+        // `ap_hint` (see the module comment above), on every candidate
+        // that reached the ladder, as upstream does (#721).
+        if let Some(cq) = ApHint::blind_cq(ap_hint) {
             ap_passes.push((cq, 12));
         }
 

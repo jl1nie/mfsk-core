@@ -36,7 +36,10 @@ the failure mode cannot come back silently.
 | `jtty/sim/*.wav` | `sjtty` (see `jtty/README.md`) | JTTY |
 
 FT8 and JT9 are not here — their recordings (`qso*.wav`,
-`130418_1742.wav`, `191111_*.wav`) already sit in the parent directory.
+`130418_1742.wav`, `191111_*.wav`, `websdr_test{2,5,11}.wav`) already sit
+in the parent directory. `191111_*.wav` and `websdr_test*.wav` are from
+ft8_lib's `test/wav` (MIT); their reference is `jt9 -8 -d 3` v3.2.0-rc1,
+held in `mfsk-core/tests/ft8_real_recordings_vs_jt9.rs`.
 
 **JT65 is the exception to "real recording".** WSJT-X ships JT65
 samples only as JT65**B**, and this crate implements JT65**A** (tone

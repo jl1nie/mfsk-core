@@ -820,6 +820,21 @@ impl Wsjt77Fields {
             Self::EuVhfContest { call1, call2, .. } => {
                 call1 != UNRESOLVED_HASH || call2 != UNRESOLVED_HASH
             }
+            // The plain call of `i3=4` is `c58`: up to 11 characters, the
+            // room WSJT-X made for callsigns the 28-bit form cannot hold —
+            // special-event calls with long suffixes among them. `ft8b.f90`
+            // accepts whatever `unpack77` renders there; this keeps the
+            // structure check (prefix, digit, letters) and lifts only the
+            // 7-character / 4-letter-suffix limits of an ordinary call.
+            // #721: `jt9` decodes `<...> DA0FONTANE` (BP, 15 hard errors) in
+            // ft8_lib's `191111_110645.wav`; it was refused here for length.
+            // Cost, `phantom_survival_rates` (2 M uniform payloads): `i3=4`
+            // survivors 2 877 -> 11 153 of 250 135 (1.2 -> 4.5 %; WSJT-X keeps
+            // all), every type together 644 220 -> 652 496 (+1.3 %).
+            Self::Nonstandard { call1, call2, .. } => [Some(call1.as_str()), call2.as_deref()]
+                .into_iter()
+                .flatten()
+                .all(|c| is_plausible_call(c) || is_c58_special_call(c)),
             _ => self.callsigns().all(is_plausible_call),
         }
     }
@@ -1416,6 +1431,26 @@ fn is_base_callsign(s: &str) -> bool {
 
     // Suffix: 1-4 uppercase letters
     suffix.len() <= 4 && suffix.iter().all(|c| c.is_ascii_uppercase())
+}
+
+/// [`is_base_callsign`]'s shape — a 1-3 character prefix holding a letter,
+/// one digit, a letters-only suffix — without its length limits, up to the
+/// 11 characters of the `i3=4` `c58` field (`packjt77.f90` `pack58`). Only
+/// [`Wsjt77Fields::is_plausible`]'s `Nonstandard` arm uses it.
+fn is_c58_special_call(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() < 3 || b.len() > 11 {
+        return false;
+    }
+    let Some(split) = b.iter().rposition(|c| c.is_ascii_digit()) else {
+        return false;
+    };
+    let (prefix, suffix) = (&b[..split], &b[split + 1..]);
+    (1..=3).contains(&prefix.len())
+        && prefix.iter().all(|c| c.is_ascii_alphanumeric())
+        && prefix.iter().any(|c| c.is_ascii_alphabetic())
+        && !suffix.is_empty()
+        && suffix.iter().all(|c| c.is_ascii_uppercase())
 }
 
 /// Check whether a string is a valid FT8 callsign (standard or non-standard).
