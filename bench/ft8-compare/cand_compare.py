@@ -2,26 +2,26 @@
 """Compare the coarse candidate lists of jt9's sync8 and mfsk-core's coarse_sync on IDENTICAL audio:
 the first search of the first stage (jt9 nz41 pass 1, ours A round 0; nothing subtracted yet).
 
-usage: cand_compare.py <dir> [stem ...]    (<dir>/trace2 = jt9, <dir>/rtrace4 = ours)
+usage: cand_compare.py <dir> [stem ...]    (<dir>/trace = jt9, <dir>/rtrace = ours)
 A pair = coarse f within FW Hz and dt within DW s. Reports counts, overlap, and what the unmatched
 candidates on each side look like (rank in its own list, score).
 """
 import sys, os, re, glob, statistics as st
 FW, DW = 1.6, 0.11
 d = sys.argv[1]
-stems = sys.argv[2:] or [os.path.basename(p)[:-6] for p in sorted(glob.glob(f"{d}/trace2/*.trace"))]
+stems = sys.argv[2:] or [os.path.basename(p)[:-6] for p in sorted(glob.glob(f"{d}/trace/*.trace"))]
 T = dict(nj=0, no=0, both=0, jonly=0, oonly=0)
 ranks_j, ranks_o, scores_j, scores_o, ratio = [], [], [], [], []
 per = []
 for n in stems:
     j, nz, op = [], 0, 0
-    for l in open(f"{d}/trace2/{n}.trace"):
+    for l in open(f"{d}/trace/{n}.trace"):
         t = l.split()
         if not t: continue
         if t[0] == "PASS": nz, op = int(t[1]), int(t[2])
         elif t[0] == "CAND" and nz == 41 and op == 1: j.append((float(t[5]), float(t[6]), float(t[4])))   # f, dt, sync
     o, rnd = [], None
-    for l in open(f"{d}/rtrace4/{n}.rtrace"):
+    for l in open(f"{d}/rtrace/{n}.rtrace"):
         if l.startswith("CAND A round=0 "):
             kv = dict(re.findall(r"(\w+)=(\S+)", l)); o.append((float(kv["f"]), float(kv["dt"]), float(kv["score"])))
     # one-to-one greedy match on distance

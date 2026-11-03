@@ -7,7 +7,7 @@ index, summed into groups, and the bit indices that carry most of the sign disag
 import sys, os, glob, collections
 d = sys.argv[1]
 mean_abs = {k: [0.0] * 174 for k in range(5)}; flips = {k: collections.Counter() for k in range(5)}; n = 0
-for tp in sorted(glob.glob(f"{d}/trace2/*.trace")):
+for tp in sorted(glob.glob(f"{d}/trace/*.trace")):
     stem = os.path.basename(tp)[:-6]; jt = []; cur = None
     for l in open(tp):
         t = l.split()
@@ -18,7 +18,7 @@ for tp in sorted(glob.glob(f"{d}/trace2/*.trace")):
             cur["sets"].append(v)
             if k == 5: jt.append(cur)
     ours = []; cur = None; rnd = 0
-    for l in open(f"{d}/rtrace2/{stem}.rtrace"):
+    for l in open(f"{d}/rtrace/{stem}.rtrace"):
         if l.startswith("CAND "): rnd = int(l.split("round=")[1].split()[0])
         elif l.startswith("LLR "):
             h, _, vals = l.partition(" set="); kv = dict(x.split("=") for x in h.split()[2:]); st = h.split()[1]

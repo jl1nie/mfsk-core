@@ -1,7 +1,7 @@
 #!/usr/bin/env python3 -I
 """Why does mfsk-core print a message that jt9 does not? One row per such message.
 
-usage: extras_trace.py <dir> [stem ...]   (<dir>/rtrace4 = our trace with the fix; trace2 = jt9's)
+usage: extras_trace.py <dir> [stem ...]   (<dir>/rtrace = our trace with the fix; trace = jt9's)
 For each message in our final output that jt9's output lacks: where we decoded it (stage, search
 round, coarse candidate, refined position, nsync, rung, hard errors) and what jt9 did around the same
 spot in the same stage (nz41 = our A, nz50 = our C): its candidates within 2.5 Hz and 0.6 s, by pass.
@@ -11,16 +11,16 @@ FW, DW = 2.5, 0.6
 norm = lambda m: re.sub(r"\s+", " ", m.strip()).upper()
 JL = re.compile(r"^\d{6}\s+(-?\d+)\s+(-?[\d.]+)\s+(\d+)\s+~\s+(.*?)\s*$"); TAIL = re.compile(r"(\s+\?)?(\s+a\d+)?\s*$")
 d = sys.argv[1]
-stems = sys.argv[2:] or [os.path.basename(p)[:-4] for p in sorted(glob.glob(f"{d}/rtrace4/*.csv"))]
+stems = sys.argv[2:] or [os.path.basename(p)[:-4] for p in sorted(glob.glob(f"{d}/rtrace/*.csv"))]
 tot = ncand_j = ncand_o = 0
 for n in stems:
     jt = {norm(TAIL.sub("", m[4])) for l in open(f"{d}/jt9_{n}.out", errors="replace") if (m := JL.match(l))}
-    ours = [norm(r["message"]) for r in csv.DictReader(open(f"{d}/rtrace4/{n}.csv")) if r["decoder"] == "mfsk" and r["message"]]
+    ours = [norm(r["message"]) for r in csv.DictReader(open(f"{d}/rtrace/{n}.csv")) if r["decoder"] == "mfsk" and r["message"]]
     extras = [m for m in ours if m not in jt]
     if not extras: continue
     # our DEC events with the coarse candidate that produced them
     ev, cur, rnd = [], None, 0
-    for l in open(f"{d}/rtrace4/{n}.rtrace"):
+    for l in open(f"{d}/rtrace/{n}.rtrace"):
         h, _, r = l.rstrip("\n").partition(" ")
         if h == "CAND":
             kv = dict(re.findall(r"(\w+)=(\S+)", r)); cur = dict(stage=r.split()[0], rnd=int(kv["round"]), f=float(kv["f"]), dt=float(kv["dt"]), score=float(kv["score"]), acc=None)
@@ -30,7 +30,7 @@ for n in stems:
             ev.append(dict(cur, msg=norm(msg), nsync=int(kv["nsync"]), hard=int(kv["hard"]), method=kv["method"], pid=kv["pass"], rf=float(kv["f"]), rdt=float(kv["dt"])))
     # jt9 candidates by (nz, pass) with outcome
     jc, nz, op, cand = [], 0, 0, None
-    for l in open(f"{d}/trace2/{n}.trace"):
+    for l in open(f"{d}/trace/{n}.trace"):
         t = l.split()
         if not t: continue
         if t[0] == "PASS": nz, op = int(t[1]), int(t[2])

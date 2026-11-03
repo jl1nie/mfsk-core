@@ -1,0 +1,267 @@
+diff --git a/mfsk-core/src/ft8/decode.rs b/mfsk-core/src/ft8/decode.rs
+index 18094e7c..9b2977b7 100644
+--- a/mfsk-core/src/ft8/decode.rs
++++ b/mfsk-core/src/ft8/decode.rs
+@@ -105,6 +105,29 @@ pub use crate::engine::frame::DecodeResult;
+ // existing `mfsk_core::ft8::decode::ApHint` import paths keep working.
+ pub use crate::msg::ap::ApHint;
+ 
++/// PROBE (not for commit): write-only trace of the FT8 decode stages, the counterpart of
++/// `JT9_TRACE` in scripts/build_jt9_upstream.sh. Off unless `MFSK_FT8_TRACE=<file>` is set.
++#[cfg(feature = "std")]
++pub(crate) mod ptrace {
++    use std::io::Write;
++    use std::sync::{Mutex, OnceLock};
++    static SINK: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
++    thread_local! { static STAGE: core::cell::Cell<&'static str> = const { core::cell::Cell::new("-") }; }
++    fn sink() -> &'static Option<Mutex<std::fs::File>> {
++        SINK.get_or_init(|| {
++            std::env::var("MFSK_FT8_TRACE").ok().and_then(|p| {
++                std::fs::OpenOptions::new().create(true).append(true).open(p).ok().map(Mutex::new)
++            })
++        })
++    }
++    pub fn on() -> bool { sink().is_some() }
++    pub fn set_stage(s: &'static str) { STAGE.with(|c| c.set(s)); }
++    pub fn stage() -> &'static str { STAGE.with(|c| c.get()) }
++    pub fn line(s: String) {
++        if let Some(m) = sink() { let _ = writeln!(m.lock().unwrap(), "{s}"); }
++    }
++}
++
+ // ────────────────────────────────────────────────────────────────────────────
+ // Per-candidate decode helper (used by both inner and sniper paths)
+ 
+@@ -187,10 +210,24 @@ fn process_candidate_with_scratch<Pol: MessagePolicy>(
+     qso: crate::engine::pipeline::QsoFreq,
+ ) -> Option<DecodeResult> {
+     let state = triage_candidate(cand, audio, fft_cache, pass)?;
+-    run_candidate_ladder(
++    #[cfg(feature = "std")]
++    let probe = ptrace::on().then(|| (state.refined.freq_hz, state.refined.dt_sec, state.nsync));
++    let res = run_candidate_ladder(
+         state, audio, fft_cache, depth, strictness, known, eq_mode, ap_hint, bp_scratch, policy,
+         pass, qso,
+-    )
++    );
++    #[cfg(feature = "std")]
++    if let Some((f, dt, nsync)) = probe {
++        match &res {
++            Some(r) => ptrace::line(format!(
++                "DEC {} f={:.1} dt={:.2} nsync={} hard={} method={:?} pass={} msg={}",
++                ptrace::stage(), f, dt, nsync, r.hard_errors, r.method, r.pass,
++                crate::msg::wsjt77::unpack77(r.message77()).unwrap_or_default()
++            )),
++            None => ptrace::line(format!("FAIL {} f={:.1} dt={:.2} nsync={}", ptrace::stage(), f, dt, nsync)),
++        }
++    }
++    res
+ }
+ 
+ /// What [`triage_candidate`] hands [`run_candidate_ladder`].
+@@ -303,6 +340,10 @@ fn triage_candidate(
+         Some(fft_cache),
+     );
+     let nsync = sync_quality(&cs_raw);
++    #[cfg(feature = "std")]
++    if nsync <= pass.nsync_floor() && ptrace::on() {
++        ptrace::line(format!("GATE {} f={:.1} dt={:.2} nsync={} floor={}", ptrace::stage(), refined.freq_hz, refined.dt_sec, nsync, pass.nsync_floor()));
++    }
+     if nsync <= pass.nsync_floor() {
+         #[cfg(feature = "std")]
+         crate::ft8::decode_block::TRACE_NSYNC_FAIL
+@@ -978,6 +1019,10 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
+             crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand);
+         promote_near_rx(&mut candidates, qso_freqs.rx);
+         budget.report.note_candidates(candidates.len());
++        #[cfg(feature = "std")]
++        if ptrace::on() {
++            ptrace::line(format!("ROUND {} round={} ncand={} known={}", ptrace::stage(), ipass, candidates.len(), known.len() + all_results.len()));
++        }
+         if candidates.is_empty() {
+             continue;
+         }
+@@ -1015,6 +1060,10 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
+                 break;
+             }
+             budget.report.stages_run += 1;
++            #[cfg(feature = "std")]
++            if ptrace::on() {
++                ptrace::line(format!("CAND {} round={} i={} f={:.1} dt={:.2} score={:.2}", ptrace::stage(), ipass, icand, cand.freq_hz, cand.dt_sec, cand.score));
++            }
+             #[cfg_attr(
+                 not(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point"))),
+                 allow(unused_mut)
+@@ -1041,6 +1090,8 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
+             if crate::engine::pipeline::has_message77(known, &r)
+                 || crate::engine::pipeline::has_message77(&all_results, &r)
+             {
++                #[cfg(feature = "std")]
++                if ptrace::on() { ptrace::line(format!("DUPE {} f={:.1}", ptrace::stage(), r.freq_hz)); }
+                 continue;
+             }
+             // `xsig` for the xsnr2 gate below — must run *before* the
+@@ -1083,6 +1134,8 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
+             // the FT4 busy-band-fading synthetic 10/10) passes
+             // identically or better with the single-shot call.
+             subtract_signal_lpf(residual, &r);
++            #[cfg(feature = "std")]
++            if ptrace::on() { ptrace::line(format!("SUB {} f={:.1} dt={:.2}", ptrace::stage(), r.freq_hz, r.dt_sec)); }
+             // WSJT-X xsnr2 validity gate (issue #253 SNR-calibration
+             // follow-up, 2026-08-10) — see `apply_wsjtx_xsnr2`'s doc
+             // comment. Applied *before* `on_result` fires, matching the
+@@ -1091,11 +1144,21 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
+             #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
+             if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig_wsjtx, nsync_wsjtx, &sbase)
+             {
++                #[cfg(feature = "std")]
++                if ptrace::on() { ptrace::line(format!("XSNRDROP {} f={:.1}", ptrace::stage(), r.freq_hz)); }
+                 continue;
+             }
+             let r = deliver_result(r, eme_delay, on_result);
+             all_results.push(r);
+         }
++        // PROBE: the residual after this round's subtractions, for comparison with jt9's `dd`
++        // (JT9_TRACE writes resid_<nzhsym>_<ipass>.bin, float32).
++        #[cfg(feature = "std")]
++        if let Some(dir) = std::env::var_os("MFSK_FT8_DUMP_RESID") {
++            let name = format!("resid_{}_{}.bin", ptrace::stage(), ipass);
++            let bytes: alloc::vec::Vec<u8> = residual.iter().flat_map(|v| v.to_le_bytes()).collect();
++            let _ = std::fs::write(std::path::Path::new(&dir).join(name), bytes);
++        }
+     }
+ 
+     // Pass 0 may have had no candidates at all (empty coarse-sync), in
+@@ -1437,6 +1500,8 @@ fn staged_steps<Pol: MessagePolicy>(
+     if st.early.is_none() {
+         let mut residual_a = vec![0i16; audio.len()];
+         residual_a[..A_SAMPLES].copy_from_slice(&audio[..A_SAMPLES]);
++        #[cfg(feature = "std")]
++        ptrace::set_stage("A");
+         let early_results = sic_inner_passes(
+             &mut residual_a,
+             freq_min,
+@@ -1552,6 +1617,8 @@ fn staged_steps<Pol: MessagePolicy>(
+                     break;
+                 }
+                 subtract_signal_lpf_refine_dt(&mut buf_b, r);
++                #[cfg(feature = "std")]
++                if ptrace::on() { ptrace::line(format!("SUBB f={:.1} dt={:.2}", r.freq_hz, r.dt_sec)); }
+                 budget.report.rows_subtracted += 1;
+             } else {
+                 deferred.push(r.clone());
+@@ -1588,8 +1655,12 @@ fn staged_steps<Pol: MessagePolicy>(
+             break;
+         }
+         subtract_signal_lpf_refine_dt(&mut buf_c, r);
++        #[cfg(feature = "std")]
++        if ptrace::on() { ptrace::line(format!("SUBC f={:.1} dt={:.2}", r.freq_hz, r.dt_sec)); }
+         budget.report.rows_subtracted += 1;
+     }
++    #[cfg(feature = "std")]
++    ptrace::set_stage("C");
+ 
+     // Combine `outer_known` (the caller's earlier-phase results) with
+     // this call's own `early_results` (checkpoint A) so checkpoint C's
+diff --git a/mfsk-core/src/ft8/decode_block/coarse_sync.rs b/mfsk-core/src/ft8/decode_block/coarse_sync.rs
+index 2ecea37b..1afc498a 100644
+--- a/mfsk-core/src/ft8/decode_block/coarse_sync.rs
++++ b/mfsk-core/src/ft8/decode_block/coarse_sync.rs
+@@ -863,6 +863,23 @@ fn coarse_sync_inner(
+     };
+     let base_primary = percentile_floor(&red_primary);
+     let base_secondary = percentile_floor(&red_secondary);
++    // PROBE: sync2d row, peaks and floors of one frequency bin (MFSK_FT8_TRACE_SYNC_F), as jt9's sync8 trace.
++    #[cfg(feature = "std")]
++    if crate::ft8::decode::ptrace::on()
++        && let Some(want) = std::env::var("MFSK_FT8_TRACE_SYNC_F").ok().and_then(|v| v.parse::<f32>().ok())
++    {
++        let ibin = (want / df).round() as usize;
++        if ibin >= ia && ibin <= ib {
++            let fi = ibin - ia;
++            crate::ft8::decode::ptrace::line(format!(
++                "SYNCHDR {} base_p={:.5} base_s={:.5} jp={} js={} red_p={:.5} red_s={:.5}",
++                crate::ft8::decode::ptrace::stage(), base_primary, base_secondary, jpeak_primary[fi], jpeak_secondary[fi],
++                red_primary[fi] / base_primary, red_secondary[fi] / base_secondary
++            ));
++            let row: alloc::vec::Vec<alloc::string::String> = (-jz..=jz).map(|lag| format!("{:.3}", sync2d[idx(fi, lag)])).collect();
++            crate::ft8::decode::ptrace::line(format!("SYNC2D {}", row.join(" ")));
++        }
++    }
+ 
+     // Parabolic sub-quantum interpolation around a chosen peak lag —
+     // shared by both channels. Only valid strictly inside the searched
+diff --git a/mfsk-core/src/ft8/decode_block/process_candidates.rs b/mfsk-core/src/ft8/decode_block/process_candidates.rs
+index 9c256edb..1ee5e53a 100644
+--- a/mfsk-core/src/ft8/decode_block/process_candidates.rs
++++ b/mfsk-core/src/ft8/decode_block/process_candidates.rs
+@@ -1872,6 +1872,32 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
+     // `BpAll` and `BpAllOsd` enable the deeper stages; plain
+     // `Bp` stops after step 1.
+     let mut accepted: Option<(crate::fec::ldpc::bp::BpResult, u8)> = None;
++    // PROBE: dump the five LLR sets of this candidate (pure recomputation, read-only input).
++    #[cfg(all(feature = "std", feature = "fft-rustfft", not(feature = "fixed-point")))]
++    if crate::ft8::decode::ptrace::on() && std::env::var_os("MFSK_FT8_TRACE_LLR").is_some() {
++        let set = super::super::llr::compute_llr_metric::<f32>(cs_scratch, pass.squared());
++        let e = super::super::llr::compute_llre_metric::<f32>(cs_scratch, pass.squared());
++        for (k, v) in [(1, &set.llra), (2, &set.llrb), (3, &set.llrc), (4, &set.llrd), (5, &e)] {
++            let vals: alloc::vec::Vec<alloc::string::String> = v.iter().map(|x| format!("{x:.3}")).collect();
++            crate::ft8::decode::ptrace::line(format!("LLR {} imetric={} f={:.3} dt={:.4} set={} {}", crate::ft8::decode::ptrace::stage(), pass.imetric, cand.freq_hz, refined_dt, k, vals.join(" ")));
++        }
++    }
++
++    // PROBE: the complex symbol spectra of one candidate, for comparison with jt9's `cs`.
++    #[cfg(feature = "std")]
++    if crate::ft8::decode::ptrace::on()
++        && let Some(want) = std::env::var("MFSK_FT8_TRACE_CS_F").ok().and_then(|v| v.parse::<f32>().ok())
++        && (cand.freq_hz - want).abs() < 0.6
++    {
++        crate::ft8::decode::ptrace::line(format!("CSHDR {} imetric={} f={:.3} dt={:.4}", crate::ft8::decode::ptrace::stage(), pass.imetric, cand.freq_hz, refined_dt));
++        for (k, row) in cs_scratch.iter().enumerate() {
++            let v: alloc::vec::Vec<alloc::string::String> = row
++                .iter()
++                .map(|c| format!("{:.4} {:.4}", crate::engine::scalar::LlrScalar::to_f32(c.re), crate::engine::scalar::LlrScalar::to_f32(c.im)))
++                .collect();
++            crate::ft8::decode::ptrace::line(format!("CS {} {}", k + 1, v.join(" ")));
++        }
++    }
+ 
+     // Step 1: fast llra. The LLR / BP scalar is selected at compile
+     // time via `fixed-point` (Q11i16) or default (f32) — see the
+@@ -2275,6 +2301,15 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
+         }
+     }
+ 
++    #[cfg(feature = "std")]
++    let probe = crate::ft8::decode::ptrace::on();
++    #[cfg(feature = "std")]
++    if probe {
++        match &accepted {
++            None => crate::ft8::decode::ptrace::line(format!("NOACC {}", crate::ft8::decode::ptrace::stage())),
++            Some((bp, id)) => crate::ft8::decode::ptrace::line(format!("ACC {} pass_id={} hard={}", crate::ft8::decode::ptrace::stage(), id, bp.hard_errors)),
++        }
++    }
+     let (bp, pass_id) = accepted?;
+     // One decode, then the acceptance policy. Rejecting a
+     // CRC-passing-but-garbage message matters here beyond the decode
+@@ -2282,11 +2317,19 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
+     // accept, so a wrong one removes its waveform from the residual
+     // and takes the real signal underneath with it — see
+     // `FrameDecodable::MESSAGE_FILTER_DEFAULT`.
+-    let message = unpack77_fields(&bp.message77, &CallsignHashTable::new())?;
++    let Some(message) = unpack77_fields(&bp.message77, &CallsignHashTable::new()) else {
++        #[cfg(feature = "std")]
++        if probe { crate::ft8::decode::ptrace::line(format!("REJ_UNPACK {}", crate::ft8::decode::ptrace::stage())); }
++        return None;
++    };
+     if !policy_accepts(policy, &message, pass) {
++        #[cfg(feature = "std")]
++        if probe { crate::ft8::decode::ptrace::line(format!("REJ_POLICY {} msg={:?}", crate::ft8::decode::ptrace::stage(), crate::msg::wsjt77::unpack77(&bp.message77))); }
+         return None;
+     }
+     if known.iter().any(|r| *r.message77() == bp.message77) {
++        #[cfg(feature = "std")]
++        if probe { crate::ft8::decode::ptrace::line(format!("REJ_KNOWN {}", crate::ft8::decode::ptrace::stage())); }
+         return None;
+     }
+     let itone: [u8; 79] = crate::engine::tx::message_to_tones::<crate::ft8::Ft8>(&bp.message77)

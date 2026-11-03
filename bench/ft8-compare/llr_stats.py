@@ -1,19 +1,19 @@
 #!/usr/bin/env python3 -I
 """LLR agreement between jt9 and mfsk-core over every candidate both refined to the same place.
 
-usage: llr_stats.py <dir> [stem ...]     (needs trace2/ and rtrace2/ from a run with MFSK_FT8_TRACE_LLR=1)
+usage: llr_stats.py <dir> [stem ...]     (needs trace/ and rtrace/ from a run with MFSK_FT8_TRACE_LLR=1)
 A pair = same stage (nz41/A, nz50/C), same imetric, f within 0.3 Hz and dt within 0.011 s. Per
 (stage, round) and per LLR set a..e: how many pairs, median and mean sign disagreements of 174,
 and the share of pairs whose signs agree on every bit.
 """
 import sys, os, glob, collections, statistics as st
 d = sys.argv[1]
-stems = sys.argv[2:] or [os.path.basename(p)[:-6] for p in sorted(glob.glob(f"{d}/trace2/*.trace"))]
+stems = sys.argv[2:] or [os.path.basename(p)[:-6] for p in sorted(glob.glob(f"{d}/trace/*.trace"))]
 res = collections.defaultdict(lambda: collections.defaultdict(list))   # (stage, round) -> set -> [disagreements]
 npairs = collections.Counter()
 for n in stems:
     jt = []; cur = None; nz = 0; op = 0
-    for l in open(f"{d}/trace2/{n}.trace"):
+    for l in open(f"{d}/trace/{n}.trace"):
         t = l.split()
         if not t: continue
         if t[0] == "PASS": nz, op = int(t[1]), int(t[2])
@@ -23,7 +23,7 @@ for n in stems:
             cur["sets"].append(v)
             if k == 5: jt.append(cur)
     ours = []; cur = None; rnd = 0
-    for l in open(f"{d}/rtrace2/{n}.rtrace"):
+    for l in open(f"{d}/rtrace/{n}.rtrace"):
         if l.startswith("CAND "):
             rnd = int(l.split("round=")[1].split()[0])
         elif l.startswith("LLR "):

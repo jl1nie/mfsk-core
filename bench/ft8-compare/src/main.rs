@@ -71,17 +71,23 @@ fn main() {
             }
         };
 
+        let only = std::env::var("FT8_COMPARE_ONLY").unwrap_or_default();
         // mfsk-core: a fresh decoder per file (no hash-table or state carried between files).
+        if only != "sic3" {
         let t = Instant::now();
         let params = DecodeParams::for_band((200.0, 3000.0)).depth(Depth::Deep).ap(ApMode::Full);
         let res = Decoder::<Ft8>::new(params).decode(&SlotInput::i16(&i16s));
         let ms = t.elapsed().as_secs_f64() * 1e3;
         emit("mfsk", res.rows.iter().map(|r| (r.decoded.text.clone(), r.decoded.freq_hz, r.decoded.dt_sec, r.decoded.snr_db)).collect(), ms);
+        }
 
         // Diagnostic variants of the same request: only the search strategy differs
         // (`Ft8Extras::tuning.strategy`; the default above is `SicEarly`).
-        if std::env::var_os("FT8_COMPARE_STRATEGIES").is_some() {
+        if std::env::var_os("FT8_COMPARE_STRATEGIES").is_some() || only == "sic3" {
             for (label, strat) in [("mfsk-sic3", Ft8Strategy::SicRounds(3)), ("mfsk-single", Ft8Strategy::SinglePass)] {
+                if only == "sic3" && label != "mfsk-sic3" {
+                    continue;
+                }
                 let t = Instant::now();
                 let params = DecodeParams::for_band((200.0, 3000.0)).depth(Depth::Deep).ap(ApMode::Full);
                 let mut ex = Ft8Extras::default();
@@ -92,7 +98,7 @@ fn main() {
             }
         }
 
-        if std::env::var("FT8_COMPARE_ONLY").as_deref() == Ok("mfsk") {
+        if only == "mfsk" || only == "sic3" {
             continue;
         }
         for (label, cfg) in [("rf8-default", &rf8_default), ("rf8-deep", &rf8_deep)] {

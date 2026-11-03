@@ -1,7 +1,7 @@
 #!/usr/bin/env python3 -I
 """Score ft8-compare's CSV and jt9's output against a corpus's truth.csv (the transmitted messages).
 
-usage: score_truth.py <truth.csv> <ft8-compare out.csv> <dir with <name>.txt of jt9> <file prefix e.g. ft8_dense_>
+usage: score_truth.py <truth.csv> <ft8-compare out.csv> <dir with jt9_<stem>.out (run_jt9.sh)> <file prefix e.g. ft8_dense_>
 
 A truth signal is HIT when the decoder printed its message (whitespace/case-insensitive, jt9's
 ` ?` / ` aN` marks stripped) within FTOL Hz. DT is not compared: rust-ft8 reports DT shifted by
@@ -19,11 +19,14 @@ truth = collections.defaultdict(list)
 for r in csv.DictReader(open(truth_p)):
     truth[r["file"]].append((norm(r["msg"]), float(r["f0"]), float(r["snr"])))
 dec = collections.defaultdict(lambda: collections.defaultdict(list))
+ran = set()                                   # the files ft8-compare was run on (a no-decode file still has a row)
 for r in csv.DictReader(open(csv_p)):
+    ran.add(r["file"])
     if r["message"]:
         dec[r["decoder"]][r["file"]].append((norm(r["message"]), float(r["freq_hz"])))
+truth = {f: v for f, v in truth.items() if f in ran}
 for f in truth:
-    for l in open(os.path.join(jdir, f[:-4] + ".txt"), errors="replace"):
+    for l in open(os.path.join(jdir, "jt9_" + f[:-4] + ".out"), errors="replace"):
         m = jl.match(l)
         if m:
             dec["jt9"][f].append((norm(tail.sub("", m[4])), float(m[3])))
