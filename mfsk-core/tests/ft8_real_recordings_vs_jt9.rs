@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Tier B: the two vendored real FT8 recordings against what WSJT-X's own `jt9` decodes from them.
+//! Tier B: the vendored real FT8 recordings (six) against what WSJT-X's own `jt9` decodes from them.
 //!
 //! Why this exists. `qso3_busy.wav` was the only real FT8 recording with a `jt9` reference list; these
 //! two (`191111_110130.wav`, `191111_110200.wav`, ft8_lib's `test/wav`, MIT) were vendored and used
@@ -80,6 +80,55 @@ const WAV_110200: &[GoldenEntry] = &[
 ];
 
 /// `jt9 -8 -d 3 -L 200 -H 3000 191111_110645.wav`.
+const WAV_110615: &[GoldenEntry] = &[
+    GoldenEntry::msg("PA3EPP SP8NFO KN09")
+        .at(906.0, 0.9)
+        .snr(22.0),
+    GoldenEntry::msg("CQ IZ1ANK JN33").at(2191.0, 1.5).snr(13.0),
+    GoldenEntry::msg("VK4BLE OH1EDK -20")
+        .at(2576.0, 0.8)
+        .snr(7.0),
+    GoldenEntry::msg("CQ JA OH1LWZ KP11")
+        .at(2656.0, 1.0)
+        .snr(11.0),
+    GoldenEntry::msg("VK4BLE OH8JK R-17")
+        .at(431.0, 1.0)
+        .snr(3.0),
+    GoldenEntry::msg("RV6K RU3XL -13").at(700.0, 1.8).snr(-4.0),
+    GoldenEntry::msg("CQ F4FSY JN25").at(1284.0, 0.9).snr(8.0),
+    GoldenEntry::msg("NT6Q OH8GDU -17").at(2281.0, 0.9).snr(3.0),
+    GoldenEntry::msg("JR5MJS OH8NW 73")
+        .at(1348.0, 0.9)
+        .snr(-1.0),
+    GoldenEntry::msg("CQ DL1UDO JO31").at(2447.0, 0.9).snr(-5.0),
+    GoldenEntry::msg("SQ8OHR UA9LL MO27")
+        .at(810.0, 1.3)
+        .snr(-5.0),
+    GoldenEntry::msg("SV1GN RK6AUV LN05")
+        .at(1404.0, 1.0)
+        .snr(-5.0),
+    GoldenEntry::msg("RK6AH JH1AJT -05")
+        .at(539.0, 0.9)
+        .snr(-11.0),
+    GoldenEntry::msg("PB5DX EI3CTB IO63")
+        .at(1617.0, 0.9)
+        .snr(-17.0),
+    GoldenEntry::msg("<...> ON7EE JO10")
+        .at(298.0, 1.0)
+        .snr(-14.0),
+    GoldenEntry::msg("CQ UB3AQS KO85")
+        .at(1047.0, 0.8)
+        .snr(-12.0),
+    GoldenEntry::msg("CQ DG0OFT JO50").at(593.0, 0.8).snr(-20.0),
+    GoldenEntry::msg("OT4B <...> -19").at(2111.0, 0.9).snr(-5.0),
+    GoldenEntry::msg("SP7XIF JA2GQT -15")
+        .at(2727.0, 1.4)
+        .snr(-16.0),
+    GoldenEntry::msg("WB2QJ ES3AT KO18")
+        .at(2093.0, 0.9)
+        .snr(-8.0),
+];
+
 const WAV_110645: &[GoldenEntry] = &[
     GoldenEntry::msg("PA3EPP SP8NFO R+01")
         .at(906.0, 0.7)
@@ -329,6 +378,28 @@ fn recording_191111_110200_matches_jt9() {
     };
     assert_golden(
         &decode(asset_path!("191111_110200.wav")),
+        &set,
+        Tolerances::default(),
+        |d| d.clone(),
+    );
+}
+
+/// `CQ UB3AQS KO85` (-12 dB, OSD at 9 hard errors in `jt9`) sits 9 Hz from one of seven copies of the +22 dB
+/// `PA3EPP SP8NFO KN09`. `jt9` decodes and subtracts that signal three times in its first pass, from the
+/// candidates at 906.25, 903.125 and 909.375 Hz; the last two are 0.04 s of DT from the first. This crate
+/// deduped on a parabolically interpolated DT (0.931, 0.878), inside the 0.04 s window, so the two were
+/// dropped and the residue stayed over UB3AQS. `sync8.f90:143` compares the integer-lag DT, and so does
+/// `coarse_sync` now (#721).
+#[test]
+fn recording_191111_110615_matches_jt9() {
+    let set = GoldenSet {
+        name: "191111_110615 vs jt9",
+        expected: WAV_110615,
+        min_hits: WAV_110615.len(),
+        max_extra: 0,
+    };
+    assert_golden(
+        &decode(asset_path!("191111_110615.wav")),
         &set,
         Tolerances::default(),
         |d| d.clone(),

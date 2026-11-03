@@ -53,17 +53,12 @@ const QSO3_PATH: &str = asset_path!("qso3_busy.wav");
 /// real `jt9 -8 -d3`'s own measured total file decode time is ~1.1s
 /// (`FT8_BENCHMARK.md`) — this runs ~7-8x faster than jt9 itself.
 ///
-/// **19 since 2026-11-03** (`WA2FZW DL5AXX RR73` is the one that went). A decode is
-/// now reported at, and subtracted from, WSJT-X's `xdt = (ibest-1)*dt2`
-/// (`refine_fine::XDT_OFFSET_S`); before, the subtraction started 5 ms late and left
-/// strong signals 15 dB above where `jt9` takes them, which kept this marginal
-/// decode (nsync 9, OSD, 16 hard errors in `jt9`) alive by accident. `jt9` makes it
-/// at its early stage and keeps the strong neighbours' residue out of the way by
-/// re-subtracting them with a refined DT (`lrefinedt`) before its next stage. This
-/// driver is a flat multi-pass with only the in-pass subtraction, and the budget of
-/// the target it mirrors has no room for that second subtraction: it is a simplified
-/// version of `SicEarly`, which still decodes all 21 of `jt9`'s on this file.
-const MIN_GOLDEN_HITS: usize = 19;
+/// 20 again (#721). The reported DT moved to WSJT-X's `xdt = (ibest-1)*dt2`
+/// (`refine_fine::XDT_OFFSET_S`) on 2026-11-03, which dropped `WA2FZW DL5AXX RR73` (nsync 9, OSD,
+/// 16 hard errors in `jt9`) for a while: the 5 ms error had been keeping it alive by accident.
+/// Subtracting a re-found message before it is dropped as a duplicate (`ft8b.f90:463-467`, as
+/// `jt9` does and as `sic_inner_passes_with_cache` now does) brings it back: 20/20, no extras.
+const MIN_GOLDEN_HITS: usize = 20;
 
 #[test]
 fn qso3_full_parity_meets_wsjtx_golden_floor() {

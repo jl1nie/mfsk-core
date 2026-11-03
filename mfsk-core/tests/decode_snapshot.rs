@@ -51,6 +51,14 @@
 //! also gains `K1JT HA5WA 73`; no message left any fixture. JT65's two fixtures differ here only in
 //! the last float bits (another machine wrote them) and were not rewritten.
 //!
+//! A fourth (#721): `coarse_sync` dedupes on the integer-lag DT `(lag-0.5)*tstep`, as `sync8.f90:143`
+//! does, not on the parabolically interpolated one, so a weak candidate 3-4 Hz from a strong signal
+//! stays in the list and is decoded (and subtracted) from the residue as `jt9` does; and
+//! `decode_block_multipass` subtracts a re-found message before dropping it. All 18 FT8 fixtures that
+//! carry rows move in `sync_score`, `snr`, `hard_errors` and `pass`; no message appeared or left any
+//! of them. One row changes `freq_hz` / `dt_sec` (14 fixtures): `K1BZM DK8NE -10` is decoded from
+//! another candidate, 245.375 Hz / DT 0.500 -> 244.250 Hz / 0.505, 22 -> 18 hard errors (`jt9`: 18).
+//!
 //! Row format, one per line, sorted. Frame family (FT8/FT4/FST4): text,
 //! then `freq_hz`, `dt_sec`, `snr_db`, `sync_score` as f32 bit patterns in
 //! hex, then `hard_errors` and `pass`. Other families and the IQ path: the

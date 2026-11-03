@@ -476,6 +476,10 @@ fn decode_block_multipass<S: AudioSample>(
             #[cfg_attr(feature = "fixed-point", allow(unused_mut))]
             for mut r in single_results {
                 if crate::engine::pipeline::has_message77(&all, &r) {
+                    // Subtracted before it is dropped: `ft8b.f90:463-467` subtracts every
+                    // valid decode and `ft8_decode.f90` drops the duplicate afterwards
+                    // (`ldupe`); same as `decode.rs`'s SIC loop (#721).
+                    crate::ft8::subtract::subtract_signal_lpf(work.as_mut_slice(), &r);
                     continue;
                 }
                 if trace {
@@ -2283,6 +2287,12 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
         info: bp.info.into_boxed_slice(),
         freq_hz: cand.freq_hz,
         // ft8b.f90 `xdt=(ibest-1)*dt2`: what is reported, and where the signal is subtracted from.
+        // `refined_dt` is in `ibest` convention where a fine sync ran (the host path:
+        // `fine_refine_3stage` / `fine_sync_12k`). Without one (the embedded driver, whose
+        // `fine_refine_pass1` is a no-op) it is the coarse grid DT, and the -5 ms is applied to it
+        // as well: a deliberate simplification, 5 ms against a 40 ms grid, kept so that every
+        // reader of `dt_sec` (`xsnr2_db_simple`, `compute_xsig_wsjtx`) compensates the same way.
+        // Not checked on the CoreS3 (`time_sync::record_decode_dt`); #722.
         dt_sec: refined_dt + crate::ft8::refine_fine::XDT_OFFSET_S,
         hard_errors: bp.hard_errors,
         sync_score: cand.score,

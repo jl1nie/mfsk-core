@@ -27,6 +27,19 @@ use crate::engine::sync::SyncCandidate;
 
 // ── Coarse sync ─────────────────────────────────────────────────────────────
 
+/// Smallest candidate list for which the dedupe compares `sync8.f90`'s integer-lag DT.
+///
+/// `sync8.f90:143` drops a candidate within 4 Hz and `tdiff < 0.04` s of a stronger one, on
+/// `(jpeak-0.5)*tstep`. This crate's candidate DT is parabolically interpolated, and deduping on
+/// that dropped weak candidates `jt9` keeps (`191111_110615`: 903.125 / 909.375 Hz beside a +22 dB
+/// signal, whose residue `jt9` decodes and subtracts; #721). The faithful rule keeps a few more
+/// near-duplicates of strong signals, which a lean list has no slot for: at the embedded
+/// `PASS1_LIMIT_DEFAULT` of 30 they pushed `OH3NIV ZS6S -03` (`qso1.wav`, score 2.06, rank 27 before)
+/// out, 4 -> 3 of 5 in `ft8_decode_block_real_qso`. `jt9` has `MAXCAND` 600; the host configs ask for
+/// 60 (research) to 200+ (default), the embedded ones for 30. Below this the interpolated DT is
+/// compared, as before.
+pub(crate) const FAITHFUL_DEDUPE_MIN_CAND: usize = 60;
+
 /// Costas-array correlation search across the spectrogram. Mirrors
 /// WSJT-X `lib/ft8/sync8.f90` — 16-bin sliding-window allsum noise
 /// estimator with `tone_step_bins = 2.0` exactly at NFFT_SPEC=3840.
@@ -909,7 +922,16 @@ fn coarse_sync_inner(
         }
     };
 
-    let mut cands: Vec<SyncCandidate> = Vec::new();
+    // Each candidate carries the DT of its integer lag, `(lag-0.5)*tstep`
+    // as `sync8.f90:123` reports it, next to the interpolated `dt_sec`.
+    // With a list of `FAITHFUL_DEDUPE_MIN_CAND` or more the dedupe below
+    // compares the integer-lag DT, as `sync8.f90:143` does (a lean list
+    // keeps comparing the interpolated one, see the const): with the interpolated one a weak candidate 3 Hz from a strong
+    // signal at a 0.04 s lag step (`dt` 0.94 vs 0.90 in `jt9`, 0.931 here)
+    // fell inside the 0.04 s window and was dropped, and with it the
+    // second and third decode (and subtraction) of that signal
+    // (`191111_110615`, 903.125 / 909.375 Hz beside 906.25 Hz; #721).
+    let mut cands: Vec<(SyncCandidate, f32)> = Vec::new();
     for fi in 0..n_freq {
         let i_carrier = ia + fi;
         let freq_hz = i_carrier as f32 * df;
@@ -918,11 +940,14 @@ fn coarse_sync_inner(
         let norm_p = red_primary[fi] / base_primary;
         if norm_p.is_finite() && norm_p >= sync_min {
             let dt_lag = lag_p as f32 + dt_quanta_at(fi, lag_p);
-            cands.push(SyncCandidate {
-                freq_hz,
-                dt_sec: (dt_lag - 0.5) * tstep,
-                score: norm_p,
-            });
+            cands.push((
+                SyncCandidate {
+                    freq_hz,
+                    dt_sec: (dt_lag - 0.5) * tstep,
+                    score: norm_p,
+                },
+                (lag_p as f32 - 0.5) * tstep,
+            ));
         }
 
         // Secondary candidate only when the full-window peak actually
@@ -933,11 +958,14 @@ fn coarse_sync_inner(
             let norm_s = red_secondary[fi] / base_secondary;
             if norm_s.is_finite() && norm_s >= sync_min {
                 let dt_lag = lag_s as f32 + dt_quanta_at(fi, lag_s);
-                cands.push(SyncCandidate {
-                    freq_hz,
-                    dt_sec: (dt_lag - 0.5) * tstep,
-                    score: norm_s,
-                });
+                cands.push((
+                    SyncCandidate {
+                        freq_hz,
+                        dt_sec: (dt_lag - 0.5) * tstep,
+                        score: norm_s,
+                    },
+                    (lag_s as f32 - 0.5) * tstep,
+                ));
             }
         }
     }
@@ -955,18 +983,22 @@ fn coarse_sync_inner(
     // (haven't fully traced; the algorithms are equivalent on every
     // small-case scenario I worked through). We accept the recall
     // delta for the ~150 us host (~150 ms Core2) saving.
-    cands.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    cands.sort_by(|a, b| b.0.score.partial_cmp(&a.0.score).unwrap());
+    let lag_dedupe = max_cand >= FAITHFUL_DEDUPE_MIN_CAND;
     let mut out: Vec<SyncCandidate> = Vec::with_capacity(max_cand);
-    for c in cands {
+    let mut out_raw: Vec<(f32, f32)> = Vec::with_capacity(max_cand);
+    for (c, raw_dt) in cands {
         if c.score < sync_min {
             break;
         }
-        let near = out
+        let key_dt = if lag_dedupe { raw_dt } else { c.dt_sec };
+        let near = out_raw
             .iter()
-            .any(|k| (c.freq_hz - k.freq_hz).abs() < 4.0 && (c.dt_sec - k.dt_sec).abs() < 0.04);
+            .any(|k| (c.freq_hz - k.0).abs() < 4.0 && (key_dt - k.1).abs() < 0.04);
         if near {
             continue;
         }
+        out_raw.push((c.freq_hz, key_dt));
         out.push(c);
         if out.len() >= max_cand {
             break;
