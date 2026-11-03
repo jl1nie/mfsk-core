@@ -60,5 +60,5 @@ are write-only (22 files decode identically with them). Tier C was not run.
 
 [#721](https://github.com/jl1nie/mfsk-core/issues/721): the 11 `jt9` decodes still missing, the causes found, the predictions with the test that would settle each, and the
 method. [#722](https://github.com/jl1nie/mfsk-core/issues/722): what `sic_early`, `sic_rounds` and `decode_block` should each promise. The DT change
-(`XDT_OFFSET_S`, below as "Cause 2") is on the branch `wip/ft8-xdt-offset` (`a3fa8af7`), not merged until it has been reviewed; on `main` this note's
-"Cause 2" and the `sic_rounds` / `decode_block` findings are still the "found, not landed" text.
+(`XDT_OFFSET_S`) is the section "Found, not landed" above; it is on the branch `wip/ft8-xdt-offset` (`a3fa8af7`) and is not merged until it has been
+reviewed. On that branch the section is rewritten as "Cause 2, fixed" and carries the `sic_rounds` / `decode_block` findings.
