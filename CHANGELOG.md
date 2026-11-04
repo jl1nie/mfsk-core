@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Docs
+
+- **README shortened, 823 -> ~230 lines, and its Japanese twin now mirrors it** (was a 58-line summary). It leads with what an operator
+  can run (the skimmer, the CoreS3 receiver, the M5StickS3) and states each fact once. Corrected on the way: FST4W was missing from
+  the protocol and feature tables; FST4 has seven periods, 15-1800 s, not five; the WSJT-X speed column now reads
+  `UPSTREAM_EVALUATION.md`'s 2026-10 ratios (FT8 4.8-5.0x, was 2.0-2.3x; WSPR's crossing cell is slower than `wsprd`); the Swift
+  binding is built and tested by CI (the README said never since 0.13); the design diagram's `core` box is `engine`. Added the
+  ft8_lib result (401 of `jt9`'s 401). Design text moved to `DESIGN_RATIONALE.md` §7; contributing and FFI detail is left to
+  `CONTRIBUTING.md` and `BINDINGS.md`. The Quick Start doctest is unchanged.
+
 ## 0.15.1 — FT8 follows `jt9` on real recordings: 401 of `jt9`'s 401 decodes on ft8_lib's 22 recordings (was 383), reported and subtracted where WSJT-X does (`xdt`), `sync8.f90`'s lag grid and candidate dedupe, blind-CQ AP on every candidate, `i3=4` 11-character calls, `ft8b`'s last bit-metric group (#721)
 
 A drop-in patch for 0.15.0: no breaking API change (it adds `engine::LlrTail`, defaulted on the trait). FT8 decodes more on crowded real bands, with no false decode added on the labelled corpora (tier C: no channel worse than the 0.15.0 baseline). Reported FT8 `dt_sec` moves by -5 ms and a few `sync_score` / SNR / hard-error values move; `sic_rounds` and `decode_block` stay the simplified strategies (#722).

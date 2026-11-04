@@ -17,122 +17,86 @@
 
 ## What is this?
 
-`mfsk-core` provides **portable, high-performance Rust implementations of
-the WSJT-X digital modes**, validated against the upstream reference
-decoders.
+`mfsk-core` is a pure-Rust re-implementation of the
+[WSJT-X](https://sourceforge.net/projects/wsjt/) digital modes — FT8, FT4,
+FST4, FST4W, WSPR, JT9, JT65, Q65 (all ten sub-modes), MSK144 and WSJT-X
+3.2's JTTY — with decoding, encoding and waveform synthesis. Every algorithm
+is ported from WSJT-X (Joe Taylor K1JT and collaborators), which remains the
+reference implementation; each source file names the upstream file it ports.
 
-It is a single pure-Rust crate covering FT8, FT4, FST4, WSPR, JT9, JT65,
-Q65 (all ten sub-modes), MSK144 and WSJT-X 3.2's JTTY, with decoding, encoding, and waveform
-synthesis built on top of a small set of shared primitives: DSP,
-synchronization and correlation, LLRs, LDPC / convolutional /
-Reed-Solomon / QRA FEC, and message codecs.
+It is a library, not another WSJT-X: the aim is to put WSJT-X-quality
+decoders where a Fortran/C/Qt desktop application cannot go — a Windows or
+macOS skimmer on an SDR, a browser (WASM), Android/iOS, and `no_std`
+microcontrollers. It is checked against WSJT-X itself on every pull request
+(recall and false decodes together) and, before releases, in sensitivity
+sweeps against WSJT-X's own simulators and binaries.
 
-It runs anywhere Rust runs: desktop, WASM in the browser, Android/iOS,
-and `no_std` embedded MCUs.
+## Applications built on it
 
-It is a library, not an application. There is no GUI, and the aim is to
-let you embed WSJT-X-quality decoders and modems in your own system
-rather than to build another WSJT-X.
+These are sample applications: they show the library at work on real
+signals. They receive only and come with no support promise.
 
-A major part of the project is the validation around the code. Golden
-recordings taken from WSJT-X gate every PR, checking recall and phantom
-decodes together. Before releases, sensitivity sweeps are run against
-WSJT-X's own simulators and reference binaries, with the results
-recorded in
+| | what it is | manual |
+|---|---|---|
+| **SpyServer skimmer** (Windows, macOS) | Decodes FT8, FT4, FST4, WSPR, JT9, JT65, Q65 and JTTY on many channels at once from one SpyServer stream (Airspy HF+, Airspy, RTL-SDR); up to four servers, band rotation, coexists with SDR#, waterfall, a database of everything heard with a map, optional PSK Reporter upload (off by default). Installers: [skimmer releases](https://github.com/jl1nie/mfsk-core/releases?q=skimmer). | [EN](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_SKIMMER.md) / [日本語](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_SKIMMER.ja.md) |
+| **M5Stack CoreS3 receiver** | The main hardware target: FT8, FT4 and JTTY from a transceiver's USB Audio (verified with an IC-705 on 40 m, six to eight FT8 stations per slot from +8 to −24 dB), CAT over the same cable, plus a radio-free demo; mode chosen on the touch panel. | [EN](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STACK_CORES3.md) / [日本語](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STACK_CORES3.ja.md) |
+| **M5StickS3 FT8 controller** (pictured) | LCD UI, BLE CI-V to an IC-705, microphone capture, a QSO state machine. Decodes a busy-band FT8 recording in 1.19 s after the slot ends. | [EN](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.md) / [日本語](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.ja.md) |
+
+The skimmer has its own version and release tags (`skimmer-vX.Y.Z`); its
+developer notes are in [`apps/skimmer/README.md`](https://github.com/jl1nie/mfsk-core/blob/main/apps/skimmer/README.md).
+
+## How it compares with WSJT-X
+
+Each mode runs the job WSJT-X `v3.2.0-rc1`'s own decoder runs (same band,
+same operator knowledge, same depth) on the same simulated recordings, and a
+paired test decides. "The same" means no condition (channel, sub-mode)
+differs by more than chance. Speed is one thread on each side, per file
+(Ryzen 9 9900X).
+
+| mode | WSJT-X decoder | sensitivity against WSJT-X | speed against WSJT-X |
+|---|---|---|---|
+| FT8 | `jt9 -8 -d 3` | the same (4 conditions) | 4.8–5.0× faster |
+| FT4 | `jt9 -5 -d 3` | the same (4 conditions) | 3.3–6.7× faster |
+| FST4 | `jt9 -7 -d 3` | the same; better in 1 of 20 conditions | 4.3–5.0× faster |
+| FST4W | `jt9 -W -d 3` (`v3.3.0-beta1`) | the same (8 conditions) | 3.3–3.6× faster |
+| Q65 | `jt9 -3 -d 1` | the same; better in 9 of 20 conditions | 3.4–3.8× faster |
+| JT9 | `jt9 -9 -d 3` | the same | 5.3× faster |
+| JTTY | `rjtty` | identical: every one of 360 trials agrees | 7–9× faster |
+| WSPR | `wsprd` | the same | 0.8–4.2× (slower near the decode threshold; 10 files) |
+| JT65 | `jt9 -6 -d 3` | **behind** (known; legacy, not chased) | 4–20× faster |
+
+On real on-air recordings — the 22 that ship with ft8_lib — the FT8 decoder
+finds all 401 of the messages `jt9 -8 -d 3` finds, in 1.29 s per file
+against `jt9`'s 3.57 s (0.15.1). MSK144 is not in the table yet; an earlier
+check against a real `jt9` matched it in 25 of 28 SNR cells.
+
+Sensitivity is from 2026-10-10, speed from 2026-10-01 to 2026-10-11, the FT8
+speed before 0.15.1 (which made FT8 about 17 % slower). Counts and method:
+[`docs/notes/UPSTREAM_EVALUATION.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/UPSTREAM_EVALUATION.md),
+[`docs/notes/FT8_REAL_VS_JT9.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/FT8_REAL_VS_JT9.md),
+per-protocol detail in
 [`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md).
-
-The embedded targets demonstrate that portability rather than define the
-library's scope. Two working receivers ship with the source tree, both
-running this library on Xtensa LX7.
-
-[`embedded-poc/m5stack-cores3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-cores3-app/)
-is the main target: one image carrying FT8, FT4 and JTTY over USB Audio
-from a radio, and a radio-free demo, selected from the touch panel. It was verified on 2026-08-23 with an IC-705 on 40 m,
-decoding six to eight FT8 stations per slot from +8 to −24 dB.
-
-[`embedded-poc/m5stack-s3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-s3-app/)
-is the M5StickS3 demo path, with an LCD UI, BLE CI-V to an IC-705,
-acoustic microphone capture, and a QSO state machine. The image above is
-one of its decode slots.
-
-Every algorithm is a Rust re-implementation of
-[WSJT-X](https://sourceforge.net/projects/wsjt/), developed by Joe Taylor
-K1JT and collaborators, which remains the reference implementation. See
-[Attribution](#attribution) below.
-
-## Why mfsk-core
-
-- **Measured against WSJT-X on the same task, file by file.** Each mode
-  runs the job WSJT-X v3.2.0-rc1's own decoder runs (same band, same
-  operator knowledge, same depth) on the same recordings, and a paired
-  test decides. FT8, FT4, FST4, Q65, JT9, JTTY and WSPR are the same as
-  WSJT-X or better (FST4 in 1 of 20 conditions, Q65 in 9 of 20; JTTY
-  agrees on every one of 360 trials), and every mode but WSPR runs
-  1.9-17× faster on one thread. Legacy JT65 is behind and recorded, not chased. Table:
-  [Benchmarks vs. WSJT-X](#benchmarks-vs-wsjt-x); method and counts:
-  [`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md).
-- **Wideband IQ in, every mode out.** `mfsk_core::iq` turns an SDR's
-  complex-IQ stream into the audio a transceiver would have produced
-  for any dial frequency in it, at 120 dB selectivity, and
-  `IqReceiver` decodes N channels of it on UTC with absolute frequency
-  in each row. A polyphase filter bank (`Channelizer::Pfb`) shares the
-  front end among channels: 128 channels of a 2.4 MS/s stream take 41 %
-  of one core. WSJT-X takes audio from one receiver at a time.
-- **Runs where WSJT-X can't.** Same algorithms, `no_std`-portable:
-  a real shipping product
-  ([`embedded-poc/m5stack-s3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-s3-app/),
-  pictured above) decodes real on-air FT8 in ~1.2 s post-slot on an
-  ESP32-S3, plus WASM in the browser and Android/iOS via FFI — none
-  of which a Fortran/C/Qt desktop application can target.
-- **A `Protocol` trait, not per-mode copy-paste.** Nine protocol
-  families, seven of them behind one `Protocol` trait with generic,
-  monomorphised decode machinery (no vtable, no dynamic dispatch on the
-  hot path; MSK144 and JTTY are deliberately outside it) — adding
-  FST4-60A to the crate was a trait impl on one ZST, not a
-  cross-cutting refactor.
-  See [Design Philosophy](#design-philosophy).
 
 ## Supported protocols
 
-| Protocol   | Slot   | FEC                               | Message | Sync                   | Feature |
-|------------|--------|-----------------------------------|---------|------------------------|---------|
-| FT8        | 15 s   | LDPC(174, 91) + CRC-14            | 77 bit  | 3 × Costas-7           | `ft8`   |
-| FT4        | 7.5 s  | LDPC(174, 91) + CRC-14            | 77 bit  | 4 × Costas-4           | `ft4`   |
-| FST4-60A   | 60 s   | LDPC(240, 101) + CRC-24           | 77 bit  | 5 × Costas-8           | `fst4`  |
-| FST4-15/30/120/300 | 15-300 s | (same LDPC(240, 101))     | 77 bit  | (same sync layout)     | `fst4`  |
-| WSPR       | 120 s  | Convolutional r=½ K=32 + Fano     | 50 bit  | Per-symbol LSB (npr3)  | `wspr`  |
-| JT9        | 60 s   | Convolutional r=½ K=32 + Fano     | 72 bit  | 16 distributed slots   | `jt9`   |
-| JT65       | 60 s   | Reed-Solomon(63, 12) GF(2⁶)       | 72 bit  | 63 distributed slots   | `jt65`  |
-| Q65-15A / -30A | 15-30 s | QRA(15, 65) GF(2⁶) + CRC-12   | 77 bit  | 22 distributed slots   | `q65`   |
-| Q65-60A‥E  | 60 s   | (same QRA codec)                  | 77 bit  | (same sync layout)     | `q65`   |
-| Q65-120D / -120E / -300A | 120-300 s | (same QRA codec)       | 77 bit  | (same sync layout)     | `q65`   |
-| MSK144     | 15 s   | LDPC(128, 90) + CRC-13            | 77 bit  | Meteor-ping burst-scan (matched filter) | `msk144` |
-| JTTY       | none (1.888 s frames, any start) | Tail-biting conv. r=½ K=10 + CRC-12 | 34 bit / frame | 13 symbols + list-WAVA, multi-frame messages | `jtty` |
+| Protocol | Slot | FEC | Message | Sync | Feature |
+|---|---|---|---|---|---|
+| FT8 | 15 s | LDPC(174, 91) + CRC-14 | 77 bit | 3 × Costas-7 | `ft8` |
+| FT4 | 7.5 s | LDPC(174, 91) + CRC-14 | 77 bit | 4 × Costas-4 | `ft4` |
+| FST4-15/30/60A/120/300/900/1800 | 15–1800 s | LDPC(240, 101) + CRC-24 | 77 bit | 5 × Costas-8 | `fst4` |
+| FST4W-120/300/900/1800 | 120–1800 s | LDPC(240, 74) + CRC-24 | 50 bit | 5 × Costas-8 | `fst4w` |
+| WSPR | 120 s | Convolutional r=½ K=32 + Fano | 50 bit | Per-symbol LSB | `wspr` |
+| JT9 | 60 s | Convolutional r=½ K=32 + Fano | 72 bit | 16 distributed slots | `jt9` |
+| JT65 | 60 s | Reed-Solomon(63, 12) GF(2⁶) | 72 bit | 63 distributed slots | `jt65` |
+| Q65-15A/30A, 60A‥E, 120D/120E, 300A | 15–300 s | QRA(15, 65) GF(2⁶) + CRC-12 | 77 bit | 22 distributed slots | `q65` |
+| MSK144 | 15 s | LDPC(128, 90) + CRC-13 | 77 bit | Meteor-ping burst scan | `msk144` |
+| JTTY | none (1.888 s frames) | Tail-biting conv. r=½ K=10 + CRC-12 | 34 bit / frame | 13 symbols + list-WAVA | `jtty` |
 
-Nine protocol families, **twenty** wired `Protocol`-trait ZSTs in the
-registry: FST4 contributes five T/R-period sub-modes (FST4-15, -30,
--60A, -120, -300) and Q65 contributes ten — two terrestrial (Q65-15A,
--30A), five 60-s EME (Q65-60A‥E), and three long-period (Q65-120D,
--120E, -300A) — both families share FEC, message
-codec and sync layout across their sub-modes, differing only in NSPS /
-tone spacing (and, for FST4-15 alone, the T/R start offset). **MSK144
-is the exception**: its continuous-phase binary-MSK modulation and
-transient-burst timing don't fit the static-slot model every other
-protocol here shares, so no ZST implements `Protocol` for it — its own
-`msk144::decode::decode_slot` driver bypasses `engine::pipeline`
-entirely by design (see
-[`docs/reference/LIBRARY.md` §3.1](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#31-generic-vs-bespoke-per-protocol)
-for why — see the MSK144 row and its footnote in the generic-vs-bespoke
-table). **JTTY** (WSJT-X 3.2's weak-signal keyboard mode) is the other:
-it has no slot at all — frames start whenever the sender likes and a
-message is several of them — so it too stays outside `Protocol`, and its
-receiver, `jtty::rx::Stream`, is incremental (audio in, message updates out
-through a callback).
-[`PROTOCOLS`](https://docs.rs/mfsk-core/latest/mfsk_core/static.PROTOCOLS.html)
-exposes one entry per wired ZST (so MSK144 and JTTY don't appear there);
-`uvpacket` (when enabled) adds four more for its rate ladder. See
-[Static set of protocols](#static-set-of-protocols) for why there's no
-runtime `register_protocol()`.
+The 26 slot modes decode through one generic decoder, `Decoder<P>`.
+MSK144 (continuous-phase MSK in meteor-scatter bursts) and JTTY (no slot:
+frames start whenever the sender likes) have receivers of their own by
+design. `uvpacket` is an experimental, non-WSJT-X packet mode built from the
+same parts ([`UVPACKET.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/UVPACKET.md)).
 
 ## Quick Start
 
@@ -142,14 +106,9 @@ runtime `register_protocol()`.
 mfsk-core = { version = "0.15", features = ["ft8", "ft4"] }
 ```
 
-New features and fixes land on `main` immediately as PRs merge, but
-crates.io releases are cut on a throttled cadence (see
-[Status](#status)) — if you want a specific fix or new mode before it
-ships to crates.io, point at the git repo instead:
-
-```toml
-mfsk-core = { git = "https://github.com/jl1nie/mfsk-core", branch = "main", features = ["ft8", "ft4"] }
-```
+Changes land on `main` as they merge; crates.io releases follow every two
+weeks. For a fix before it is released, depend on the repository:
+`mfsk-core = { git = "https://github.com/jl1nie/mfsk-core", branch = "main", features = ["ft8"] }`.
 
 Synthesise an FT8 frame and decode it back:
 
@@ -177,647 +136,110 @@ for row in &slot.rows {
 }
 ```
 
-That's the whole round trip: encode a message → synthesise 12 kHz PCM →
-decode it back. `AnyDecoder` picks the mode at run time; `Decoder::<Ft8>` is the
-same decoder typed at compile time, with the mode's native result and `Extras`.
-The explicit pack → tones → waveform steps `encode` runs are for protocol
-builders: `engine::tx` (`message_to_tones::<P>`, `synthesize::<P>`), [`LIBRARY.md`](docs/reference/LIBRARY.md) §5, "Transmitting: `FskWaveform`". Every slot mode decodes through the same `Decoder<P>`: build it
-from a `DecodeParams` (WSJT-X's per-period parameter block: depth, AP mode,
-band, Rx/Tx frequency, station and QSO), change `params_mut()` between periods,
-and give it each period as a `SlotInput` (`i16` or `f32` audio, the period's
-index on the UTC grid, an optional budget). The library's own options are the
-mode's `Extras` (`decoder.extras_mut()`), typed per mode, so an option a mode
-lacks does not compile. Each protocol module documents its own entry points and
-carries its own Quick example:
+`AnyDecoder` picks the mode at run time; `Decoder::<Ft8>` is the same decoder
+typed at compile time, with the mode's native result. A decoder is built from
+`DecodeParams` — WSJT-X's per-period parameter block (depth, AP, band, Rx/Tx
+frequency, station and QSO) — and is given each period as a `SlotInput`. The
+library's own options are the mode's `Extras`, typed per mode, so an option a
+mode lacks does not compile. Each protocol module on
+[docs.rs](https://docs.rs/mfsk-core) documents its options and carries an
+example:
 
-- [`mfsk_core::ft8`](https://docs.rs/mfsk-core/latest/mfsk_core/ft8/)
-  — `Decoder::<Ft8>`; `Ft8Extras` holds `a7` (WSJT-X 3.2's a7 list decoder,
-  fed by the decoder's own earlier periods), `sniper` (the roofing-filter
-  window), `ap_hint`, `tuning` (strategy, OSD, sync threshold) and `eq`;
-  `DecodeParams::tx_freq` is `nftx` for the two-callsign AP hypothesis and
-  `DecodeParams::contest` is `ncontest`
-- [`mfsk_core::ft4`](https://docs.rs/mfsk-core/latest/mfsk_core/ft4/)
-  — `Decoder::<Ft4>`
-- [`mfsk_core::fst4`](https://docs.rs/mfsk-core/latest/mfsk_core/fst4/)
-  — `Decoder::<Fst4s60>` (FST4-60A) and the other sub-modes;
-  `Fst4Extras::noise_blanker` is WSJT-X's **NB** setting (a fixed level or a sweep)
-- [`mfsk_core::wspr`](https://docs.rs/mfsk-core/latest/mfsk_core/wspr/)
-  — `Decoder::<Wspr>`; the call table that carries confirmed callsigns across
-  slots is the decoder's own state
-- [`mfsk_core::jt9`](https://docs.rs/mfsk-core/latest/mfsk_core/jt9/)
-  — `Decoder::<Jt9>`; `Depth` sets the Fano budget
-- [`mfsk_core::jt65`](https://docs.rs/mfsk-core/latest/mfsk_core/jt65/)
-  — `Decoder::<Jt65>`; `Jt65Extras::chase` for the Chase decoder at low SNR
-- [`mfsk_core::q65`](https://docs.rs/mfsk-core/latest/mfsk_core/q65/)
-  — `Decoder::<P>` for any wired sub-mode including the Q65-60A‥E EME
-  variants; `DecodeParams::averaging(true)` (with the period index) averages
-  consecutive periods (ionoscatter / weak-EME signals no single-period decode
-  recovers); `Q65Extras` holds the AP hint (~2 dB threshold gain when call signs
-  are known), the fast-fading metric (`fading`; recovers 5–8 dB on
-  Doppler-spread channels, required for microwave EME at 5.7 / 10 / 24 GHz) and
-  WSJT-X 3.2's Pileup and Max Drift. The AP list of standard exchanges (~3 dB
-  when the callsign pair is known) comes from the station and QSO in
-  `DecodeParams`; in contest mode the callers heard are a `Q65Callers` the
-  application keeps (`Q65History` is `q65_hist`, the DX station from recent
-  decodes). Send a Pileup reply with `q65::encode_channel_symbols_flagged` and
-  read `Q65Result::copied_last_tx`. The default search window is ±1 s
-  (WSJT-X's `lag1`/`lag2`; `DecodeParams::eme_delay(true)` restores the late
-  reach) and `dt_sec` is measured from the nominal start, not the start of the
-  buffer (#397)
-- [`mfsk_core::jtty`](https://docs.rs/mfsk-core/latest/mfsk_core/jtty/)
-  — outside `Protocol`: `jtty::rx::Stream` (12 kHz audio in chunks,
-  message updates through a callback; one `Arc<Receiver>` serves any
-  number of streams) or `Receiver::scan_messages` for a whole recording;
-  `jtty::pack::pack` / `pack::tones` (text → atoms → tones, upstream's
-  `pack_jtty`) and `jtty::tx` (tones → GFSK samples)
-- [`mfsk_core::msk144`](https://docs.rs/mfsk-core/latest/mfsk_core/msk144/)
-  — outside `Protocol`: `msk144::decode::decode_slot`
-- [`mfsk_core::iq`](https://docs.rs/mfsk-core/latest/mfsk_core/iq/)
-  — wideband complex IQ in: `IqToAudio` (one dial frequency → 12 kHz
-  audio) and `IqReceiver` (N channels decoded on UTC, `Channelizer::Direct`
-  or the shared polyphase bank `Channelizer::Pfb`); C ABI `mfsk_iq_*`
+- [`ft8`](https://docs.rs/mfsk-core/latest/mfsk_core/ft8/) — the a7 list decoder, sniper (roofing-filter) mode, AP hints, decode strategy
+- [`ft4`](https://docs.rs/mfsk-core/latest/mfsk_core/ft4/), [`fst4`](https://docs.rs/mfsk-core/latest/mfsk_core/fst4/) (noise blanker), [`fst4w`](https://docs.rs/mfsk-core/latest/mfsk_core/fst4w/), [`wspr`](https://docs.rs/mfsk-core/latest/mfsk_core/wspr/), [`jt9`](https://docs.rs/mfsk-core/latest/mfsk_core/jt9/), [`jt65`](https://docs.rs/mfsk-core/latest/mfsk_core/jt65/) (Chase decoder)
+- [`q65`](https://docs.rs/mfsk-core/latest/mfsk_core/q65/) — averaging, AP, the fast-fading metric for microwave EME, WSJT-X 3.2's Pileup and Max Drift
+- [`jtty`](https://docs.rs/mfsk-core/latest/mfsk_core/jtty/) — a streaming receiver (audio in chunks, message updates through a callback) and the transmitter
+- [`msk144`](https://docs.rs/mfsk-core/latest/mfsk_core/msk144/) — `decode::decode_slot`
+- [`iq`](https://docs.rs/mfsk-core/latest/mfsk_core/iq/) — wideband SDR IQ in: one dial frequency out as 12 kHz audio at 120 dB selectivity, or N channels decoded on UTC with absolute frequency per row; a polyphase filter bank shares the front end (128 channels of a 2.4 MS/s stream: 41 % of one core)
+
+The full API guide is [`docs/reference/LIBRARY.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md).
 
 ## Features
 
-| Feature       | Default | What it enables                              |
-|---------------|---------|----------------------------------------------|
-| `ft8`         | ✓       | FT8 decode / synth                           |
-| `ft4`         | ✓       | FT4 decode / synth                           |
-| `fst4`        |         | FST4-60A decode / synth (+ FST4-15/30/120/300) |
-| `wspr`        |         | WSPR decode / synth                          |
-| `jt9`         |         | JT9 decode / synth                           |
-| `jt65`        |         | JT65 decode / synth (+ erasure-aware RS)     |
-| `q65`         |         | Q65 decode / synth (QRA soft-decision, all ten sub-modes) |
-| `msk144`      |         | MSK144 decode / synth (outside `Protocol`; the burst-scan sync search needs an FFT feature) |
-| `jtty`        |         | JTTY (WSJT-X 3.2) transmit and streaming receiver (outside `Protocol`; source / CRC / tbcc / tx / pack are FFT-free, the receiver needs `fft-rustfft` or `fft-extern`) |
-| `uvpacket`    |         | Applied example *(experimental)*: NFM voice-channel packet protocol (QPSK + LDPC), reuses `Ldpc240_101` |
-| `packet-bytes` |        | Raw-bytes message codec (`msg::packet_bytes`) |
-| `serde`       |         | `Serialize` / `Deserialize` on `Decoded` and `ProtocolId` |
-| `full`        |         | Every protocol above (the nine WSJT-family ones incl. `msk144` and `jtty`, plus `uvpacket`) + `packet-bytes` + `serde` + `parallel` + `fft-rustfft` |
-| `parallel`    | ✓       | Rayon-parallel candidate processing          |
-| `fft-rustfft` | ✓       | Default host FFT backend (`rustfft`, requires `std`) |
-| `fft-extern`  |         | Pluggable FFT trait — caller binary supplies an `FftPlanner` impl (esp-dsp on ESP32-S3, CMSIS-DSP on RP2350, …) |
-| `fixed-point` |         | Embedded integer pipeline: u16 spectrogram + i16 DFT + Q11i16 LLR + integer NMS BP — see [`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md#q-format-quick-reference) for the Q-format reference |
-| `profile-coarse` |      | Always-on coarse_sync sub-stage profiling (automatically disabled on `wasm32-unknown-unknown` to prevent panics) |
-
-## Architecture
-
-Every protocol runs the same DSP pipeline, differing only in the
-constants each stage plugs in (tone count, sync pattern, FEC codec,
-message layout):
-
-```text
-Audio (i16 PCM)
-  │
-  ▼
-FFT              spectrogram over the slot
-  │
-  ▼
-Candidate Search  coarse frequency/time sync — Costas/sync-pattern
-  │                correlation across the spectrogram
-  ▼
-Synchronization   fine time/frequency refinement per candidate
-  │
-  ▼
-Demodulation      tone → LLR (soft bits), GFSK/FSK-aware
-  │
-  ▼
-FEC               LDPC / convolutional+Fano / Reed-Solomon / QRA decode
-  │
-  ▼
-Decoded Message    77-/72-/50-bit unpack → callsign / grid / report
-```
-
-This is the same shape for FT8's LDPC(174,91) and JT65's
-Reed-Solomon(63,12) — only the boxes' contents change per protocol.
-See [Design Philosophy](#design-philosophy) for how that's expressed
-in code (a `Protocol` trait, not per-mode copy-paste),
-[`docs/reference/LIBRARY.md` §3.1](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#31-generic-vs-bespoke-per-protocol)
-for a per-protocol table of exactly which boxes are shared vs. bespoke,
-and
-[`docs/reference/LIBRARY.md` §6](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#6-engine-primitives)
-for the full data-flow diagram down to function level.
-
-## Design Philosophy
-
-### Why this exists
-
-[WSJT-X](https://sourceforge.net/projects/wsjt/) is the reference
-implementation of these modes and will stay that way — it is
-battle-tested on the desktop, heavily optimised, and the source of
-truth for every protocol constant you will find in this crate. But
-it is also a mixed Fortran / C / Qt application built around a
-specific desktop workflow. That makes it a poor fit whenever you
-want to run the decoders *somewhere else*:
-
-- in a **browser** as a WASM PWA,
-- on **Android or iOS** for portable operation, where linking a
-  Fortran runtime is a non-starter,
-- in a **headless Rust application** (skimmer, monitoring station,
-  remote SDR front end),
-- on **embedded MCUs** (ESP32-S3 with esp-dsp, RP2350 with CMSIS-DSP,
-  Cortex-M) via `no_std + alloc` — the M5Stack Core2 PoC decodes 3–7
-  FT8 results per 15 s cycle on Xtensa LX6 with the fixed-point hot
-  path,
-- or as the core of a **new protocol experiment** that reuses FT8's
-  LDPC and sync machinery for a different modulation / FEC /
-  message recipe.
-
-### Why a `Protocol` trait
-
-Measured (`wc -l`, excluding the experimental uvpacket example, 2026-08-14):
-about a third of `src/` (18.7k / 58.9k lines) is generic over `P:
-Protocol` — the LDPC BP/OSD kernel, the `wsjt77`/`jt72` message codecs,
-FFT/resample/GFSK DSP. The rest is protocol-specific by necessity
-(different FEC math — LDPC / convolutional Fano / Reed-Solomon / QRA
-over GF(64) — and different message widths, 77- / 72- / 50-bit) or by
-how far each protocol has migrated onto the shared decode pipeline so
-far — currently FT4 and FST4; see
-[`docs/reference/LIBRARY.md` §3.1](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#31-generic-vs-bespoke-per-protocol)
-for the per-protocol breakdown, which this paragraph is kept in sync
-with. In the Fortran codebase the *possible* commonality is expressed
-by copy-and-paste between per-mode source files; here it is expressed by
-traits, split by what actually varies per protocol:
-
-- **Shared** (lives in `engine`, generic over any `P: Protocol`): coarse
-  sync, fine sync, LLR computation, equalisation, the decode pipeline
-  driver, GFSK synthesis.
-- **Protocol-specific** (declared as `const` associated items + ZSTs on
-  the protocol type): tone count, symbol rate, Gray map, GFSK shaping
-  constants (`ModulationParams`); total symbols, sync/data layout, slot
-  length (`FrameLayout`); which FEC codec (`Protocol::Fec`, e.g. LDPC
-  vs Reed-Solomon) and which message codec (`Protocol::Msg`, e.g. 77-bit
-  WSJT vs 50-bit WSPR) the protocol plugs in.
-
-```text
-         ┌────────────────────────────────────────────────────────┐
-         │   ft8   ft4   fst4   wspr   jt9   jt65   q65           │  per-protocol ZSTs
-         │        (each implements Protocol + FrameLayout)         │  (feature-gated)
-         └─────────────┬─────────────────┬────────────────────────┘
-                       │                 │
-              ┌────────▼─────────┐  ┌────▼─────────┐
-              │       msg        │  │     fec      │  shared codecs
-              │  Wsjt77 · Jt72   │  │ LDPC · RS    │  behind traits
-              │  Wspr50  · Q65   │  │ ConvFano·QRA │
-              │  · Hash table    │  │              │
-              └────────┬─────────┘  └────┬─────────┘
-                       │                 │
-                   ┌───▼─────────────────▼───┐
-                   │          core           │  Protocol trait, DSP
-                   │ sync · llr · equalize · │  (resample / GFSK /
-                   │  pipeline · tx · dsp    │   downsample / subtract)
-                   └─────────────────────────┘
-```
-
-### Zero-cost: generic decoder, not a runtime dispatch table
-
-Because everything above is expressed as `const` associated items +
-ZSTs, the generic pipeline code — `coarse_sync::<P>`, `decode_frame::<P>`,
-the LDPC inner loop — is **monomorphised per protocol**. LLVM sees a
-fully specialised function for each `P`, inlines the constants, and
-autovectorises the hot loops **on native targets, where SIMD is enabled
-by default** (SSE/AVX on x86_64, NEON on aarch64). The generated machine
-code is byte-identical to a hand-written per-protocol decoder; the
-receive path is a chain of free functions in `engine::sync` →
-`engine::llr` → `engine::equalize` → `engine::pipeline` (each generic
-over `P: Protocol`), not a `Demodulator` / `Receiver` trait object —
-there is no vtable, no dynamic dispatch, on the hot path. On
-`wasm32-unknown-unknown` this autovectorization requires an explicit
-build flag — see [Building for WebAssembly](#building-for-webassembly)
-below.
-
-This pays off most clearly when adding a new protocol: it's a trait
-impl on a ZST, not a cross-cutting refactor. FST4-60A joined the crate
-post-hoc without changing any shared pipeline code — the entire
-implementation is the trait impl block on a single ZST plus a
-Costas pattern table. Similarly, swapping an LDPC codec between two
-LDPC modes, or exposing the same 77-bit message layer to FT8, FT4 and
-FST4, are one-line changes, not cross-cutting refactors.
-
-### Building for WebAssembly
-
-Unlike `x86_64`/`aarch64` hosts, where SSE/AVX or NEON are enabled by
-default, `wasm32-unknown-unknown` ships with **no SIMD by default**.
-mfsk-core has zero hand-written SIMD (by design — it keeps the crate
-`no_std`/portable), so every hot loop depends entirely on LLVM's
-autovectorizer, which on wasm32 only emits `v128` instructions when
-`+simd128` is explicitly enabled. This also gates `rustfft` (the
-default FFT backend)'s own wasm-SIMD butterfly kernels. Without the
-flag, both mfsk-core's DSP and the FFT backend run fully scalar.
-
-Add this to your **consuming project's** `.cargo/config.toml` (this is
-a build flag for the binary/wasm-bindgen crate that embeds mfsk-core,
-not something the library itself can impose on downstream builds):
-
-```toml
-[target.wasm32-unknown-unknown]
-rustflags = ["-C", "target-feature=+simd128"]
-```
-
-Measured effect (Node, `--target nodejs`, real `decode_wav()` FT8
-decode calls, median of 5-7 runs per config, same input, steady-state;
-methodology and a reproducible harness in
-[`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md)):
-
-| WAV | without `+simd128` | with `+simd128` | speedup |
-|---|---:|---:|---:|
-| sim_busy_band.wav | 194.2 ms | 156.5 ms | 19.4% |
-| sim_extreme_hard.wav | 216.5 ms | 173.1 ms | 20.0% |
-
-Browser support for wasm SIMD has been universal since ~2021
-(Chrome/Firefox/Safari 16.4+); in practice there's no reason not to
-set this flag for a wasm build.
-
-### Why Rust
-
-- **Safety**: bit-level FEC routines (LDPC belief propagation,
-  Karn's Berlekamp-Massey + Forney for RS, Fano sequential decoding)
-  are textbook index-heavy code. Writing them in safe Rust eliminates
-  an entire class of memory-corruption bugs that Fortran / C ports
-  have historically hidden.
-- **Generics + trait bounds**: describing a protocol family as data +
-  traits is natural. The equivalent in C++ would be template
-  metaprogramming with subtler error messages; in Fortran, it simply
-  isn't on offer.
-- **Targets**: the same code compiles to `wasm32-unknown-unknown`
-  (WASM SIMD 128-bit via `rustfft`, requires `+simd128` — see
-  [Building for WebAssembly](#building-for-webassembly) above), to
-  Android `arm64-v8a` via the NDK (NEON SIMD), to `no_std + alloc`
-  embedded MCUs, and to any `x86_64-*-unknown` host for servers — from
-  a single source tree.
-- **Ecosystem**: `rustfft`, `num-complex`, `crc`, `rayon` are
-  plug-and-play, so the crate's dependency graph is small and
-  reviewable.
-
-## Benchmarks vs. WSJT-X
-
-Not a competitor — a different point in the design space. WSJT-X is
-the reference implementation and the source of truth for every
-protocol constant in this crate; `mfsk-core` exists to run the same
-algorithms in places a Fortran/C/Qt desktop application can't reach.
-
-| | WSJT-X | mfsk-core |
+| Feature | Default | What it enables |
 |---|---|---|
-| Language | Fortran + C + Qt | Rust |
-| Distribution | Desktop application | Library crate (`cargo add`) |
-| `no_std` / embedded | ✗ | ✓ (ESP32-S3, RP2350, Cortex-M) |
-| WASM | ✗ | ✓ (`wasm32-unknown-unknown`, [`+simd128`](#building-for-webassembly) recommended) |
-| Android / iOS | ✗ | ✓ (NDK / FFI) |
-| FFT backend | fixed (FFTW) | pluggable (`rustfft` or caller-supplied, e.g. esp-dsp/CMSIS-DSP) |
-| Reference implementation | ✓ | derived from WSJT-X, cites source per file |
+| `ft8`, `ft4` | ✓ | FT8 / FT4 |
+| `fst4`, `fst4w`, `wspr`, `jt9`, `jt65`, `q65`, `msk144`, `jtty` | | that protocol (`fst4w` implies `fst4`; the MSK144 and JTTY receivers need an FFT backend) |
+| `uvpacket` | | the experimental packet mode |
+| `packet-bytes` | | raw-bytes message codec |
+| `serde` | | `Serialize` / `Deserialize` on `Decoded` and `ProtocolId` |
+| `parallel` | ✓ | Rayon-parallel candidate processing |
+| `fft-rustfft` | ✓ | host FFT backend (`rustfft`, needs `std`) |
+| `fft-extern` | | caller-supplied FFT (esp-dsp, CMSIS-DSP, …) for `no_std` |
+| `fixed-point` | | the embedded integer pipeline ([`EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)) |
+| `full` | | every protocol, `uvpacket`, `packet-bytes`, `serde`, `parallel`, `fft-rustfft` |
 
-Against WSJT-X `v3.2.0-rc1` on the same task and the same recordings,
-file by file (Ryzen 9 9900X, one thread each side, 2026-10-01; the
-counts, tests and timings are in
-[`docs/notes/UPSTREAM_EVALUATION.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/UPSTREAM_EVALUATION.md),
-the per-protocol detail in
-[`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md)):
+## Platforms
 
-| mode | WSJT-X decoder | sensitivity against WSJT-X | speed |
-|---|---|---|---|
-| FT8 | `jt9 -8 -d 3` | the same (4 conditions) | 2.0–2.3× faster |
-| FT4 | `jt9 -5 -d 3` | the same (4 conditions) | 2.9–6.4× faster |
-| FST4 | `jt9 -7 -d 3` | the same; better in 1 of 20 conditions | 1.9–2.4× faster |
-| Q65 | `jt9 -3 -d 1` | the same; better in 9 of 20 conditions | 3.6–3.8× faster |
-| JT9 | `jt9 -9 -d 3` | the same | 5.5–5.9× faster |
-| JTTY | `rjtty` | identical: every one of 360 trials agrees | 7–9× faster |
-| WSPR | `wsprd` | the same | 1.0–1.5× faster |
-| JT65 | `jt9 -6 -d 3` | **behind** (known; legacy, not chased) | 4–17× faster |
+- **Desktop / server**: the default features.
+- **WebAssembly**: builds for `wasm32-unknown-unknown`. Set
+  `rustflags = ["-C", "target-feature=+simd128"]` for that target in the
+  consuming project's `.cargo/config.toml`; without it the decoder and the
+  FFT run scalar (about 20 % slower on FT8,
+  [`BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md)).
+- **Embedded (`no_std + alloc`)**: `default-features = false, features =
+  ["alloc", "ft8", "fft-extern"]`, with your own FFT; `fixed-point` for the
+  integer path the M5Stack boards run.
+  [`EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
+  ([日本語](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.ja.md)).
+- **C / C++ / Kotlin / Swift**: `mfsk-ffi` builds `libmfsk` and `mfsk.h`, an
+  opaque-handle C ABI over every mode; `bindings/kotlin/` (JNI) and
+  `bindings/swift/` (SwiftPM) wrap it, and CI builds and tests both. Each
+  release attaches prebuilt libraries for Linux, Windows, Android and iOS.
+  [`BINDINGS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/BINDINGS.md)
+  ([日本語](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/BINDINGS.ja.md)).
 
-"The same" means no condition (channel, sub-mode) differs by more than
-chance in a paired test. MSK144 is not in this comparison yet; an
-earlier per-cell check against a real `jt9` matched it in 25 of 28 SNR
-cells.
+## Design in brief
 
-Embedded wall-clock: M5StickS3 (Xtensa LX7, fixed-point) decodes a
-real on-air busy-band FT8 slot in **~1.19 s post-SlotEnd** via the
-streaming pipeline (FFT overlapped with capture); M5Stack Core2
-(Xtensa LX6) on the same recording: ~2.8 s. See
-[`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
-for the byte-level BP-scratch / spectrogram memory budget.
+Every slot mode runs the same pipeline; only the constants each stage plugs
+in (tone count, sync pattern, FEC code, message layout) differ:
 
-## FAQ
-
-**How does this differ from WSJT-X?** See
-[Benchmarks vs. WSJT-X](#benchmarks-vs-wsjt-x) and
-[Why this exists](#why-this-exists) above — same algorithms, different
-deployment targets (library vs desktop app, `no_std` embedded, WASM).
-
-**Does it support `no_std`?** Yes — `default-features = false, features
-= ["alloc", "ft8", "fft-extern"]` (or similar) builds without `std`.
-`std` is only required by the default `fft-rustfft` backend; embedded
-targets swap in their own FFT via `fft-extern`. See
-[`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md).
-
-**Can I swap the FFT backend?** Yes — enable `fft-extern` instead of
-`fft-rustfft` and provide an `FftPlanner` impl (`engine::fft`); the
-embedded ports use this for esp-dsp (ESP32-S3) and CMSIS-DSP (RP2350).
-
-**How do I use this on embedded hardware?** Start with
-[`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
-(feature-flag map, FFT-extern contract, Q-format reference, full C ABI
-tutorial) and, for a complete working example,
-[`embedded-poc/m5stack-s3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-s3-app/)
-(a shipping M5StickS3 FT8 controller).
-
-**Is the API stable?** Not yet — see [Status](#status). Breaking
-changes follow cargo-style minor bumps (`0.x` line).
-
-## License
-
-**GPL-3.0-only** (GNU General Public License version 3), matching upstream WSJT-X, which states
-"version 3" and does not add "or later". See [LICENSE](LICENSE). Versions up to and including 0.13.0
-were published as `GPL-3.0-or-later`; see #569.
-
-------------------------------------------------------------------------
-
-## Reference
-
-The sections above cover getting started and the design rationale.
-The rest of this document is reference material: attribution, module
-layout, the FFI surface, contribution workflow, and the detailed
-per-protocol status / recall tables.
-
-## Attribution
-
-Every algorithm in this crate is derived from
-[WSJT-X](https://sourceforge.net/projects/wsjt/) (Joe Taylor K1JT and
-collaborators). Source files cite the corresponding upstream
-`lib/ft8/*`, `lib/ft4/*`, `lib/fst4/*`, `lib/wsprd/*`, `lib/jt65_*`,
-`lib/jt9_*`, `lib/packjt.f90`, etc. that they port from. This is a
-Rust re-implementation aimed at broadening the set of platforms
-(browser / WASM, Android, embedded) that can host the decoders —
-**not** a replacement for WSJT-X itself, which remains the reference
-implementation.
-
-License matches upstream: **GPL-3.0-only** (version 3).
-
-## Protocol registry details
-
-### Static set of protocols
-
-`PROTOCOLS` is a `const` slice — the set of supported protocols is
-fixed at compile time by Cargo features. There is no runtime
-`register_protocol()` API by design: every wired ZST is verified by
-`tests/protocol_invariants.rs` to satisfy the trait surface, and that
-guarantee can't be extended to types unknown at compile time. UI /
-FFI consumers should iterate `PROTOCOLS` (or filter via `by_id` /
-`by_name`) at startup; if you need a new protocol, add the ZST + a
-`protocol_meta!` line and rebuild.
-
-### Applied example: `uvpacket` (experimental)
-
-The `uvpacket` module (`--features uvpacket`, off by default) is
-an in-tree example showing the trait abstractions extend beyond
-WSJT-X — a π/4-DQPSK packet protocol for NFM / SSB voice channels
-that reuses the shared `Ldpc240_101` codec. **Experimental and
-its public API may change** — pin to an exact version. See
-[`docs/reference/UVPACKET.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/UVPACKET.md)
-([日本語](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/UVPACKET.ja.md))
-for the design narrative, modulation / equaliser / framing details
-and per-mode performance characterisation.
-
-## Modules
-
-- `mfsk_core::engine` — protocol traits, DSP (resample / downsample /
-  GFSK / subtract), sync, LLR, equaliser, pipeline driver;
-  `engine::tx::synthesize::<P>` (tones → `f32` samples for any
-  `FskWaveform`, GFSK or CPFSK; `synthesize_i16` for PCM) and
-  `engine::gray` (`igray.c`'s Gray code, shared by JT9 and JT65).
-- `mfsk_core::fec` — `Ldpc174_91` / `Ldpc240_101` / `ConvFano` /
-  `ConvFano232` / `Rs63_12` / `qra::Q65Codec` (with the
-  `qra15_65_64::QRA15_65_64_IRR_E23` code instance) for Q65.
-- `mfsk_core::msg` — 77-bit (`Wsjt77Message`), 72-bit (`Jt72Codec`),
-  50-bit (`Wspr50Message`) and Q65 (`Q65Message`, 77-bit ↔ 13-symbol
-  packing helpers) message codecs; callsign hash table.
-- `mfsk_core::{ft8, ft4, fst4, wspr, jt9, jt65, q65}` — per-protocol
-  ZSTs, decoders and synthesisers (each feature-gated). The `q65`
-  module exposes one ZST per wired sub-mode — `Q65a30` for
-  terrestrial work, plus `Q65a60` / `Q65b60` / `Q65c60` / `Q65d60` /
-  `Q65e60` for EME at 6 m through 10 GHz+ — with generic
-  `synthesize_standard_for<P>` helper plus the `Decoder<P>` that picks
-  the right NSPS and tone spacing from the type parameter.
-- `mfsk_core::msk144` — MSK144 (LDPC(128, 90), burst-scan sync, the
-  sliding-window `decode::decode_slot` driver); outside `Protocol`.
-- `mfsk_core::jtty` — JTTY (WSJT-X 3.2): source grammar, CRC-12,
-  tail-biting convolutional code, transmit (`tx`, `pack`) and the
-  streaming receiver (`rx::Stream`, `assemble`); outside `Protocol`.
-- `mfsk_core::iq` — wideband IQ front end: per-channel mixer, FIR
-  decimators and polyphase resampler (`IqToAudio`), the polyphase filter
-  bank (`PfbChannelizer`), and the N-channel UTC-slotted `IqReceiver`.
-- `mfsk_core::uvpacket` — the experimental packet mode (four ZSTs).
-
-## C / C++ / Kotlin / Swift
-
-The `mfsk-ffi` sibling crate in this repository builds a
-`libmfsk.{so,a,dylib}` + `mfsk.h` (via `cbindgen`) that exposes the
-same decoder and synthesiser surface through an opaque-handle C ABI.
-`mfsk-ffi` is not published to crates.io, but every tagged release
-attaches a prebuilt `linux-x86_64` tarball to the GitHub Release (from 0.14.0
-also `windows-x86_64-msvc` and `-gnu`, `android-arm64-v8a` and an iOS XCFramework); other
-platforms/ABIs build locally:
-
-```sh
-cargo build -p mfsk-ffi --release
+```text
+audio → spectrogram → candidate search → fine sync → tone → LLR → FEC → message unpack
 ```
 
-See `mfsk-ffi/examples/cpp_smoke/` for an end-to-end driver test
-(including multi-threaded usage) and `bindings/kotlin/` for the
-maintained Kotlin/JNI binding, built and run by CI on every change.
-`bindings/swift/` is a SwiftPM package over the same ABI for iOS/macOS —
-`import MfskCore`, then `Decoder(mode: .ft8)`; its README covers
-linking and what is not wrapped yet. It has not been built since the
-single-decoder rewrite (no Swift toolchain on the machine that did it). Embedded targets (ESP32-S3, RP2350,
-Cortex-M) build `mfsk-core` directly with `alloc,ft8,fft-extern`; an
-ESP-IDF project needs a Rust staticlib shim for the FFT-planner symbol
-either way, so a C ABI in between adds nothing.
+That pipeline lives in `engine` and is generic over a `Protocol` trait that
+each mode implements on a zero-sized type, so it is monomorphised per mode:
+no dynamic dispatch on the hot path, and a new sub-mode is a trait impl, not
+a refactor. Why it is built this way:
+[`docs/notes/DESIGN_RATIONALE.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/DESIGN_RATIONALE.md);
+how: [`LIBRARY.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md)
+and [`CORE_INTERNALS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/CORE_INTERNALS.md).
 
-All 26 `MfskMode`s (FT8 … Q65-300A, MSK144, uvpacket's four, JTTY) are
-addressable through the C ABI; the 20 slot modes (FT8, FT4, FST4 ×5, WSPR, JT9,
-JT65, Q65 ×10) decode through one handle, `mfsk_decoder_open`, which — like
-`Decoder<P>` — keeps the callsign table, a7 and the averages between periods and
-is driven once per period with `MfskParams` (WSJT-X's parameter block) and
-`MfskExtras` (the library's options; one the mode lacks is refused with
-`MFSK_STATUS_UNSUPPORTED`). `MfskStream` cuts slots on the UTC grid, and the
-wideband `mfsk_iq_*` receiver gives each channel a decoder of its own. JTTY has a
-receiver handle of its own (`mfsk_jtty_*`; `MfskJttyReceiver` in Kotlin,
-`JttyReceiver` in Swift). WSJT-X 3.2's Q65 settings are `MfskExtras` fields
-(`pileup`, `max_drift`, fading) with `MfskQ65History` / `MfskQ65Callers` handles
-and `mfsk_encode_q65_flagged`, and FT8's a7 is `MfskExtras::a7`. Kotlin and Swift
-wrap the same surface. The 0.12 session API is gone; the migration table is
-[`BINDINGS.md` §3.2](docs/reference/BINDINGS.md#32-from-the-012-abi), and 0.14's
-changes (ABI 3 kept, behaviour only) are [§3.1](docs/reference/BINDINGS.md#31-from-the-013-abi).
+## Documentation
 
-## Contributing
-
-PRs welcome — recent forks have shipped FT4 SIC, FT4/FST4 depth +
-strictness controls, and the FT8 wide-band AP path. The local-fence
-+ CI gates are uniform across direct commits and fork PRs:
-
-- **Git hooks**: enable both once per clone —
-
-  ```sh
-  git config core.hooksPath .githooks
-  ```
-
-  `.githooks/pre-commit` runs `cargo fmt --all -- --check`, `cargo clippy
-  --workspace --all-targets --features full,internal-testing --no-deps
-  -- -D warnings`, and `RUSTDOCFLAGS=-D warnings cargo doc` for
-  `mfsk-core` (`--features full`) and for `mfsk-ffi` / `mfsk-ffi-abi`
-  (`--no-deps` on both). It deliberately skips the full
-  `cargo test` suite (kept in CI to keep commits snappy); fmt / clippy /
-  rustdoc each catch a failure mode that would otherwise trip CI after
-  the push.
-
-  `.githooks/pre-push` then runs `scripts/pre-push-check.sh` — the same
-  three, plus `-D clippy::perf` and the full feature matrix, which is
-  the part that catches code compiling only under `--features full`. A
-  deletions-only push skips it.
-- **CI gates** (`.github/workflows/ci.yml`): same fmt + clippy
-  fence, plus the merge gate `MFSK_REQUIRE_CORPUS=1 cargo test -p
-  mfsk-core --features full,internal-testing --release` (every
-  non-ignored test: invariants and golden recordings; the slow
-  sensitivity sweeps are `#[ignore]`d, run only scoped per test binary
-  on pushes to `main` or PRs labelled `run-full-sweep`, and by hand
-  before a release — see `docs/notes/RELEASE_PROCEDURE.md`), a feature matrix that builds
-  each protocol in isolation plus the `no_std + alloc`, `fft-extern` and
-  embedded `fixed-point` presets, `cargo test` + the C++ driver for
-  `mfsk-ffi`, the Kotlin and Swift binding jobs, rustdoc with
-  `-D warnings`, and a `cargo publish --dry-run` for `mfsk-core`.
-- **Release**: tag-driven (`vX.Y.Z`). Pushing a tag that matches the
-  workspace version (`Cargo.toml::[workspace.package].version`,
-  inherited by `mfsk-core` and `mfsk-ffi` alike) and is
-  reachable from `main` triggers `release.yml`, which publishes
-  `mfsk-core` to crates.io and cuts a GitHub release with
-  auto-generated notes. Prebuilt `mfsk-ffi` binaries (linux-x86_64, and from
-  0.14.0 windows-x86_64 (MSVC and MinGW), android-arm64-v8a and iOS) follow on the same tag.
-
-For non-trivial changes, please open an issue first so the
-WSJT-X-source-faithfulness lineage of any DSP or FEC change is
-visible in review (every protocol constant in this crate cites the
-upstream `lib/*.f90` it ports from — drift from that lineage tends
-to be the failure mode caught by the WSJT-X golden harnesses).
-
-## Architecture & ABI reference
-
-For a deeper look at the design — trait hierarchy with worked
-examples, shared DSP / sync / LLR / pipeline primitives, the C ABI
-memory model, Kotlin/Android scaffolding — see the library
-reference:
-
-<!-- Absolute URLs so the links resolve from both GitHub and the
-     crates.io README renderer (which otherwise rewrites
-     "docs/reference/LIBRARY.md" to mfsk-core/docs/... — see workspace
-     layout: docs/ lives at the repo root, not under the crate). -->
-- **English:** [`docs/reference/LIBRARY.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md)
-- **日本語:** [`docs/reference/LIBRARY.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.ja.md)
-- **Streaming decode interface (`.on_result` + async bridge):**
-  [English `docs/reference/STREAMING.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/STREAMING.md)
-  / [日本語 `docs/reference/STREAMING.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/STREAMING.ja.md)
-  — per-protocol streaming entry points, the delivery contract
-  (sequential exact-match vs. parallel completion-order), why it's a
-  synchronous callback rather than `async`/Tokio/a channel, and a
-  complete worked example of driving it from a Tokio async client.
-- **Benchmarks vs. WSJT-X, full per-protocol detail:**
-  [`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md)
-  — golden-WAV recall + AWGN sensitivity sweep results for every
-  protocol, current-state only (see `CHANGELOG.md` for how each
-  number got there).
-- **Embedded targets:**
-  [English `docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
-  / [日本語 `docs/reference/EMBEDDED.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.ja.md)
-  — generic-scalar architecture (one codebase for f32 host and
-  fixed-point embedded), feature-flag map, FFT-extern contract,
-  Goertzel per-symbol DFT (zero-scratch, 0.6.4+) with BASIS
-  deprecation, Q-format reference, the embedded C ABI
-  tutorial (streaming + ESP-IDF component layout), performance
-  benchmark, streaming RX pipeline, binary footprint.
-- **FST4 sensitivity benchmark setup:**
-  [English `docs/notes/FST4_BENCHMARK.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/FST4_BENCHMARK.md)
-  / [日本語 `docs/notes/FST4_BENCHMARK.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/FST4_BENCHMARK.ja.md)
-  — reproducing the `fst4sim`-driven AWGN/fading SNR sweep
-  (`tests/fst4_sweep.rs`) from a clean checkout on any machine:
-  prerequisites, building `fst4sim` from WSJT-X source, generating
-  the WAV corpus, and how to avoid grid-censoring artifacts when
-  reading off the recall crossing.
-- **MSK144 sensitivity benchmark setup:**
-  [English `docs/notes/MSK144_BENCHMARK.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/MSK144_BENCHMARK.md)
-  / [日本語 `docs/notes/MSK144_BENCHMARK.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/MSK144_BENCHMARK.ja.md)
-  — the self-contained `tests/msk144_snr_sweep.rs` regression sweep
-  (no WSJT-X checkout needed), plus how to reproduce the one-time
-  apples-to-apples verification against a real WSJT-X `jt9` build
-  (building `jt9`/`msk144sim`/Hamlib from source, `msk144sim`'s SNR
-  convention, and the measured baseline results).
-- **SpyServer skimmer manual** (Windows and macOS app, beta):
-  [English `docs/reference/MANUAL_SKIMMER.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_SKIMMER.md)
-  / [日本語 `docs/reference/MANUAL_SKIMMER.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_SKIMMER.ja.md)
-  — decode many channels at once from a SpyServer, the waterfall, the
-  database and map, sharing the radio with SDR#, a rotation of bands.
-  Installers: [skimmer releases](https://github.com/jl1nie/mfsk-core/releases?q=skimmer).
-- **M5Stack CoreS3 receiver manual:**
-  [English `docs/reference/MANUAL_M5STACK_CORES3.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STACK_CORES3.md)
-  / [日本語 `docs/reference/MANUAL_M5STACK_CORES3.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STACK_CORES3.ja.md)
-  — the main hardware target: FT8, FT4 and JTTY over USB Audio and a
-  radio-free demo in one image, mode switching from the
-  touch panel, the host-versus-peripheral power rule, the RTC, and why
-  a board with no clock decodes nothing.
-- **M5StickS3 FT8 controller manual:**
-  [English `docs/reference/MANUAL_M5STICKS3.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.md)
-  / [日本語 `docs/reference/MANUAL_M5STICKS3.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.ja.md)
-  — build / flash / `cfg.toml` / `BootMode` cycle / UI / QSO
-  workflow / troubleshooting.
+| | English | 日本語 |
+|---|---|---|
+| Library API | [LIBRARY.md](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md) | [LIBRARY.ja.md](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.ja.md) |
+| Delivering decodes as they are found | [STREAMING.md](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/STREAMING.md) | [STREAMING.ja.md](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/STREAMING.ja.md) |
+| C ABI, Kotlin, Swift | [BINDINGS.md](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/BINDINGS.md) | [BINDINGS.ja.md](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/BINDINGS.ja.md) |
+| Embedded, `no_std`, fixed-point | [EMBEDDED.md](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md) | [EMBEDDED.ja.md](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.ja.md) |
+| Skimmer manual | [MANUAL_SKIMMER.md](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_SKIMMER.md) | [MANUAL_SKIMMER.ja.md](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_SKIMMER.ja.md) |
+| CoreS3 receiver manual | [MANUAL_M5STACK_CORES3.md](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STACK_CORES3.md) | [MANUAL_M5STACK_CORES3.ja.md](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STACK_CORES3.ja.md) |
+| M5StickS3 manual | [MANUAL_M5STICKS3.md](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.md) | [MANUAL_M5STICKS3.ja.md](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.ja.md) |
+| Benchmarks | [BENCHMARKS.md](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md) | |
+| Changes per release | [CHANGELOG.md](https://github.com/jl1nie/mfsk-core/blob/main/CHANGELOG.md) | |
 
 ## Status
 
-**The published version is the crates.io badge at the top** — no
-number is repeated here, because this line said `v0.9.0` through two
-releases before anyone noticed. API is deliberately not frozen:
-breaking changes follow cargo-style minor bumps, while a new
-protocol/mode addition on its own is patch-level (e.g. MSK144 shipped
-as `0.7.4`, not `0.8.0`) — minor bumps mark more structural changes.
-See `CHANGELOG.md` for the per-release breakdown and
-`docs/notes/ROADMAP.md` for open follow-ups.
+The published version is the crates.io badge above. The API is not frozen:
+breaking changes come with a minor bump (`0.x`), a new protocol on its own
+with a patch. Releases are cut every two weeks; the top of `CHANGELOG.md` is
+what has merged since. Open work: [`docs/notes/ROADMAP.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/ROADMAP.md).
 
-**Release cadence**: PRs merge to `main` continuously — CHANGELOG.md's
-top section always reflects the latest unreleased state, so tracking
-`main` directly (see [Quick Start](#quick-start)) gets you every
-change immediately. Actual crates.io tags/GitHub Releases are cut on a
-**biweekly** cadence (bundling everything merged since the last tag)
-rather than after every individual change, to keep update
-notifications for crates.io consumers from firing too often — an
-out-of-cadence release is still fine for a security fix, a serious
-correctness bug, or on explicit request.
+## Contributing
 
-Algorithm correctness is covered by the workspace test suite:
-end-to-end synth → decode roundtrips for every protocol, real
-WSJT-X-distributed reference recordings, `*sim`-generated AWGN
-sensitivity sweeps, and AP-list / fast-fading comparisons — see
-[Benchmarks vs. WSJT-X](#benchmarks-vs-wsjt-x) above and
-[`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md)
-for the full results. The trait surface itself is pinned by
-`tests/protocol_invariants.rs` — a single generic `<P: Protocol>`
-checker run across every wired ZST. Run with `--features full` for
-full coverage; the default features (`ft8`, `ft4`) only exercise the
-two default protocols.
+Pull requests are welcome. Run `bash scripts/install-hooks.sh` once after
+cloning, and for a change to a decoder or FEC routine open an issue first, so
+its lineage to the WSJT-X source it ports is visible in review. Rules, test
+tiers and how to add a protocol:
+[`CONTRIBUTING.md`](https://github.com/jl1nie/mfsk-core/blob/main/CONTRIBUTING.md).
 
-`embedded-poc/m5stack-s3-app/` (demo / acoustic-fallback, since the
-StickS3 board can't source VBUS for USB host) and
-`embedded-poc/m5stack-core2-app/` (wav_sim-only LX6 sibling) are production FT8 controller crates (LCD
-UI + QSO FSM + WiFi-UDP log streaming), both consuming the
-board-agnostic `embedded-poc/mfsk-app-shared/`.
-`embedded-poc/m5stack-cores3-app/` is the **main target** (M5Stack
-CoreS3 has the PMIC/IO-expander wiring the StickS3 lacks) — one image
-carrying FT8, FT4 and JTTY receivers, chosen from the touch panel, taking
-audio from a radio over USB Audio. Live IC-705 verification cleared
-2026-08-23 (issue #163) and FT8 decodes off the air; CAT (CI-V) runs
-over the same USB cable. It is receive-only today: the transmit
-bring-up probes exist (`MFSK_CORES3_TX_BRINGUP`) and have not yet been
-run on hardware. See
-`docs/reference/MANUAL_M5STACK_CORES3.md` to operate it, and
-`docs/notes/ROADMAP.md`'s Phase B-Core section for what it unblocks. `embedded-poc/m5stack-s3/` is a
-decoder-only compute-bench crate for S3 timing-regression tracking.
-See
-[`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
-for the integration contract and runtime tuning knobs, and
-[`docs/reference/MANUAL_M5STICKS3.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.md)
-for the M5StickS3 controller's build/flash/UI workflow.
+## License and attribution
+
+**GPL-3.0-only**, matching WSJT-X, which states "version 3" without "or
+later" ([LICENSE](LICENSE); versions up to 0.13.0 were published as
+`GPL-3.0-or-later`, #569). Every algorithm is derived from
+[WSJT-X](https://sourceforge.net/projects/wsjt/) by Joe Taylor K1JT and
+collaborators; this crate broadens where those decoders can run and does not
+replace WSJT-X, which remains the reference.
