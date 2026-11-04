@@ -20,6 +20,7 @@ for a decision someone might otherwise make again.
 - [4. Q65's decoder strategies, and what each is for](#4-q65s-decoder-strategies-and-what-each-is-for)
 - [5. Why the embedded path doesn't widen PASS1 or enable OSD](#5-why-the-embedded-path-doesnt-widen-pass1-or-enable-osd)
 - [6. The decode API follows WSJT-X's decoder (0.13)](#6-the-decode-api-follows-wsjt-xs-decoder-013)
+- [7. Why a `Protocol` trait, and why Rust](#7-why-a-protocol-trait-and-why-rust)
 
 ---
 
@@ -399,3 +400,84 @@ Three things follow from it, and they are the reason:
   handle and per-family functions, because the Rust side now has one shape
   to expose.
 
+---
+
+## 7. Why a `Protocol` trait, and why Rust
+
+Moved from `README.md` when it was shortened (2026-11-04); the measurements keep their own dates.
+
+### Why this crate exists
+
+WSJT-X is the reference implementation of these modes and the source of every protocol constant here. It is also a
+Fortran / C / Qt desktop application, which makes it a poor fit for running the decoders anywhere else: in a browser
+(WASM), on Android or iOS (no Fortran runtime to link), in a headless Rust application (skimmer, monitoring station,
+remote SDR front end), on `no_std + alloc` microcontrollers (ESP32-S3 with esp-dsp, RP2350 with CMSIS-DSP), or as the
+core of a new protocol experiment that reuses FT8's LDPC and sync machinery.
+
+### Why a `Protocol` trait
+
+Measured (`wc -l`, excluding the experimental `uvpacket`, 2026-08-14): about a third of `src/` (18.7k of 58.9k lines)
+was generic over `P: Protocol` — the LDPC BP/OSD kernel, the `wsjt77` / `jt72` message codecs, FFT / resample / GFSK
+DSP. The rest is protocol-specific by necessity (different FEC: LDPC, convolutional + Fano, Reed-Solomon, QRA over
+GF(64); different message widths: 77, 72, 50 bits). Not re-measured since; the per-protocol split of what is shared is
+`LIBRARY.md` §3.1. WSJT-X expresses the possible commonality by copying between per-mode source files; here it is
+traits, split by what varies per protocol:
+
+- **Shared** (`engine`, generic over `P: Protocol`): coarse and fine sync, LLR computation, equalisation, the decode
+  pipeline driver, GFSK synthesis.
+- **Per protocol** (`const` associated items on a zero-sized type): tone count, symbol rate, Gray map, GFSK shaping
+  (`ModulationParams`); total symbols, sync / data layout, slot length (`FrameLayout`); which FEC (`Protocol::Fec`) and
+  which message codec (`Protocol::Msg`).
+
+```text
+     ┌──────────────────────────────────────────────────────────────┐
+     │  ft8  ft4  fst4  fst4w  wspr  jt9  jt65  q65                 │  per-protocol ZSTs
+     │       (each implements Protocol + FrameLayout)               │  (feature-gated)
+     └────────────┬──────────────────────┬──────────────────────────┘
+                  │                      │
+         ┌────────▼─────────┐    ┌───────▼────────┐
+         │       msg        │    │      fec       │  shared codecs
+         │ Wsjt77 · Jt72    │    │ LDPC · RS      │  behind traits
+         │ Wspr50 · Q65     │    │ ConvFano · QRA │
+         │ · hash table     │    │                │
+         └────────┬─────────┘    └───────┬────────┘
+                  │                      │
+              ┌───▼──────────────────────▼───┐
+              │            engine            │  Protocol trait, DSP
+              │  sync · llr · equalize ·     │  (resample / GFSK /
+              │  pipeline · tx · dsp         │   downsample / subtract)
+              └──────────────────────────────┘
+```
+
+MSK144 and JTTY sit outside the trait on purpose: MSK144 is continuous-phase MSK in transient meteor bursts, and JTTY
+has no slot (frames start whenever the sender likes, and a message is several of them). Neither fits the static-slot
+model the trait describes.
+
+### Zero-cost: monomorphised, not dispatched
+
+Because the per-protocol part is `const` items on zero-sized types, the generic receive path — `engine::sync` →
+`engine::llr` → `engine::equalize` → `engine::pipeline`, free functions generic over `P` — is monomorphised per
+protocol. LLVM sees a specialised function for each `P`, inlines the constants and autovectorises the hot loops on
+native targets (SSE/AVX on x86_64, NEON on aarch64). There is no `Demodulator` trait object and no vtable on the hot
+path. The crate has no hand-written SIMD, by design (it keeps the code `no_std` and portable), so on
+`wasm32-unknown-unknown` the vectorisation needs `-C target-feature=+simd128` in the consuming build; measured effect
+about 20 % on FT8 (`BENCHMARKS.md`, "WASM: `+simd128`").
+
+The pay-off is adding a protocol: FST4-60A joined as a trait impl on one ZST plus a Costas table, with no change to
+shared pipeline code, and later sub-modes are one `fst4_submode!` / `q65_submode!` line.
+
+### A static set of protocols
+
+`PROTOCOLS` is a `const` slice fixed at compile time by Cargo features. There is no runtime `register_protocol()`:
+every wired ZST is checked by `tests/protocol_invariants.rs` against the trait surface, and that guarantee cannot
+extend to types unknown at compile time. A new protocol is a ZST, a `protocol_meta!` line and a rebuild.
+
+### Why Rust
+
+- **Safety**: LDPC belief propagation, Berlekamp-Massey + Forney for RS and Fano sequential decoding are index-heavy
+  code; safe Rust removes the memory-corruption class of bug from them.
+- **Generics and trait bounds** describe a protocol family as data plus traits; in C++ that is template
+  metaprogramming, in Fortran it is not available.
+- **Targets**: one source tree builds for `wasm32-unknown-unknown`, Android `arm64-v8a`, `no_std + alloc`
+  microcontrollers and any host.
+- **Ecosystem**: `rustfft`, `num-complex`, `crc`, `rayon` keep the dependency graph small and reviewable.
