@@ -7,7 +7,7 @@ rust-version.workspace = true
 edition     = "2024"
 license     = "GPL-3.0-only"
 publish     = false
-description = "Sample app: command-line SpyServer skimmer over skimmer-core."
+description = "Sample app: command-line mfsk-skimmer over skimmer-core."
 
 [dependencies]
 skimmer-core = { path = "../core" }

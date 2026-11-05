@@ -12,7 +12,7 @@ Host workspace members (`Cargo.toml` `[workspace] members`):
 | `mfsk-ffi/` | C ABI over *all* protocols; `include/mfsk.h` is cbindgen-generated and committed; `examples/cpp_smoke/` is a real C++ driver run by CI | no |
 | `mfsk-ffi-abi/` | shared `#[repr(C)]` mode / status / params / row types `mfsk-ffi` re-emits (issue #205) | no |
 | `hosttest/mfsk-app-shared/` | runs the host-testable parts of `embedded-poc/mfsk-app-shared` under a normal `cargo test` | no |
-| `apps/skimmer/core/`, `apps/skimmer/cli/` | sample app: SpyServer skimmer over `IqReceiver` (`skimmer-core` + the `skimmer` CLI); see `apps/skimmer/README.md`. `mfsk-core` itself has no network code, by decision | no |
+| `apps/skimmer/core/`, `apps/skimmer/cli/` | sample app: mfsk-skimmer over `IqReceiver` (`skimmer-core` + the `skimmer` CLI); see `apps/skimmer/README.md`. `mfsk-core` itself has no network code, by decision | no |
 
 Only `mfsk-core` reaches crates.io; the rest are `publish = false`.
 `workspace.package.version` in the root `Cargo.toml` is the single source

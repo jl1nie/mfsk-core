@@ -9,7 +9,7 @@ A pure-Rust 1:1 port of the WSJT-X decoders and synthesisers: FT8, FT4, FST4, FS
 sub-modes), MSK144, JTTY, and the experimental `uvpacket`. License: GPL-3.0-only.
 
 Around the library: an embedded line (M5Stack CoreS3: USB audio from an IC-705, FT8 / FT4 / JTTY / WSPR, CAT) and a
-SpyServer skimmer app.
+`mfsk-skimmer` app (SpyServer / rtl_tcp).
 
 | path | what |
 |---|---|
@@ -17,7 +17,7 @@ SpyServer skimmer app.
 | `mfsk-ffi/`, `mfsk-ffi-abi/` | C ABI over all protocols; `include/mfsk.h` is cbindgen-generated and committed |
 | `bindings/{kotlin,swift}/` | JNI / SwiftPM over the same ABI; own CI jobs |
 | `hosttest/mfsk-app-shared/` | host-testable half of `embedded-poc/mfsk-app-shared` |
-| `apps/skimmer/` | SpyServer skimmer (core, cli, Tauri GUI); **own version and own tags** `skimmer-vX.Y.Z`, takes `mfsk-core` by path |
+| `apps/skimmer/` | mfsk-skimmer (core, cli, Tauri GUI); **own version and own tags** `skimmer-vX.Y.Z`, takes `mfsk-core` by path |
 | `embedded-poc/`, `bench/wasm/`, `wasm-smoke/` | outside the workspace: other toolchains / targets |
 | `docs/reference/` | manuals; every file has a `.ja.md` twin |
 | `docs/notes/` | design rationale, procedures, per-protocol notes, benchmarks |

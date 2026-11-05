@@ -5,7 +5,7 @@ edition      = "2024"
 rust-version = "1.93"
 license      = "GPL-3.0-only"
 publish      = false
-description  = "Sample app: Tauri GUI for the SpyServer skimmer (skimmer-core)."
+description  = "Sample app: Tauri GUI for mfsk-skimmer (skimmer-core)."
 
 # Outside the host workspace (root Cargo.toml `exclude`): Tauri needs a
 # webview (WebView2 on Windows, webkit2gtk on Linux) and the front end

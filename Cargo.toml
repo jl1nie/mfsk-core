@@ -1,7 +1,7 @@
 [workspace]
 members  = [
     "mfsk-core", "mfsk-ffi", "mfsk-ffi-abi", "hosttest/mfsk-app-shared",
-    # Sample apps: the SpyServer skimmer's shared core and its CLI. The
+    # Sample apps: mfsk-skimmer's shared core and its CLI. The
     # Tauri GUI beside them (`apps/skimmer/gui`) is excluded below.
     "apps/skimmer/core", "apps/skimmer/cli",
 ]

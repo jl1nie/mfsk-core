@@ -36,7 +36,7 @@ WSJT-X(Joe Taylor K1JT ら)から移植しており、WSJT-X が引き続きリ�
 
 | | 内容 | マニュアル |
 |---|---|---|
-| **SpyServer スキマー**(Windows、macOS) | 1つの SpyServer ストリーム(Airspy HF+、Airspy、RTL-SDR)から FT8、FT4、FST4、WSPR、JT9、JT65、Q65、JTTY を多チャネル同時にデコード。サーバー4台まで、バンドのローテーション、SDR# との共存、ウォーターフォール、受信したすべての記録と地図のデータベース、PSK Reporter への送信(既定はオフ)。インストーラ: [スキマーのリリース](https://github.com/jl1nie/mfsk-core/releases?q=skimmer)。 | [EN](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_SKIMMER.md) / [日本語](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_SKIMMER.ja.md) |
+| **mfsk-skimmer**(Windows、macOS) | 1本の IQ ストリームから FT8、FT4、FST4、WSPR、JT9、JT65、Q65、JTTY を多チャネル同時にデコード。入力は SpyServer(Airspy HF+、Airspy、RTL-SDR。既定)または rtl_tcp / rsp_tcp サーバー(実験的)。サーバー4台まで、バンドのローテーション、SDR# との共存、ウォーターフォール、受信したすべての記録と地図のデータベース、PSK Reporter への送信(既定はオフ)。インストーラ: [スキマーのリリース](https://github.com/jl1nie/mfsk-core/releases?q=skimmer)。 | [EN](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_SKIMMER.md) / [日本語](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_SKIMMER.ja.md) |
 | **M5Stack CoreS3 受信機** | 主ハードウェアターゲット。無線機の USB Audio から FT8、FT4、JTTY を受信(IC-705 の 40 m で確認、1スロットあたり FT8 を 6〜8 局、+8〜−24 dB)、同じケーブルで CAT、無線機不要のデモも搭載。モードはタッチパネルで選択。 | [EN](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STACK_CORES3.md) / [日本語](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STACK_CORES3.ja.md) |
 | **M5StickS3 FT8 コントローラー**(写真) | LCD UI、IC-705 への BLE CI-V、マイク入力、QSO ステートマシン。混雑バンドの FT8 録音をスロット終了後 1.19 秒でデコード。 | [EN](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.md) / [日本語](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.ja.md) |
 

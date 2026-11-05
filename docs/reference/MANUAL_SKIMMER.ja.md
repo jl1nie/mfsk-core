@@ -1,6 +1,6 @@
 # mfsk skimmer — ユーザマニュアル
 
-SpyServer から FT8・FT4・WSPR などの WSJT-X のモードをデコードします。PC だけで動き、手元に無線機は要りません。
+SpyServer(または rtl_tcp / rsp_tcp サーバー)から FT8・FT4・WSPR などの WSJT-X のモードをデコードします。PC だけで動き、手元に無線機は要りません。
 
 Windows と macOS のアプリ（バージョン 1.0）のマニュアルです。画面に何が出るか、各設定が何をするかを
 説明します。なぜそう動くのかは [`apps/skimmer/README.md`](../../apps/skimmer/README.md) にあり、

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! A SpyServer skimmer over `mfsk_core::iq::IqReceiver`: the shared half of
+//! mfsk-skimmer over `mfsk_core::iq::IqReceiver`: the shared half of
 //! the sample apps in `apps/skimmer/` (the `skimmer` CLI and the Tauri GUI).
 //!
 //! [`run`] connects, plans a stream, decodes, and reports everything as an

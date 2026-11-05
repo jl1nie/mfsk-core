@@ -1,4 +1,4 @@
-# SpyServer skimmer — sample app
+# mfsk-skimmer — sample app
 
 **Using the app (Windows, macOS)?** The user manual is
 [`docs/reference/MANUAL_SKIMMER.md`](../../docs/reference/MANUAL_SKIMMER.md)

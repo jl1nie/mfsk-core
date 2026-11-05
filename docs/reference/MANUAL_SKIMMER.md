@@ -1,6 +1,6 @@
 # mfsk skimmer — user manual
 
-Decode FT8, FT4, WSPR and the other WSJT-X modes from a SpyServer, on a PC, with no radio on the desk.
+Decode FT8, FT4, WSPR and the other WSJT-X modes from a SpyServer (or an rtl_tcp / rsp_tcp server), on a PC, with no radio on the desk.
 
 This is the manual for the Windows and macOS app (version 1.0). It describes what
 you see and what each setting does. Why it works the way it does is in
