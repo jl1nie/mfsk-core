@@ -9,11 +9,13 @@
 //! Tolerance, and why it is not zero: beta6 rewrote the generators (`lib/waveform_kernels.f90`) with a
 //! polynomial Gaussian tail, a degree-9 sine and a double-precision phase. Against its own beta4 generator
 //! that moved the waveform by -68 dB (FT8, max 7.1e-4), -83 dB (FT4) and -42 dB (FST4-60, a 51 s frame whose
-//! f32 phase drifted), and this crate's f32 phase sum matched beta4, not beta6. It sums the phase and the
-//! carrier in f64 now. Measured against beta6: FT8 -89.7 dB / max 7.0e-5, FT4 -88.7 dB / 7.3e-5, FST4-15
-//! -85.5 dB / 1.1e-4, JTTY -98.7 dB / 1.6e-5 (the quantisation floor; its own f64 phase already matched; the fixture's int16 quantisation is 1.5e-5 of peak). The bounds leave about 2x
-//! headroom; a structural difference (FT4's ramp symbols, FST4's unextended first symbol, the pulse, the
-//! phase start) is 10-40 dB larger.
+//! f32 phase drifted), and this crate's f32 phase sum matched beta4, not beta6. It keeps phase and carrier in
+//! a `u64` turn accumulator now (no `f64` per sample: software on an LX7), which agrees with beta6 better than
+//! an `f64` sum did. Measured against beta6: FT8 -95.5 dB / max 3.3e-5, FT4 -95.4 dB / 3.5e-5, FST4-15
+//! -88.4 dB / 1.1e-4, JTTY -98.7 dB / 1.6e-5 (the quantisation floor; its own phase already matched; the
+//! fixture's int16 quantisation is 1.5e-5 of peak). The bounds leave about 2x headroom; a structural
+//! difference (FT4's ramp symbols, FST4's unextended first symbol, the pulse, the phase start) is 10-40 dB
+//! larger.
 
 #![cfg(all(feature = "ft8", feature = "ft4"))]
 
