@@ -2646,9 +2646,9 @@ is a whole symbol long. The tones therefore start `synth_lead_samples::<P>(rate)
 before `TX_START_OFFSET_S` (`ft4sim.f90:91`). Up to 0.15 FT4 audio was the
 103-symbol, `nsps / 8`-ramp form `gen_ft8wave` has, -45 dB from `gen_ft4wave`;
 `tests/gen_wave_vs_wsjtx.rs` now holds FT8, FT4 and FST4 to WSJT-X v3.3.0-beta6's own
-generators (-86 to -90 dB). FST4 (`Waveform::Fst4`) does not extend its first and last
-symbol and ramps half a symbol, as `gen_fst4wave.f90` does; all three sum phase and
-carrier in f64.
+generators (-88 to -95 dB). FST4 (`Waveform::Fst4`) does not extend its first and last
+symbol and ramps half a symbol, as `gen_fst4wave.f90` does; all three keep phase and
+carrier in an integer accumulator (no `f64` per sample).
 
 ### Monomorphisation is why this is free
 

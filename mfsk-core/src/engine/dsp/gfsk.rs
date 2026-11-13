@@ -265,6 +265,45 @@ impl GfskStream {
     }
 }
 
+/// A phase accumulator that needs no `f64` per sample: the phase is a `u64` of turns (2^64 is one cycle),
+/// so adding to it is exact and wraps by itself. An f32 sum of `2 pi f0 / fs` drifts (the increment is off
+/// by ~3e-8 rad and the error is systematic: 3e-3 rad over an FST4-15 frame, a degree over a long one),
+/// and an `f64` one is software on an Xtensa LX7. The carrier is turned into its increment once, in
+/// `f64`; the modulation increments (small, an `f32` each) are rounded to turns one at a time, which
+/// does not accumulate. Against WSJT-X v3.3.0-beta6, which sums in `f64`, the waveforms agree to the
+/// same -85 dB or better as an `f64` sum does (`tests/gen_wave_vs_wsjtx.rs`).
+struct Nco {
+    turns: u64,
+    carrier: u64,
+}
+
+impl Nco {
+    /// Radians to turns: `2^64 / 2 pi`, exact enough in f32 (it is a scale, not a phase).
+    const TURNS_PER_RAD: f32 = 18_446_744_073_709_551_616.0 / (2.0 * PI);
+
+    fn new(f0_hz: f32, sample_rate: f32) -> Self {
+        // once per call; the fraction of a turn per sample, `f0 / fs`, to 2^-64
+        let frac = f64::from(f0_hz) / f64::from(sample_rate);
+        Self {
+            turns: 0,
+            carrier: ((frac - frac.floor()) * 18_446_744_073_709_551_616.0_f64) as u64,
+        }
+    }
+
+    /// The phase now, radians in `[0, 2 pi)`, from its top 32 bits.
+    #[inline]
+    fn phase(&self) -> f32 {
+        ((self.turns >> 32) as u32) as f32 * (2.0 * PI / 4_294_967_296.0)
+    }
+
+    /// Advance by one sample: the carrier and `modulation_rad`.
+    #[inline]
+    fn step(&mut self, modulation_rad: f32) {
+        let m = (modulation_rad * Self::TURNS_PER_RAD) as i64 as u64;
+        self.turns = self.turns.wrapping_add(self.carrier).wrapping_add(m);
+    }
+}
+
 /// Synthesise a PCM waveform from an FSK tone sequence into a caller-
 /// provided output buffer. **No allocation** — `out` must already be
 /// sized to [`synth_output_len`]`(tones.len(), cfg.samples_per_symbol)`.
@@ -334,17 +373,12 @@ pub fn synth_f32_into(out: &mut [f32], tones: &[u8], f0_hz: f32, amplitude: f32,
         }
     }
 
-    // The phase and the carrier are summed in f64 (beta6's `waveform_kernels.f90` does; an f32 sum
-    // drifts, and an f32 `2 pi f0 / fs` is off by ~3e-8 rad per sample).
-    let twopi64 = 2.0 * core::f64::consts::PI;
-    let carrier = twopi64 * f64::from(f0_hz) / f64::from(cfg.sample_rate);
-    let mut phi = 0.0f64;
+    // Phase and carrier in an integer accumulator ([`Nco`]): beta6's `waveform_kernels.f90` sums in f64,
+    // which an f32 sum cannot match and an LX7 cannot afford.
+    let mut nco = Nco::new(f0_hz, cfg.sample_rate);
     for k in 0..nwave {
-        out[k] = amplitude * (phi.sin() as f32);
-        phi += f64::from(dphi[nsps + k]) + carrier;
-        if phi >= twopi64 {
-            phi -= twopi64;
-        }
+        out[k] = amplitude * nco.phase().sin();
+        nco.step(dphi[nsps + k]);
     }
 
     // Half-cosine envelope on each end
@@ -420,16 +454,11 @@ pub fn synth_f32_lead_tail_into(
             *d += dphi_peak * p * tone as f32;
         }
     }
-    // Phase and carrier in f64, as for `synth_f32_into`.
-    let twopi64 = 2.0 * core::f64::consts::PI;
-    let carrier = twopi64 * f64::from(f0_hz) / f64::from(cfg.sample_rate);
-    let mut phi = 0.0f64;
+    // Phase and carrier in an integer accumulator, as for `synth_f32_into`.
+    let mut nco = Nco::new(f0_hz, cfg.sample_rate);
     for (o, &d) in out.iter_mut().zip(dphi.iter()) {
-        *o = amplitude * (phi.sin() as f32);
-        phi += f64::from(d) + carrier;
-        if phi >= twopi64 {
-            phi -= twopi64;
-        }
+        *o = amplitude * nco.phase().sin();
+        nco.step(d);
     }
 
     for i in 0..nsps {
@@ -495,19 +524,12 @@ pub fn synth_f32_fst4_into(
         }
     }
 
-    // The phase is summed in f64: over FST4's 160 symbols (21 M samples at -1800) an f32 sum drifts by
-    // more than a degree (beta4's `gen_fst4wave` had that; beta6 keeps the phase in f64).
-    let twopi64 = 2.0 * core::f64::consts::PI;
-    // ... and the carrier is added there too, in f64: an f32 `2 pi f0 / fs` is off by up to ~3e-8 rad per
-    // sample, 3e-3 rad over FST4-15's frame.
-    let carrier = twopi64 * f64::from(f0_hz) / f64::from(cfg.sample_rate);
-    let mut phi = 0.0f64;
+    // Phase and carrier in an integer accumulator ([`Nco`]); over FST4's 160 symbols (21 M samples at -1800)
+    // an f32 sum drifts by more than a degree.
+    let mut nco = Nco::new(f0_hz, cfg.sample_rate);
     for (o, &d) in out.iter_mut().zip(dphi.iter()) {
-        *o = amplitude * (phi.sin() as f32);
-        phi += f64::from(d) + carrier;
-        if phi >= twopi64 {
-            phi -= twopi64;
-        }
+        *o = amplitude * nco.phase().sin();
+        nco.step(d);
     }
 
     let ramp = nsps / 4;
