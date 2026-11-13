@@ -26,6 +26,7 @@ pub mod fft_sc16_r2;
 pub mod fir_decimate;
 pub mod gfsk;
 pub mod msk;
+pub(crate) mod nco;
 pub mod polyphase;
 pub mod resample;
 pub mod subtract;

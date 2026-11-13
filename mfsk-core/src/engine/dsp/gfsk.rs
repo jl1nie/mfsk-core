@@ -11,6 +11,8 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::f32::consts::PI;
+
+use super::nco::Nco;
 #[cfg(not(feature = "std"))]
 #[allow(unused_imports)]
 // needed with no std in the graph; a dep linking std (the dev-only rustfft) makes f32's own methods shadow it
@@ -264,45 +266,6 @@ impl GfskStream {
             self.advance();
         }
         n
-    }
-}
-
-/// A phase accumulator that needs no `f64` per sample: the phase is a `u64` of turns (2^64 is one cycle),
-/// so adding to it is exact and wraps by itself. An f32 sum of `2 pi f0 / fs` drifts (the increment is off
-/// by ~3e-8 rad and the error is systematic: 3e-3 rad over an FST4-15 frame, a degree over a long one),
-/// and an `f64` one is software on an Xtensa LX7. The carrier is turned into its increment once, in
-/// `f64`; the modulation increments (small, an `f32` each) are rounded to turns one at a time, which
-/// does not accumulate. Against WSJT-X v3.3.0-beta6, which sums in `f64`, the waveforms agree to the
-/// same -85 dB or better as an `f64` sum does (`tests/gen_wave_vs_wsjtx.rs`).
-struct Nco {
-    turns: u64,
-    carrier: u64,
-}
-
-impl Nco {
-    /// Radians to turns: `2^64 / 2 pi`, exact enough in f32 (it is a scale, not a phase).
-    const TURNS_PER_RAD: f32 = 18_446_744_073_709_551_616.0 / (2.0 * PI);
-
-    fn new(f0_hz: f32, sample_rate: f32) -> Self {
-        // once per call; the fraction of a turn per sample, `f0 / fs`, to 2^-64
-        let frac = f64::from(f0_hz) / f64::from(sample_rate);
-        Self {
-            turns: 0,
-            carrier: ((frac - frac.floor()) * 18_446_744_073_709_551_616.0_f64) as u64,
-        }
-    }
-
-    /// The phase now, radians in `[0, 2 pi)`, from its top 32 bits.
-    #[inline]
-    fn phase(&self) -> f32 {
-        ((self.turns >> 32) as u32) as f32 * (2.0 * PI / 4_294_967_296.0)
-    }
-
-    /// Advance by one sample: the carrier and `modulation_rad`.
-    #[inline]
-    fn step(&mut self, modulation_rad: f32) {
-        let m = (modulation_rad * Self::TURNS_PER_RAD) as i64 as u64;
-        self.turns = self.turns.wrapping_add(self.carrier).wrapping_add(m);
     }
 }
 
