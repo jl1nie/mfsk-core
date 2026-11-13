@@ -86,7 +86,8 @@ fn generate_iq(tones: &[u8], freq_hz: f32, cfg: &SubtractCfg) -> (Vec<f32>, Vec<
         freq_hz,
         cfg.tone_spacing_hz,
         cfg.sample_rate,
-        |i, phase| {
+        |i, nco| {
+            let phase = nco.phase();
             w_cos[i] = phase.cos();
             w_sin[i] = phase.sin();
         },

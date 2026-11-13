@@ -48,6 +48,27 @@ impl Nco {
         ((self.turns >> 32) as u32) as f32 * (2.0 * core::f32::consts::PI / 4_294_967_296.0)
     }
 
+    /// `sin` of the phase, without a libm call: the top two bits are the quadrant, the rest is the angle in
+    /// the first, folded to `[0, pi/2]` and fed to the odd degree-9 minimax polynomial that WSJT-X
+    /// v3.3.0-beta6 uses (`waveform_kernels.f90`, `emit_real`; unit linear coefficient).
+    #[inline]
+    pub(crate) fn sin(&self) -> f32 {
+        const HALF_PI_PER_UNIT: f32 = core::f32::consts::FRAC_PI_2 / 4_294_967_296.0;
+        let quadrant = (self.turns >> 62) as u8;
+        let a = (((self.turns << 2) >> 32) as u32) as f32 * HALF_PI_PER_UNIT;
+        let x = if quadrant & 1 == 0 {
+            a
+        } else {
+            core::f32::consts::FRAC_PI_2 - a
+        };
+        let x2 = x * x;
+        let y = x
+            + (x * x2)
+                * (-1.666_665_7e-1
+                    + x2 * (8.333_017e-3 + x2 * (-1.980_661_5e-4 + x2 * 2.600_054_8e-6)));
+        if quadrant >= 2 { -y } else { y }
+    }
+
     /// Advance by one sample: the carrier and `modulation_rad`.
     #[inline]
     pub(crate) fn step(&mut self, modulation_rad: f32) {
@@ -69,6 +90,19 @@ mod tests {
             nco.step(0.0);
         }
         assert_eq!(nco.phase(), 0.0);
+    }
+
+    /// The folded polynomial is a sine to ~1e-7 all round the circle, quadrant edges included.
+    #[test]
+    fn sin_is_a_sine() {
+        let mut nco = Nco::new(1.0, 1_000_003.0); // ~1e-6 turn per sample
+        let mut worst = 0f64;
+        for _ in 0..1_000_003 {
+            let want = (nco.turns as f64 / TURN * 2.0 * core::f64::consts::PI).sin();
+            worst = worst.max((f64::from(nco.sin()) - want).abs());
+            nco.step(0.0);
+        }
+        assert!(worst < 5e-7, "worst {worst:.2e}");
     }
 
     #[test]
