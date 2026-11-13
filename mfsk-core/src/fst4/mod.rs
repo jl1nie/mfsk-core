@@ -188,7 +188,7 @@ macro_rules! fst4_submode {
         }
 
         impl crate::engine::tx::FskWaveform for $name {
-            const WAVEFORM: crate::engine::tx::Waveform = crate::engine::tx::Waveform::Gfsk($gfsk);
+            const WAVEFORM: crate::engine::tx::Waveform = crate::engine::tx::Waveform::Fst4($gfsk);
         }
 
         impl FrameLayout for $name {
@@ -472,8 +472,8 @@ mod tests {
             assert_eq!(cfg.hmod, P::GFSK_HMOD, "{name}: gfsk hmod != GFSK_HMOD");
             assert_eq!(
                 cfg.ramp_samples as u32,
-                P::NSPS / 8,
-                "{name}: gfsk ramp_samples != NSPS/8"
+                P::NSPS / 4,
+                "{name}: gfsk ramp_samples != NSPS/4"
             );
         }
 

@@ -298,7 +298,6 @@ pub fn synth_f32_into(out: &mut [f32], tones: &[u8], f0_hz: f32, amplitude: f32,
         "synth_f32_into: out.len() must equal synth_output_len()"
     );
     let twopi = 2.0 * PI;
-    let dt = 1.0 / cfg.sample_rate;
 
     let pulse_len = 3 * nsps;
     // `do i=1,3*nsps; tt=(i-1.5*nsps)/real(nsps)` (`gen_ft8wave.f90:22-24`,
@@ -335,17 +334,16 @@ pub fn synth_f32_into(out: &mut [f32], tones: &[u8], f0_hz: f32, amplitude: f32,
         }
     }
 
-    // Carrier
-    for d in dphi.iter_mut() {
-        *d += twopi * f0_hz * dt;
-    }
-
-    let mut phi = 0.0f32;
+    // The phase and the carrier are summed in f64 (beta6's `waveform_kernels.f90` does; an f32 sum
+    // drifts, and an f32 `2 pi f0 / fs` is off by ~3e-8 rad per sample).
+    let twopi64 = 2.0 * core::f64::consts::PI;
+    let carrier = twopi64 * f64::from(f0_hz) / f64::from(cfg.sample_rate);
+    let mut phi = 0.0f64;
     for k in 0..nwave {
-        out[k] = amplitude * phi.sin();
-        phi += dphi[nsps + k];
-        if phi > twopi {
-            phi -= twopi;
+        out[k] = amplitude * (phi.sin() as f32);
+        phi += f64::from(dphi[nsps + k]) + carrier;
+        if phi >= twopi64 {
+            phi -= twopi64;
         }
     }
 
@@ -404,7 +402,6 @@ pub fn synth_f32_lead_tail_into(
         "synth_f32_lead_tail_into: out.len() must equal synth_lead_tail_len()"
     );
     let twopi = 2.0 * PI;
-    let dt = 1.0 / cfg.sample_rate;
 
     let pulse_len = 3 * nsps;
     // `do i=1,3*nsps; tt=(i-1.5*nsps)/real(nsps)` (`gen_ft4wave.f90`).
@@ -423,16 +420,15 @@ pub fn synth_f32_lead_tail_into(
             *d += dphi_peak * p * tone as f32;
         }
     }
-    for d in dphi.iter_mut() {
-        *d += twopi * f0_hz * dt;
-    }
-
-    let mut phi = 0.0f32;
+    // Phase and carrier in f64, as for `synth_f32_into`.
+    let twopi64 = 2.0 * core::f64::consts::PI;
+    let carrier = twopi64 * f64::from(f0_hz) / f64::from(cfg.sample_rate);
+    let mut phi = 0.0f64;
     for (o, &d) in out.iter_mut().zip(dphi.iter()) {
-        *o = amplitude * phi.sin();
-        phi += d;
-        if phi > twopi {
-            phi -= twopi;
+        *o = amplitude * (phi.sin() as f32);
+        phi += f64::from(d) + carrier;
+        if phi >= twopi64 {
+            phi -= twopi64;
         }
     }
 
@@ -440,6 +436,90 @@ pub fn synth_f32_lead_tail_into(
         let x = twopi * i as f32 / (2.0 * nsps as f32);
         out[i] *= (1.0 - x.cos()) / 2.0;
         out[(nsym + 1) * nsps + i] *= (1.0 + x.cos()) / 2.0;
+    }
+}
+
+/// FST4's GFSK waveform, as `lib/fst4/gen_fst4wave.f90` builds it: `tones.len() * nsps`
+/// samples, `cfg.bt`'s Gaussian pulse, and **no** extension of the first and last
+/// tone symbol (unlike [`synth_f32_into`], `gen_ft8wave`'s form): the first
+/// symbol has no left neighbour's tail and the last no right one. The phase
+/// integrates from sample 0, and `f0_hz` is the tone-0 frequency (the Fortran
+/// takes the band centre and subtracts `1.5 * hmod / tsym`).
+///
+/// The envelope is a half-symbol raised cosine: `nsps / 4` samples up at the
+/// start, and `nsps / 4` (+1, the last of which is past the frame) down from
+/// sample `(n - 1) * nsps + 3 * nsps / 4` (`gen_fst4wave.f90`, `FST4_NOSHAPING`
+/// off). `cfg.ramp_samples` is not read.
+///
+/// # Panics
+///
+/// If `out.len() != tones.len() * cfg.samples_per_symbol` or `tones` is empty.
+pub fn synth_f32_fst4_into(
+    out: &mut [f32],
+    tones: &[u8],
+    f0_hz: f32,
+    amplitude: f32,
+    cfg: &GfskCfg,
+) {
+    let nsps = cfg.samples_per_symbol;
+    let nsym = tones.len();
+    assert!(nsym > 0, "synth_f32_fst4_into: empty tone sequence");
+    let total = nsym * nsps;
+    assert_eq!(
+        out.len(),
+        total,
+        "synth_f32_fst4_into: out.len() must equal tones.len() * samples_per_symbol"
+    );
+    let twopi = 2.0 * PI;
+
+    let pulse_len = 3 * nsps;
+    let pulse: Vec<f32> = (0..pulse_len)
+        .map(|i| {
+            let tt = ((i + 1) as f32 - 1.5 * nsps as f32) / nsps as f32;
+            gfsk_pulse(cfg.bt, tt)
+        })
+        .collect();
+
+    let mut dphi = vec![0.0f32; total];
+    let dphi_peak = twopi * cfg.hmod / nsps as f32;
+    for (j, &tone) in tones.iter().enumerate() {
+        if tone == 0 {
+            continue;
+        }
+        // Symbol j's pulse spans blocks j-1, j, j+1; the part outside the frame is dropped.
+        for (i, &p) in pulse.iter().enumerate() {
+            let at = (j * nsps + i).wrapping_sub(nsps);
+            if at < total {
+                dphi[at] += dphi_peak * p * tone as f32;
+            }
+        }
+    }
+
+    // The phase is summed in f64: over FST4's 160 symbols (21 M samples at -1800) an f32 sum drifts by
+    // more than a degree (beta4's `gen_fst4wave` had that; beta6 keeps the phase in f64).
+    let twopi64 = 2.0 * core::f64::consts::PI;
+    // ... and the carrier is added there too, in f64: an f32 `2 pi f0 / fs` is off by up to ~3e-8 rad per
+    // sample, 3e-3 rad over FST4-15's frame.
+    let carrier = twopi64 * f64::from(f0_hz) / f64::from(cfg.sample_rate);
+    let mut phi = 0.0f64;
+    for (o, &d) in out.iter_mut().zip(dphi.iter()) {
+        *o = amplitude * (phi.sin() as f32);
+        phi += f64::from(d) + carrier;
+        if phi >= twopi64 {
+            phi -= twopi64;
+        }
+    }
+
+    let ramp = nsps / 4;
+    let half = (nsps / 2) as f32;
+    for i in 0..ramp {
+        out[i] *= (1.0 - (twopi * i as f32 / half).cos()) / 2.0;
+    }
+    let k1 = (nsym - 1) * nsps + 3 * nsps / 4;
+    for i in 0..=ramp {
+        if k1 + i < total {
+            out[k1 + i] *= (1.0 + (twopi * i as f32 / half).cos()) / 2.0;
+        }
     }
 }
 

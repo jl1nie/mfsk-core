@@ -4,13 +4,16 @@
 
 ### Fixed
 
-- **FT4 transmit waveform is `gen_ft4wave`'s** (#726 follow-up). It was synthesised like `gen_ft8wave`: 103 symbols, an `nsps / 8`
-  ramp, and the phase starting at the first tone. WSJT-X frames the tones with a ramp symbol each side (105 symbols, 60 480 samples)
-  and ramps a whole symbol. Measured on a fixed tone list against WSJT-X's own generator: -45 dB before, -103 dB (beta4) / -82 dB
-  (beta6) now. `synthesize::<Ft4>` and `synth_len` return 60 480 samples; the tones start `synth_lead_samples::<Ft4>(rate)` (576)
-  into the buffer, so a caller places it that much before `TX_START_OFFSET_S` (`ft4sim.f90:91`). Behaviour change of the public API:
-  next release is a minor. New tier A `tests/gen_wave_vs_wsjtx.rs` holds FT8 (-68 dB; beta6 approximates, we keep `erf`/`sin`) and FT4
-  to beta6's generators. FST4 and JTTY not measured yet; embedded-poc not built.
+- **FT4 transmit waveform is `gen_ft4wave`'s** (#726). It was synthesised like `gen_ft8wave`: 103 symbols, an `nsps / 8` ramp, the phase
+  starting at the first tone. WSJT-X frames the tones with a ramp symbol each side (105 symbols, 60 480 samples) and ramps a whole
+  symbol. `synthesize::<Ft4>` / `synth_len` return 60 480 samples and the tones start `synth_lead_samples::<Ft4>(rate)` (576) in, so a
+  caller places the buffer that much before `TX_START_OFFSET_S` (`ft4sim.f90:91`). Public API behaviour change: next release is a minor.
+- **FST4 transmit waveform is `gen_fst4wave`'s** (#726). The first and last symbol were extended and ramped `nsps / 8` (as FT8);
+  upstream does not extend them and ramps a half symbol (`Waveform::Fst4`). **FT8, FT4 and FST4 sum phase and carrier in f64**, as
+  beta6's `waveform_kernels.f90` does: an f32 sum drifted (FST4-60: -42 dB against beta6 over 51 s).
+- Measured against WSJT-X's own generators on a fixed tone list (new tier A `tests/gen_wave_vs_wsjtx.rs`, beta6): FT8 -68 -> -90 dB,
+  FT4 -45 -> -89 dB, FST4-15 -16 dB at the edge symbols -> -86 dB, max 7e-5 to 1.1e-4. JTTY not measured. The full-slot subtract pin was
+  re-recorded (the input moved by 2 LSB).
 
 ### Docs
 

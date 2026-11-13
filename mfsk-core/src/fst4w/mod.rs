@@ -180,7 +180,7 @@ macro_rules! fst4w_period {
         }
 
         impl crate::engine::tx::FskWaveform for $name {
-            const WAVEFORM: crate::engine::tx::Waveform = crate::engine::tx::Waveform::Gfsk($gfsk);
+            const WAVEFORM: crate::engine::tx::Waveform = crate::engine::tx::Waveform::Fst4($gfsk);
         }
 
         impl FrameLayout for $name {
