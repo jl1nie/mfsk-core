@@ -335,11 +335,11 @@ used without being named. No name clashes inside the prelude (it compiles as a g
   (`decode65b.f90:27-28`). **Open:** the JT65 `hint65` bank still matches standard messages only, as the ported `hint65.f90` does.
 
 **WSPR unpack follows `wsprd`, not `wqdecode` (`98fe9331`).** WSJT-X's WSPR receiver is `wsprd`, so the reference for the text is
-`lib/wsprd/wsprd_utils.c` `unpk_` (324-405; identical in rc1 and v3.3.0-beta2), checked row by row against rc1's own `unpk_` built from
-`git archive` (`scripts/wsprd/`, fixture `tests/fixtures/wsprd_unpack_rc1.tsv`, 26 046 rows). `unpackcall` is exact, `unpackpfx` keeps the part
+`lib/wsprd/wsprd_utils.c` `unpk_` (324-405), checked row by row against v3.3.0-beta6's own `unpk_` built from
+`git archive` (`scripts/wsprd/`, fixture `tests/fixtures/wsprd_unpack_beta6.tsv`, 26 046 rows; the fixture was rc1's until #726, when beta6's `ffa884606` made `unpackpfx` stop wrapping an out-of-range suffix and `ntype == 63` return 1). `unpackcall` is exact, `unpackpfx` keeps the part
 after the last blank, `unpackgrid` uses double arithmetic; a Type 3 call is `<...>` unresolved and `<CALL>` when the decoder's
 `WsprCallsignTable` holds it (`WsprResult::hashed_call`, `WsprMessage::render`). Kept because `wsprd` does the same: `3DA0` as `3D0`, CQ/QRZ/DE
-calls and report grids not decoded. **Deliberate divergence:** `ntype == 63` makes `unpk_` print an empty message; `unpack` returns `None`.
+calls and report grids not decoded. `ntype == 63` is refused (as of beta6 `unpk_` returns 1 for it; before, an empty message, which `unpack` already answered with `None`).
 WSPR golden (`150426_0918.wav`): 9/9, 0 extra, texts and freq/dt/snr identical before and after.
 
 ## 15. Added to 0.14: the C ABI encoder, WSPR types 2/3, JT9/JT65 full messages (user, 2026-10-17)

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- **WSPR: an out-of-range type-2 suffix and the reserved type 63 are refused, as `wsprd` of v3.3.0-beta6 does** (#726, upstream
+  `ffa884606`). `unpackpfx` kept `nc` in a `char`, so a suffix field past 60255 wrapped into a valid suffix; the port reproduced
+  that. Measured on the 26 046-row `unpk_` fixture, rebuilt from beta6 (`wsprd_unpack_beta6.tsv`): 1 488 rows change, none left
+  unmatched; the full tier A+B gate is green. Detail in `scripts/wsprd/`.
+
 ### Docs
 
 - **README shortened, 823 -> ~230 lines, and its Japanese twin now mirrors it** (was a 58-line summary). It leads with what an operator
