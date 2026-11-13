@@ -16,7 +16,7 @@
   upstream does not extend them and ramps a half symbol (`Waveform::Fst4`). **FT8, FT4 and FST4 sum phase and carrier in f64**, as
   beta6's `waveform_kernels.f90` does: an f32 sum drifted (FST4-60: -42 dB against beta6 over 51 s).
 - Measured against WSJT-X's own generators on a fixed tone list (new tier A `tests/gen_wave_vs_wsjtx.rs`, beta6): FT8 -68 -> -90 dB,
-  FT4 -45 -> -89 dB, FST4-15 -16 dB at the edge symbols -> -86 dB, max 7e-5 to 1.1e-4. JTTY not measured. The full-slot subtract pin was
+  FT4 -45 -> -89 dB, FST4-15 -16 dB at the edge symbols -> -86 dB, max 7e-5 to 1.1e-4; JTTY already -99 dB (its TX sums in f64), unchanged. The full-slot subtract pin was
   re-recorded (the input moved by 2 LSB).
 
 ### Docs
