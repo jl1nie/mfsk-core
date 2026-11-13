@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- **FT4 transmit waveform is `gen_ft4wave`'s** (#726 follow-up). It was synthesised like `gen_ft8wave`: 103 symbols, an `nsps / 8`
+  ramp, and the phase starting at the first tone. WSJT-X frames the tones with a ramp symbol each side (105 symbols, 60 480 samples)
+  and ramps a whole symbol. Measured on a fixed tone list against WSJT-X's own generator: -45 dB before, -103 dB (beta4) / -82 dB
+  (beta6) now. `synthesize::<Ft4>` and `synth_len` return 60 480 samples; the tones start `synth_lead_samples::<Ft4>(rate)` (576)
+  into the buffer, so a caller places it that much before `TX_START_OFFSET_S` (`ft4sim.f90:91`). Behaviour change of the public API:
+  next release is a minor. New tier A `tests/gen_wave_vs_wsjtx.rs` holds FT8 (-68 dB; beta6 approximates, we keep `erf`/`sin`) and FT4
+  to beta6's generators. FST4 and JTTY not measured yet; embedded-poc not built.
+
 ### Docs
 
 - **README shortened, 823 -> ~230 lines, and its Japanese twin now mirrors it** (was a 58-line summary). It leads with what an operator

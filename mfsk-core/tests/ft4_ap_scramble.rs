@@ -70,7 +70,9 @@ fn make_slot(msg77: &[u8; 77], freq_hz: f32, snr_db: f32, seed: u64) -> Vec<i16>
     let itone = mfsk_core::engine::tx::message_to_tones::<mfsk_core::ft4::Ft4>(msg77);
     let pcm =
         mfsk_core::engine::tx::synthesize::<mfsk_core::ft4::Ft4>(&itone, 12_000, freq_hz, amp);
-    let start = (0.5 * FS) as usize;
+    // `synthesize` frames the tones with a ramp symbol each side: the tones start at 0.5 s.
+    let start = (0.5 * FS) as usize
+        - mfsk_core::engine::tx::synth_lead_samples::<mfsk_core::ft4::Ft4>(12_000);
     for (i, s) in pcm.iter().take(SLOT - start).enumerate() {
         mix[start + i] += s;
     }

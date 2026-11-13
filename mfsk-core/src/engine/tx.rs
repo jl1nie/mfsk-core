@@ -229,7 +229,18 @@ fn samples_per_symbol<P: FskWaveform>(sample_rate: u32) -> usize {
 /// frame of `P` at `sample_rate` — what to size a buffer to before the
 /// tones exist, which the `_into` forms and a C caller both need.
 pub fn synth_len<P: FskWaveform>(sample_rate: u32) -> usize {
-    P::N_SYMBOLS as usize * samples_per_symbol::<P>(sample_rate)
+    (P::N_SYMBOLS + P::N_RAMP) as usize * samples_per_symbol::<P>(sample_rate)
+}
+
+/// Samples `synthesize` puts before the first tone symbol: one ramp symbol
+/// ([`FrameLayout::N_RAMP`] is the count of both sides, so half of it).
+/// Zero for every mode but FT4, whose `gen_ft4wave` frames the 103 tone
+/// symbols with a ramp symbol each side. A caller that places the
+/// transmission by [`FrameLayout::TX_START_OFFSET_S`] puts the *tone*
+/// start there, i.e. the buffer starts this many samples earlier
+/// (`ft4sim.f90:91`, `k=nint((xdt+0.5)/dt)-NSPS`).
+pub fn synth_lead_samples<P: FskWaveform>(sample_rate: u32) -> usize {
+    (P::N_RAMP / 2) as usize * samples_per_symbol::<P>(sample_rate)
 }
 
 /// Synthesise one frame of `P`'s tones at `f0_hz` into `out`. No
@@ -253,6 +264,13 @@ pub fn synthesize_into<P: FskWaveform>(
 ) {
     check_tones::<P>(tones);
     match P::WAVEFORM {
+        Waveform::Gfsk(cfg) if P::N_RAMP == 2 => super::dsp::gfsk::synth_f32_lead_tail_into(
+            out,
+            tones,
+            f0_hz,
+            amplitude,
+            &gfsk_at::<P>(&cfg, sample_rate),
+        ),
         Waveform::Gfsk(cfg) => super::dsp::gfsk::synth_f32_into(
             out,
             tones,

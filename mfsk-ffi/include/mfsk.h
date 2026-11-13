@@ -1836,7 +1836,9 @@ enum MfskStatus mfsk_encode_ft8(const char *call1,
                                 uintptr_t *out_len);
 
 /**
- * Synthesise a standard FT4 message at `freq_hz`. 12 kHz f32 PCM.
+ * Synthesise a standard FT4 message at `freq_hz`. 12 kHz f32 PCM, 60 480 samples: the 103 tone
+ * symbols between a ramp symbol each side, as `gen_ft4wave` frames them, so the tones start 576
+ * samples in. Place the buffer 576 samples before the 0.5 s tone start.
  *
  * # Safety
  *

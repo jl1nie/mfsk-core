@@ -42,8 +42,9 @@ fn lay_signal(audio: &mut [i16], msg77: &[u8; 77], freq_hz: f32, peak_i16: i16) 
     let pcm = mfsk_core::engine::tx::synthesize_i16::<mfsk_core::ft4::Ft4>(
         &itone, 12_000, freq_hz, peak_i16,
     );
-    assert_eq!(pcm.len(), NN * NSPS);
-    let pad = (<Ft4 as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as usize;
+    assert_eq!(pcm.len(), (NN + 2) * NSPS);
+    let pad = (<Ft4 as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as usize
+        - mfsk_core::engine::tx::synth_lead_samples::<mfsk_core::ft4::Ft4>(12_000);
     for (i, &s) in pcm.iter().enumerate() {
         let idx = pad + i;
         if idx >= audio.len() {

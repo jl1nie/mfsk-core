@@ -534,7 +534,12 @@ fn run(a: &Args) -> Result<(), String> {
                 let wave = audio(tx.mode, &tones(tx.mode, &tx.text), tx.audio_hz);
                 let amp = (10f64.powf(tx.snr_db / 10.0) * noise_2500).sqrt() as f32;
                 let start = ((tx.slot_utc_s - t_block + 0.5 + tx.dt_s) * f64::from(AUDIO)).round();
-                let start = start as usize;
+                // FT4's frame leads its tones with a ramp symbol (`gen_ft4wave`); the tones start at `start`.
+                let lead = match tx.mode {
+                    Mode::Ft4 => mfsk_core::engine::tx::synth_lead_samples::<Ft4>(AUDIO),
+                    Mode::Ft8 => 0,
+                };
+                let start = start as usize - lead;
                 assert!(
                     start + wave.len() <= m,
                     "{} does not fit its block",

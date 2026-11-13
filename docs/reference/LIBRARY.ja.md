@@ -2483,6 +2483,17 @@ impl FskWaveform for Ft8 {
 ないプロトコル（例として置いている `uvpacket` は π/4-DQPSK）は単に
 実装しない。
 
+音声の長さは `(N_SYMBOLS + N_RAMP)` シンボル（`synth_len`）。`N_RAMP` が 0 でない
+のは FT4 だけで、`gen_ft4wave.f90` は 103 個のトーンシンボルの前後に 1 シンボルずつ
+ランプシンボルを置く（105 シンボル、12 kHz で 60 480 サンプル）。レイズドコサイン
+ランプも丸 1 シンボル分の長さになる。したがってトーンはバッファの
+`synth_lead_samples::<P>(rate)` サンプル目（FT4 は 576、他は 0）から始まる。
+`TX_START_OFFSET_S` からそのサンプル数だけ手前にバッファを置くこと
+（`ft4sim.f90:91`）。0.15 までの FT4 は、`gen_ft8wave` と同じ 103 シンボル・
+`nsps / 8` ランプの形で、`gen_ft4wave` から -45 dB ずれていた。
+`tests/gen_wave_vs_wsjtx.rs` が FT8 と FT4 を WSJT-X v3.3.0-beta6 自身の
+生成器と突き合わせる。
+
 ### Monomorphization がこれを無料にしている
 
 ホットパスの関数はすべて `P: Protocol` を**コンパイル時型パラメータ**として受け取る。rustc が
