@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- **JTTY: a candidate that is a misaligned view of a frame already decoded is refused** (#726, upstream PR #702, v3.3.0-beta6
+  `is_frame_alias`). A strong signal left repeatable false frames (`IG4QXF TU`): a sync candidate a whole number of symbols inside a
+  decoded frame matched 7 of 13 sync tones by chance and still gave a TBCC codeword. It is dropped when, within 2.5 tone spacings and
+  at a near-whole-symbol offset, >= 80 % of >= 9 overlapping received tones equal that frame's, shifted alike. Measured on upstream's
+  own case (`tests/jtty_alias.rs`, fox at -3 dB, 24 seeded trials): 4 false frames before, 0 after, 24/24 decoded in full, and a
+  second station 30 Hz away at 18.5 symbols still decodes. Tier B (`jtty_rx` vectors) unchanged.
+
 ### Docs
 
 - **README shortened, 823 -> ~230 lines, and its Japanese twin now mirrors it** (was a 58-line summary). It leads with what an operator
