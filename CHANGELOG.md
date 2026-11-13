@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Performance
+
+- **GFSK/CPFSK synthesis without `exp`, division or libm `sin`** (#726). The 3-symbol Gaussian pulse (`bt` 1 and 2) uses WSJT-X v3.3.0-beta6's
+  degree-7 tail polynomials (`waveform_kernels.f90`, coefficients cited), is built half and mirrored (it is even), and the NCO's `sin` is
+  beta6's degree-9 polynomial on a folded quadrant. Against beta6's generators: FT8 -94 dB, FT4 -96 dB, FST4-15 -88 dB (was -95/-95/-88
+  with `erf`/`sinf`: no loss); pulse within 3e-6 of the `erf` form. FT8 `synthesize` on an x86_64 host: 704 -> 535 us (-24 %, fast libm;
+  **not measured on the LX7**: the CoreS3 `tx-synth bench` log is the figure to read).
+
 ### Fixed
 
 - **WSPR, JT9, JT65 and Q65 transmit waveforms are `Modulator::modulate`'s** (#726). The loop took `cos` of an `f32` phase before advancing

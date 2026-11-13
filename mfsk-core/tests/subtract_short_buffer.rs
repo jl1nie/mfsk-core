@@ -227,11 +227,11 @@ fn late_attach_subtracts_the_whole_overlap() {
 /// The full-slot subtract's output, `i16` little-endian, recorded on Apple M5
 /// from `main` and from the commit before #567's fix (148a9e85), which agree
 /// bit for bit there. **No longer that file**: it was re-recorded on x86_64 Linux (AVX2) when the FT8
-/// synthesiser, whose output is this test's input, began keeping its phase in an integer accumulator
-/// (#726). Against the Apple M5 pin the new one differs in 46 353 of the 180 000 samples, by at most 2
-/// (the input frame moved by at most 2 LSB at 3000 peak, -95 dB against WSJT-X's v3.3.0-beta6 generator).
-/// The distances below were measured against the old pin, and the new one has not been measured on aarch64.
-/// The pin is the subtract's, not the synthesiser's.
+/// synthesiser, whose output is this test's input, moved (#726): an integer phase accumulator, then beta6's
+/// polynomial pulse and sine. Against the Apple M5 pin the current one differs in some 46 000 of the 180 000
+/// samples, by at most 2 (the input frame moved by at most 2 LSB at 3000 peak, -94 dB against WSJT-X's
+/// v3.3.0-beta6 generator). The distances below were measured against the old pin, and the new one has not been
+/// measured on aarch64. The pin is the subtract's, not the synthesiser's.
 const PINNED_FULL_SLOT: &str = asset_path!("ft8_subtract_full_slot.bin");
 
 /// How far a platform may sit from the pin (#579's rule: a few times the
