@@ -7,12 +7,13 @@
 //! the same way.
 //!
 //! Tolerance, and why it is not zero: beta6 rewrote the generators (`lib/waveform_kernels.f90`) with a
-//! polynomial Gaussian tail, a degree-9 sine and a double-precision phase. Against its own beta4 generator that
-//! is a different waveform by -68 dB (FT8, max 7.1e-4) and -83 dB (FT4, max 1.4e-4); this crate keeps the exact
-//! `erf` / `sin` form, which matched the beta4 generators to -105 dB (FT8) and -103 dB (FT4). Measured here
-//! against beta6: FT8 -68 dB / max 7.0e-4, FT4 -82 dB / max 1.6e-4 (the int16 quantisation of the fixture, 1.5e-5
-//! of peak, is below both). The bounds leave about 2x headroom; a structural difference (the FT4 ramp symbols,
-//! the pulse, the phase start) is 10-40 dB larger.
+//! polynomial Gaussian tail, a degree-9 sine and a double-precision phase. Against its own beta4 generator
+//! that moved the waveform by -68 dB (FT8, max 7.1e-4), -83 dB (FT4) and -42 dB (FST4-60, a 51 s frame whose
+//! f32 phase drifted), and this crate's f32 phase sum matched beta4, not beta6. It sums the phase and the
+//! carrier in f64 now. Measured against beta6: FT8 -89.7 dB / max 7.0e-5, FT4 -88.7 dB / 7.3e-5, FST4-15
+//! -85.5 dB / 1.1e-4 (the fixture's int16 quantisation is 1.5e-5 of peak). The bounds leave about 2x
+//! headroom; a structural difference (FT4's ramp symbols, FST4's unextended first symbol, the pulse, the
+//! phase start) is 10-40 dB larger.
 
 #![cfg(all(feature = "ft8", feature = "ft4"))]
 
@@ -72,8 +73,8 @@ fn ft8_waveform_matches_gen_ft8wave() {
     let ours = synthesize::<mfsk_core::ft8::Ft8>(&t, 12_000, 1500.0, 1.0);
     let (max, db) = compare(&ours, &wave("ft8.i16"));
     println!("FT8 max {max:.2e}, rel rms {db:.1} dB");
-    assert!(max < 1.5e-3, "max {max:.2e}");
-    assert!(db < -60.0, "rel rms {db:.1} dB");
+    assert!(max < 2.0e-4, "max {max:.2e}");
+    assert!(db < -80.0, "rel rms {db:.1} dB");
 }
 
 /// FT4's frame is `gen_ft4wave`'s `(103 + 2) * 576` samples: a ramp symbol each side, whole-symbol ramps.
@@ -84,6 +85,20 @@ fn ft4_waveform_matches_gen_ft4wave() {
     assert_eq!(ours.len(), 105 * 576);
     let (max, db) = compare(&ours, &wave("ft4.i16"));
     println!("FT4 max {max:.2e}, rel rms {db:.1} dB");
-    assert!(max < 3.5e-4, "max {max:.2e}");
-    assert!(db < -72.0, "rel rms {db:.1} dB");
+    assert!(max < 2.0e-4, "max {max:.2e}");
+    assert!(db < -80.0, "rel rms {db:.1} dB");
+}
+
+/// FST4-15 (`nsps` 720): 160 symbols, no extension of the first and last symbol, a half-symbol ramp. The
+/// oracle's `f0` is the band centre, 1500 Hz; tone 0 is 1.5 / tsym = 25 Hz below it, exact in f32.
+#[test]
+#[cfg(feature = "fst4")]
+fn fst4_waveform_matches_gen_fst4wave() {
+    let t = tones("fst4.tones");
+    let ours = synthesize::<mfsk_core::fst4::Fst4s15>(&t, 12_000, 1475.0, 1.0);
+    assert_eq!(ours.len(), 160 * 720);
+    let (max, db) = compare(&ours, &wave("fst4.i16"));
+    println!("FST4-15 max {max:.2e}, rel rms {db:.1} dB");
+    assert!(max < 2.5e-4, "max {max:.2e}");
+    assert!(db < -78.0, "rel rms {db:.1} dB");
 }

@@ -190,6 +190,10 @@ pub enum Waveform {
     /// raised-cosine ramp is a whole symbol long (`gen_ft4wave.f90`, see
     /// [`synth_f32_lead_tail_into`](super::dsp::gfsk::synth_f32_lead_tail_into)).
     Ft4(GfskCfg),
+    /// FST4's form of the same: no extended first and last symbol, and a half-symbol
+    /// ramp (`gen_fst4wave.f90`, see
+    /// [`synth_f32_fst4_into`](super::dsp::gfsk::synth_f32_fst4_into)).
+    Fst4(GfskCfg),
     /// Plain continuous-phase FSK at `ModulationParams::TONE_SPACING_HZ`
     /// and `SYMBOL_DT`, with [`super::dsp::envelope`]'s ramp.
     Cpfsk,
@@ -225,7 +229,7 @@ fn gfsk_at<P: FskWaveform>(cfg: &GfskCfg, sample_rate: u32) -> GfskCfg {
 /// Samples per symbol `P` transmits at `sample_rate`.
 fn samples_per_symbol<P: FskWaveform>(sample_rate: u32) -> usize {
     match P::WAVEFORM {
-        Waveform::Gfsk(cfg) | Waveform::Ft4(cfg) => {
+        Waveform::Gfsk(cfg) | Waveform::Ft4(cfg) | Waveform::Fst4(cfg) => {
             gfsk_at::<P>(&cfg, sample_rate).samples_per_symbol
         }
         Waveform::Cpfsk => cpfsk::nsps(sample_rate, P::SYMBOL_DT),
@@ -275,6 +279,13 @@ pub fn synthesize_into<P: FskWaveform>(
     check_tones::<P>(tones);
     match P::WAVEFORM {
         Waveform::Ft4(cfg) => super::dsp::gfsk::synth_f32_lead_tail_into(
+            out,
+            tones,
+            f0_hz,
+            amplitude,
+            &gfsk_at::<P>(&cfg, sample_rate),
+        ),
+        Waveform::Fst4(cfg) => super::dsp::gfsk::synth_f32_fst4_into(
             out,
             tones,
             f0_hz,
@@ -371,7 +382,7 @@ mod waveform_tests {
     /// must not drift apart. This is what catches an FST4 sub-mode wired
     /// to another sub-mode's `FST4_*_GFSK`.
     fn gfsk_matches_trait<P: FskWaveform>() {
-        let (Waveform::Gfsk(cfg) | Waveform::Ft4(cfg)) = P::WAVEFORM else {
+        let (Waveform::Gfsk(cfg) | Waveform::Ft4(cfg) | Waveform::Fst4(cfg)) = P::WAVEFORM else {
             panic!("expected a GFSK protocol");
         };
         assert_eq!(cfg.sample_rate, 12_000.0);

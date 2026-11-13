@@ -2495,8 +2495,9 @@ impl FskWaveform for Ft4 {
 `TX_START_OFFSET_S` からそのサンプル数だけ手前にバッファを置くこと
 （`ft4sim.f90:91`）。0.15 までの FT4 は、`gen_ft8wave` と同じ 103 シンボル・
 `nsps / 8` ランプの形で、`gen_ft4wave` から -45 dB ずれていた。
-`tests/gen_wave_vs_wsjtx.rs` が FT8 と FT4 を WSJT-X v3.3.0-beta6 自身の
-生成器と突き合わせる。
+`tests/gen_wave_vs_wsjtx.rs` が FT8・FT4・FST4 を WSJT-X v3.3.0-beta6 自身の
+生成器と突き合わせる（-86〜-90 dB）。FST4（`Waveform::Fst4`）は `gen_fst4wave.f90` と同じく
+先頭と末尾のシンボルを延長せず、ランプは半シンボル。3 つとも位相とキャリアを f64 で加算する。
 
 ### Monomorphization がこれを無料にしている
 
