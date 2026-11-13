@@ -55,8 +55,8 @@ const RENORM_PERIOD: u32 = 4096;
 ///   architecture is its own (fixed-point spectra, `decode_block`), and are not
 ///   unified with the host's.
 /// - `engine::dsp::cpfsk::for_each_phase` is the CPFSK transmitter's phase
-///   accumulator, which WSJT-X's `Modulator` defines as `cos` of an accumulated
-///   phase; `engine::dsp::subtract` rebuilds the same waveform through it
+///   accumulator, which WSJT-X's `Modulator` defines as `sin` of an accumulated
+///   phase (advanced first); `engine::dsp::subtract` rebuilds the same waveform through it
 ///   rather than through this mixer.
 /// - `wspr::ddc` is a period-8 table, exact because its centre is `Fs/8`.
 /// - `uvpacket::rx` (an f32 `step · n` phase) and `jt65::rx` / `wspr::rx` (per-sample
