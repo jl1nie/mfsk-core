@@ -11,7 +11,7 @@
 //! that moved the waveform by -68 dB (FT8, max 7.1e-4), -83 dB (FT4) and -42 dB (FST4-60, a 51 s frame whose
 //! f32 phase drifted), and this crate's f32 phase sum matched beta4, not beta6. It sums the phase and the
 //! carrier in f64 now. Measured against beta6: FT8 -89.7 dB / max 7.0e-5, FT4 -88.7 dB / 7.3e-5, FST4-15
-//! -85.5 dB / 1.1e-4 (the fixture's int16 quantisation is 1.5e-5 of peak). The bounds leave about 2x
+//! -85.5 dB / 1.1e-4, JTTY -98.7 dB / 1.6e-5 (the quantisation floor; its own f64 phase already matched; the fixture's int16 quantisation is 1.5e-5 of peak). The bounds leave about 2x
 //! headroom; a structural difference (FT4's ramp symbols, FST4's unextended first symbol, the pulse, the
 //! phase start) is 10-40 dB larger.
 
@@ -101,4 +101,16 @@ fn fst4_waveform_matches_gen_fst4wave() {
     println!("FST4-15 max {max:.2e}, rel rms {db:.1} dB");
     assert!(max < 2.5e-4, "max {max:.2e}");
     assert!(db < -78.0, "rel rms {db:.1} dB");
+}
+
+/// JTTY: one 59-symbol frame at `nsps` 384 (12 kHz), `bt` 2, which `gen_jttywave` builds like `gen_ft8wave`.
+#[test]
+#[cfg(feature = "jtty")]
+fn jtty_waveform_matches_gen_jttywave() {
+    let t = tones("jtty.tones");
+    let ours = mfsk_core::jtty::tx::synth_f32(&t, 1500.0, 1.0);
+    let (max, db) = compare(&ours, &wave("jtty.i16"));
+    println!("JTTY max {max:.2e}, rel rms {db:.1} dB");
+    assert!(max < 4.0e-5, "max {max:.2e}");
+    assert!(db < -90.0, "rel rms {db:.1} dB");
 }
