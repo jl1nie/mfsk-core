@@ -121,17 +121,18 @@ Java_io_github_mfskcore_Mfsk_nativeModeInfo(JNIEnv* env, jclass cls, jint mode) 
         throw_ise(env, mfsk_last_error());
         return NULL;
     }
-    jint vals[6] = {
+    jint vals[7] = {
         (jint)info.ntones,
         (jint)info.slot_samples_12k,
         (jint)info.fec_k,
         (jint)info.n_symbols,
         (jint)info.decode_fft1_size,
         (jint)(info.tx_start_offset_s * 1000.0f),  /* ms, to stay integral */
+        (jint)info.tx_buffer_start_samples_12k,
     };
-    jintArray out = (*env)->NewIntArray(env, 6);
+    jintArray out = (*env)->NewIntArray(env, 7);
     if (out == NULL) return NULL;
-    (*env)->SetIntArrayRegion(env, out, 0, 6, vals);
+    (*env)->SetIntArrayRegion(env, out, 0, 7, vals);
     return out;
 }
 

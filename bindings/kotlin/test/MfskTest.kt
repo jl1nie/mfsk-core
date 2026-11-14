@@ -93,6 +93,8 @@ fun main() {
     checkEq("FT8 symbols", info.nSymbols, 79)
     checkEq("FT8 slot FFT", info.decodeFft1Size, 192_000)
     checkEq("FT8 TX offset (ms)", info.txStartOffsetMs, 500)
+    checkEq("FT8 buffer start", info.txBufferStartSamples12k, 6_000)
+    checkEq("FT4 buffer start (a ramp symbol before 0.5 s)", Mfsk.modeInfo(ft4).txBufferStartSamples12k, 5_424)
 
     val f300 = fst4.first { Mfsk.modeName(it) == "FST4-300" }
     val i300 = Mfsk.modeInfo(f300)
@@ -114,7 +116,7 @@ fun main() {
     val frame = Mfsk.synthesize(ft8, "CQ", "JA1ABC", "PM95", 1500.0f)
     check("synthesis produced a frame", frame.isNotEmpty())
     val slot = ShortArray(info.slotSamples12k)
-    val start = info.txStartOffsetMs * 12
+    val start = info.txBufferStartSamples12k
     for (i in frame.indices) {
         if (start + i < slot.size) slot[start + i] = frame[i]
     }

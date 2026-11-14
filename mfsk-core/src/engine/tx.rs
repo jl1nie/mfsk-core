@@ -246,15 +246,30 @@ pub fn synth_len<P: FskWaveform>(sample_rate: u32) -> usize {
 
 /// Samples `synthesize` puts before the first tone symbol, and after the last: one ramp
 /// symbol for [`Waveform::Ft4`], whose `gen_ft4wave` frames the 103 tone
-/// symbols with a ramp symbol each side, none for every other form. A caller that places the
-/// transmission by [`FrameLayout::TX_START_OFFSET_S`] puts the *tone*
-/// start there, i.e. the buffer starts this many samples earlier
-/// (`ft4sim.f90:91`, `k=nint((xdt+0.5)/dt)-NSPS`).
+/// symbols with a ramp symbol each side, none for every other form. To place the buffer, use
+/// [`tx_buffer_start`], which already subtracts this.
 pub fn synth_lead_samples<P: FskWaveform>(sample_rate: u32) -> usize {
     match P::WAVEFORM {
         Waveform::Ft4(_) => samples_per_symbol::<P>(sample_rate),
         _ => 0,
     }
+}
+
+/// Where the buffer from [`synthesize`] goes: its first sample is this many samples (at
+/// `sample_rate`) after the start of the slot, and then the frame's first tone lands at
+/// [`FrameLayout::TX_START_OFFSET_S`], which is DT = 0 on a WSJT-X receiver. The same rule for every
+/// mode: for FT4 it is one ramp symbol before the tones ([`synth_lead_samples`]; `ft4sim.f90:91`,
+/// `k=nint((xdt+0.5)/dt)-NSPS`), for every other mode the start offset itself.
+///
+/// Deliberate divergence: WSJT-X's own transmitter does not place FT4 at DT = 0. `Modulator::start`
+/// starts the 105-symbol buffer `delay_ms = 300` into the period (`Modulator.cpp:167`), so its tones
+/// leave the PC at 0.348 s, about 150 ms early (left, presumably, for the sound card, rig and PTT
+/// delay; upstream does not say). FT8 (`delay_ms = 500`) and the 1 s modes match this value.
+/// A host that wants WSJT-X's own timing starts its FT4 audio that much earlier.
+pub fn tx_buffer_start<P: FskWaveform>(sample_rate: u32) -> usize {
+    // Rounded to the nearest sample (non-negative, so `+ 0.5` and truncate; no `f64::round` in no_std).
+    (f64::from(P::TX_START_OFFSET_S) * f64::from(sample_rate) + 0.5) as usize
+        - synth_lead_samples::<P>(sample_rate)
 }
 
 /// Synthesise one frame of `P`'s tones at `f0_hz` into `out`. No

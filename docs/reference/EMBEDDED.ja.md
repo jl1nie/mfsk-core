@@ -609,13 +609,13 @@ Stage はその再加算で済ませる。
  +txDelay リグが PTT を確認 → ptt1Timer が
           Configuration::txDelay()（既定 0.200 s、
           Configuration.cpp:1602。FT4 は固定 20 ms、
-          mainwindow.cpp:8252-8253）待ってから startTx2()
+          mainwindow.cpp:4374-4375）待ってから startTx2()
           (mainwindow.cpp:861-862)。
  0.500 s  送信音声開始。Modulator::start が無音を詰めて波形をちょうど
           ここに置く: delay_ms は FT8 で 500、FT4 で 300、その他 1000
-          (Modulator/Modulator.cpp:71-74)。開始が遅れた場合は**ずらさず
+          (Modulator/Modulator.cpp:163-168)。開始が遅れた場合は**ずらさず
           切り詰める** — m_ic = (mstr - delay_ms) * frameRate / 1000
-          (Modulator.cpp:94-97) — グリッドは手放さない。
+          (Modulator.cpp:192-198) — グリッドは手放さない。
           デコーダ側の基準も一致: xdt = xdt - 0.5
           (lib/ft8_decode.f90:210)。
 13.140 s  送信音声終了: 79 × 1920 / 12000 = 12.64 s。
@@ -664,15 +664,15 @@ WSJT-X 自身はこの選択を迫られない。`jt9` が別プロセスで、
 2026-09-21 に決着。FT4 の 7.5 s 周期では上のどの時刻が効くのかを曖昧に
 できない。以前ここでは本家を「内部矛盾」と書いたが、矛盾ではなかった。
 
-**本家が固定している値**（すべてソース実読）:
+**本家が固定している値**（すべてソース実読。行番号は v3.3.0-beta6）:
 
 | 箇所 | 値 | 意味 |
 |---|---|---|
-| `Modulator/Modulator.cpp:74` | `delay_ms = 300` | 波形は周期開始 0.300 s に PC を出る |
-| `lib/ft4/ft4sim.f90:85` | `k = nint((xdt + 0.5)/dt) - NSPS` | **DT = 0 は最初の有効シンボルが 0.500 s に来ること**。105 シンボルの波形はその手前に 48 ms のランプを 1 シンボル持つ |
-| `lib/ft4_decode.f90:462` | `xdt = ibest/666.67 - 0.5` | デコーダも同じ 0.5 s 基準 |
-| `widgets/mainwindow.cpp:8252` | `if(m_mode=="FT4") ms_delay=20` | FT4 はリレーのシーケンサを待たない |
-| `widgets/mainwindow.cpp:1819` | `samples = 21*3456` | WSJT-X の受信側は周期の 6.048 s 分をデコードする |
+| `Modulator/Modulator.cpp:167` | `delay_ms = 300` | 波形は周期開始 0.300 s に PC を出る |
+| `lib/ft4/ft4sim.f90:91` | `k = nint((xdt + 0.5)/dt) - NSPS` | **DT = 0 は最初の有効シンボルが 0.500 s に来ること**。105 シンボルの波形はその手前に 48 ms のランプを 1 シンボル持つ |
+| `lib/ft4_decode.f90:477` | `xdt = ibest/666.67 - 0.5` | デコーダも同じ 0.5 s 基準 |
+| `widgets/mainwindow.cpp:4375` | `if (m_mode == "FT4") delay_ms = 20` | FT4 はリレーのシーケンサを待たない |
+| `widgets/mainwindow.cpp:2862` | `samples = 21*3456` | WSJT-X の受信側は周期の 6.048 s 分をデコードする |
 
 最初の有効シンボルは 0.348 s に PC を出るので、遅延ゼロの経路なら
 **DT −0.15 s** でデコードされる。WSJT-X は FT4 を約 150 ms 早く出している。

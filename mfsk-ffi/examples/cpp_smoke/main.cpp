@@ -118,7 +118,7 @@ std::vector<int16_t> synth_frame(MfskMode mode, const char* a, const char* b,
     return out;
 }
 
-/// A frame placed in a full slot at that mode's TX offset.
+/// A frame placed in a full slot where that mode's info says its buffer goes (DT = 0).
 std::vector<int16_t> synth_slot(MfskMode mode, const char* a, const char* b,
                                 const char* c, float freq) {
     MfskModeInfo info;
@@ -127,7 +127,7 @@ std::vector<int16_t> synth_slot(MfskMode mode, const char* a, const char* b,
     if (mfsk_mode_info(mode, &info) != MFSK_STATUS_OK) return {};
     const std::vector<int16_t> frame = synth_frame(mode, a, b, c, freq);
     std::vector<int16_t> slot(info.slot_samples_12k, 0);
-    const size_t start = static_cast<size_t>(info.tx_start_offset_s * 12000.0f);
+    const size_t start = info.tx_buffer_start_samples_12k;
     for (size_t i = 0; i < frame.size() && start + i < slot.size(); ++i) {
         slot[start + i] = frame[i];
     }
@@ -595,7 +595,7 @@ std::vector<int16_t> fst4w_slot(MfskMode mode, const char* text, float freq_hz) 
     info.size = sizeof info;
     mfsk_mode_info(mode, &info);
     std::vector<int16_t> slot(info.slot_samples_12k, 0);
-    const size_t at = static_cast<size_t>(info.tx_start_offset_s * 12000.0f);
+    const size_t at = info.tx_buffer_start_samples_12k;
     for (size_t i = 0; i < w && at + i < slot.size(); ++i) slot[at + i] = pcm[i];
     return slot;
 }

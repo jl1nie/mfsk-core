@@ -28,12 +28,18 @@ fn message_and_carrier(mode: Mode) -> (&'static str, f32) {
 
 /// `frame` at the mode's nominal start in a period of silence, plus a little
 /// deterministic noise, as i16.
+/// Decoded DT of a frame placed at `tx_buffer_start`: within this of 0. A sixteenth of a symbol
+/// covers the slow modes' DT grids (measured: FST4-1800 +0.12 s, Q65-300A -0.136 s), and the 30 ms
+/// floor still fails FT4 placed by `tx_start_offset_s` (its tones 48 ms late).
+fn dt_tol_sec(mode: Mode) -> f32 {
+    (mode.meta().symbol_dt / 16.0).max(0.03)
+}
+
 fn period_of(mode: Mode, frame: &[f32], seed: u32) -> Vec<i16> {
     let meta = mode.meta();
     let slot = meta.slot_samples_12k as usize;
-    // the tones start at the offset; FT4's frame has a ramp symbol before them
-    let start =
-        (meta.tx_start_offset_s * FS as f32).round() as usize - meta.tx_lead_samples_12k as usize;
+    // where the registry says the buffer goes, the same rule for every mode (#726)
+    let start = meta.tx_buffer_start_samples_12k as usize;
     let mut x = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
     (0..slot)
         .map(|i| {
@@ -56,8 +62,8 @@ fn every_mode_encodes_to_what_the_decoder_reads() {
         let audio = tx.synthesize(&TxAudio::new(FS, f0));
         assert_eq!(audio.len(), tx.synth_len(FS), "{}", mode.name());
         assert_eq!(
-            tx.synth_lead(FS),
-            mode.meta().tx_lead_samples_12k as usize,
+            tx.tx_buffer_start(FS),
+            mode.meta().tx_buffer_start_samples_12k as usize,
             "{}",
             mode.name()
         );
@@ -65,7 +71,15 @@ fn every_mode_encodes_to_what_the_decoder_reads() {
         let mut dec = AnyDecoder::with_defaults(mode);
         let res = dec.decode_i16(&period, Some(0));
         let got: Vec<&str> = res.rows.iter().map(|r| r.decoded.text.as_str()).collect();
-        let ok = got.contains(&tx.text());
+        // Placed at `tx_buffer_start`, the frame is at DT = 0 (#726: JT9/JT65 were 1.0 s off).
+        let dts: Vec<f32> = res
+            .rows
+            .iter()
+            .filter(|r| r.decoded.text == tx.text())
+            .map(|r| r.decoded.dt_sec)
+            .collect();
+        eprintln!("{:10} DT {:?}", mode.name(), dts);
+        let ok = got.contains(&tx.text()) && dts.iter().all(|dt| dt.abs() <= dt_tol_sec(mode));
         eprintln!(
             "{:10} sent {:?} decoded {:?} ({:.1} s)",
             mode.name(),
@@ -75,10 +89,11 @@ fn every_mode_encodes_to_what_the_decoder_reads() {
         );
         if !ok {
             failures.push(format!(
-                "{}: sent {:?}, decoded {:?}",
+                "{}: sent {:?}, decoded {:?}, DT {:?}",
                 mode.name(),
                 tx.text(),
-                got
+                got,
+                dts
             ));
         }
     }

@@ -133,13 +133,6 @@ extension Mode {
     /// baked for 60A is silently wrong for the other four.
     public var synthesisedFrameLength: Int { Int(mfsk_synth_output_len(rawValue)) }
 
-    /// Samples at the start of a synthesised frame before its first tone
-    /// symbol: 576 for FT4, whose waveform carries a ramp symbol each side
-    /// (`gen_ft4wave`), 0 for every other mode. Already inside
-    /// ``synthesisedFrameLength``; a caller placing a frame by
-    /// ``ModeInfo/txStartOffsetSeconds`` starts the buffer this much earlier.
-    public var synthesisedLeadLength: Int { Int(mfsk_synth_lead_len(rawValue)) }
-
     /// Stage 3: channel symbols as 16-bit PCM at 12 kHz.
     public func synthesiseFrame(tones: [UInt8], frequencyHz: Float, amplitude: Int16 = 8000) throws -> [Int16] {
         var out = [Int16](repeating: 0, count: synthesisedFrameLength)
@@ -168,14 +161,14 @@ extension Mode {
         return Array(out.prefix(Int(written)))
     }
 
-    /// All three stages: a message, placed in a full slot at this mode's
-    /// own TX offset, ready to hand to ``Decoder`` or to a sound
+    /// All three stages: a message, placed in a full slot where this mode's
+    /// frame lands at DT = 0, ready to hand to ``Decoder`` or to a sound
     /// card.
     ///
-    /// The offset is ``ModeInfo/txStartOffsetSeconds`` — 0.5 s for FT8,
-    /// FT4 and FST4-15, 1.0 s for the other FST4 sub-modes — and getting
-    /// it from the mode rather than a constant is the whole reason the
-    /// field is published.
+    /// The frame starts at ``ModeInfo/txBufferStartSamples12k`` — 6000 for
+    /// FT8, 5424 for FT4 (its frame starts a ramp symbol before the tones),
+    /// 12 000 for the 1 s modes — the same rule for every mode, asked of
+    /// the mode rather than baked in.
     public func synthesiseSlot(
         _ message: Message,
         frequencyHz: Float,
@@ -186,8 +179,7 @@ extension Mode {
                                         frequencyHz: frequencyHz,
                                         amplitude: amplitude)
         var slot = [Int16](repeating: 0, count: Int(info.slotSamples12k))
-        // The tones start at the offset; FT4's frame has a ramp symbol before them.
-        let start = Int(info.txStartOffsetSeconds * 12_000) - synthesisedLeadLength
+        let start = Int(info.txBufferStartSamples12k)
         for (i, sample) in frame.enumerated() where start + i < slot.count {
             slot[start + i] = sample
         }

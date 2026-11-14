@@ -656,8 +656,14 @@ data class MfskModeInfo(
     /// takes 4 194 304 — a factor of 45 no other field hints at, and the
     /// reason one memory budget for every mode is wrong on a phone.
     val decodeFft1Size: Int,
-    /// Milliseconds from the slot boundary to the first frame symbol.
+    /// Milliseconds from the slot boundary to the first tone of a frame at DT = 0, the reference
+    /// decoded DTs are measured from. To place a transmission use [txBufferStartSamples12k].
     val txStartOffsetMs: Int,
+    /// Where a synthesised frame goes: the sample of the slot (12 kHz) its first sample goes to, so
+    /// it lands at DT = 0 on a WSJT-X receiver. One rule for every mode; FT4's frame starts a ramp
+    /// symbol (576 samples) before its tones, so FT4 is 5424, FT8 6000. WSJT-X's own transmitter
+    /// sends FT4 about 150 ms earlier.
+    val txBufferStartSamples12k: Int,
 )
 
 object Mfsk {
@@ -776,7 +782,7 @@ object Mfsk {
 
     fun modeInfo(mode: Int): MfskModeInfo {
         val v = nativeModeInfo(mode)
-        return MfskModeInfo(v[0], v[1], v[2], v[3], v[4], v[5])
+        return MfskModeInfo(v[0], v[1], v[2], v[3], v[4], v[5], v[6])
     }
 
     /// Take the decode off rayon's global pool.

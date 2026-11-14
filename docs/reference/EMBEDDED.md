@@ -635,14 +635,14 @@ source. For FT8, with the T/R period boundary at t = 0:
  +txDelay the rig confirms PTT; ptt1Timer then waits
           Configuration::txDelay(), default 0.200 s
           (Configuration.cpp:1602), or a hard 20 ms for FT4
-          (mainwindow.cpp:8252-8253), and fires startTx2()
+          (mainwindow.cpp:4374-4375), and fires startTx2()
           (mainwindow.cpp:861-862).
  0.500 s  audio begins. Modulator::start pads silence so the waveform
           lands exactly here: delay_ms = 500 for FT8, 300 for FT4,
-          1000 otherwise (Modulator/Modulator.cpp:71-74). A late start
+          1000 otherwise (Modulator/Modulator.cpp:163-168). A late start
           is TRUNCATED rather than shifted —
           m_ic = (mstr - delay_ms) * frameRate / 1000
-          (Modulator.cpp:94-97) — so the grid is never given up.
+          (Modulator.cpp:192-198) — so the grid is never given up.
           The decoder agrees: xdt = xdt - 0.5 (lib/ft8_decode.f90:210).
 13.140 s  audio ends: 79 x 1920 / 12000 = 12.64 s.
 13.640 s  m_bTxTime closes. tx_duration("FT8") = 1.0 + 12.64
@@ -694,15 +694,15 @@ Settled 2026-09-21. FT4's 7.5 s period leaves no room to be vague
 about which of the moments above binds, and an earlier reading here
 called upstream "internally inconsistent" where it is not.
 
-**What upstream fixes**, all read from source:
+**What upstream fixes**, all read from source (line numbers of v3.3.0-beta6):
 
 | where | value | meaning |
 |---|---|---|
-| `Modulator/Modulator.cpp:74` | `delay_ms = 300` | the waveform leaves the PC 0.300 s into the period |
-| `lib/ft4/ft4sim.f90:85` | `k = nint((xdt + 0.5)/dt) - NSPS` | **DT = 0 means the first active symbol at 0.500 s**; the 105-symbol waveform carries one 48 ms ramp symbol ahead of it |
-| `lib/ft4_decode.f90:462` | `xdt = ibest/666.67 - 0.5` | the decoder uses the same 0.5 s reference |
-| `widgets/mainwindow.cpp:8252` | `if(m_mode=="FT4") ms_delay=20` | FT4 does not wait on a relay sequencer |
-| `widgets/mainwindow.cpp:1819` | `samples = 21*3456` | a WSJT-X receiver decodes 6.048 s of the period |
+| `Modulator/Modulator.cpp:167` | `delay_ms = 300` | the waveform leaves the PC 0.300 s into the period |
+| `lib/ft4/ft4sim.f90:91` | `k = nint((xdt + 0.5)/dt) - NSPS` | **DT = 0 means the first active symbol at 0.500 s**; the 105-symbol waveform carries one 48 ms ramp symbol ahead of it |
+| `lib/ft4_decode.f90:477` | `xdt = ibest/666.67 - 0.5` | the decoder uses the same 0.5 s reference |
+| `widgets/mainwindow.cpp:4375` | `if (m_mode == "FT4") delay_ms = 20` | FT4 does not wait on a relay sequencer |
+| `widgets/mainwindow.cpp:2862` | `samples = 21*3456` | a WSJT-X receiver decodes 6.048 s of the period |
 
 So the first active symbol leaves the PC at 0.348 s, and over a path
 with no latency it would decode at **DT −0.15 s**. WSJT-X sends FT4

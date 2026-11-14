@@ -2646,10 +2646,14 @@ cannot drift apart. A protocol whose transmit chain is not FSK — the
 The audio is `N_SYMBOLS` symbols plus, for `Waveform::Ft4`, a ramp symbol each side (`synth_len`).
 Only FT4 has a nonzero `N_RAMP`: `gen_ft4wave.f90` frames its 103 tone symbols with a ramp symbol
 on each side (105 symbols, 60 480 samples at 12 kHz), and the raised-cosine ramp
-is a whole symbol long. The tones therefore start `synth_lead_samples::<P>(rate)`
-(576 for FT4, 0 elsewhere; `Encoded::synth_lead`, `ModeMeta::tx_lead_samples_12k`, C
-`mfsk_synth_lead_len`, Swift `synthesisedLeadLength`) into the buffer: place the buffer that many
-samples before `TX_START_OFFSET_S` (`ft4sim.f90:91`). Up to 0.15 FT4 audio was the
+is a whole symbol long. The tones therefore start `synth_lead_samples::<P>(rate)` (576 for FT4,
+0 elsewhere) into the buffer. **Place the buffer at `tx_buffer_start::<P>(rate)`**
+(`Encoded::tx_buffer_start`, `ModeMeta::tx_buffer_start_samples_12k`, C
+`MfskModeInfo::tx_buffer_start_samples_12k`, Swift `txBufferStartSamples12k`, Kotlin the same):
+`TX_START_OFFSET_S` less that lead, so every mode is placed one way and its frame lands at DT = 0
+(FT4 5424, FT8 6000; `ft4sim.f90:91`). It is samples, not seconds, because 0.452 s has no exact
+`f32`. WSJT-X's own transmitter sends FT4 about 150 ms earlier (`Modulator.cpp:167`,
+`delay_ms = 300`), a marked divergence (`engine::tx::tx_buffer_start`). Up to 0.15 FT4 audio was the
 103-symbol, `nsps / 8`-ramp form `gen_ft8wave` has, -45 dB from `gen_ft4wave`;
 `tests/gen_wave_vs_wsjtx.rs` now holds FT8, FT4 and FST4 to WSJT-X v3.3.0-beta6's own
 generators (-88 to -95 dB). FST4 (`Waveform::Fst4`) does not extend its first and last
@@ -2917,11 +2921,15 @@ exposes: modulation (`ntones`, `bits_per_symbol`, `nsps`, `symbol_dt`,
 `n_symbols`, `t_slot_s`) and codec (`fec_k`, `fec_n`, `payload_bits`).
 Beyond that geometry it publishes what a host cannot otherwise ask for:
 
-* `tx_start_offset_s` — seconds from the start of the slot buffer to the
-  first symbol, the `dt = 0` reference: 0.5 for FT8, FT4, FST4-15 and Q65
-  15 / 30 s, 1.0 for the other FST4 sub-modes and Q65 from 60 s up (Q65
-  followed `nsps` as `q65.f90:130-131` does; every sub-mode had published
-  1.0 until #399).
+* `tx_start_offset_s` — seconds from the start of the slot to the first tone
+  of a frame at DT = 0, the reference `dt_sec` is measured from: 0.5 for FT8, FT4,
+  FST4-15 and Q65 15 / 30 s, 1.0 for the other FST4 sub-modes, Q65 from 60 s up,
+  WSPR, JT9 and JT65 (Q65 follows `nsps` as `q65.f90:130-131` does; every
+  sub-mode had published 1.0 until #399; JT9 and JT65 were 0.0 until #726).
+* `tx_buffer_start_samples_12k` — where a synthesised buffer goes, in samples
+  from the start of the slot: the offset less FT4's lead ramp symbol (FT4 5424,
+  FT8 6000, the 1 s modes 12 000). Place a transmission by this, not by
+  `tx_start_offset_s`.
 * `slot_samples_12k` — the slot in samples (FT4 90 000, FT8 180 000,
   FST4-300 3 600 000), and `decode_fft1_size` — the forward FFT the
   decoder takes over the whole slot (`Protocol::DECODE_FFT1_SIZE`; FT4
