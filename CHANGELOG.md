@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **WSPR, JT9, JT65 and Q65 transmit waveforms are `Modulator::modulate`'s** (#726). The loop took `cos` of an `f32` phase before advancing
+  it, with `f0 + tone * spacing` in `f32`; WSJT-X advances a `double` phase first and takes `sin`. Against that, on a 110 s WSPR frame:
+  -35 dB (an `f32` sum drifts 0.04 rad), and a different phase. Now a `u64` turn accumulator (`engine/dsp/nco.rs`, shared with
+  the GFSK modes; no `f64` per sample) with the per-symbol frequency formed in `f64` (from the `f32` `f0` and spacing, widened: JT9's `12000/6912` is not exact in `f32`, 1e-4 rad over a frame): within 2e-4 of an `f64` reference of the Modulator's loop
+  (`cpfsk::tests`). `engine::dsp::subtract` rebuilds the same waveform through it. Test fixtures that were exact zeros around an exact tone burst
+  (`dt_window` Q65) now carry a little noise, and the JT65 averaging test tries up to 8 noise draws: the 0.8 dB window it relied on moved.
 - **FT4 transmit waveform is `gen_ft4wave`'s** (#726). It was synthesised like `gen_ft8wave`: 103 symbols, an `nsps / 8` ramp, the phase
   starting at the first tone. WSJT-X frames the tones with a ramp symbol each side (105 symbols, 60 480 samples) and ramps a whole symbol.
   On a fixed tone list against WSJT-X's own generator, tones aligned: -21 dB over the frame before (-45 dB inside it, edges excluded), -103 dB

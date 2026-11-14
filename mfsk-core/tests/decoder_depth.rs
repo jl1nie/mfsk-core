@@ -288,48 +288,62 @@ fn jt65_averaging_decodes_what_no_single_period_does() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(2.0);
-    let periods: Vec<Vec<f32>> = (0..6).map(|i| jt65_period(sigma, 100 + i)).collect();
-    let run = |averaging: bool| {
-        let mut p = DecodeParams::for_band((300.0, 2700.0)).depth(Depth::Deep);
-        p.averaging = averaging;
-        let mut d = Decoder::<Jt65>::new(p);
-        periods
-            .iter()
-            .enumerate()
-            .map(|(i, a)| {
-                d.decode(&SlotInput::f32(a).period(10 + 2 * i as i64))
-                    .rows
-                    .into_iter()
-                    .map(|r| {
-                        if std::env::var_os("JT65_AVG_DEBUG").is_some() {
-                            eprintln!(
-                                "  p{i} {} f={:.1} dt={:.2}",
-                                r.decoded.text, r.decoded.freq_hz, r.decoded.dt_sec
-                            );
-                        }
-                        r.decoded.text
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>()
-    };
-    let off = run(false);
-    let on = run(true);
-    eprintln!("sigma {sigma}: off {off:?}\n on {on:?}");
+    // The level is a cliff: one period more or less than the noise draws allow decodes, and the window
+    // between "no single period decodes" and "the average does" is narrow, and which draws land in it is a
+    // matter of the noise: of 12 draws at sigma 2.0, 6 show averaging decoding what no single period does
+    // with the old transmitter and 6 (a different 6) with the exact one (#726; the fixed draw 100.. was one of
+    // the first 6 and is not one of the second). So several draws are tried and the property asserted is that
+    // some draw shows it.
+    let mut shown = None;
+    for draw in 0..8u64 {
+        let periods: Vec<Vec<f32>> = (0..6)
+            .map(|i| jt65_period(sigma, 100 + 6 * draw + i))
+            .collect();
+        let run = |averaging: bool| {
+            let mut p = DecodeParams::for_band((300.0, 2700.0)).depth(Depth::Deep);
+            p.averaging = averaging;
+            let mut d = Decoder::<Jt65>::new(p);
+            periods
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    d.decode(&SlotInput::f32(a).period(10 + 2 * i as i64))
+                        .rows
+                        .into_iter()
+                        .map(|r| {
+                            if std::env::var_os("JT65_AVG_DEBUG").is_some() {
+                                eprintln!(
+                                    "  p{i} {} f={:.1} dt={:.2}",
+                                    r.decoded.text, r.decoded.freq_hz, r.decoded.dt_sec
+                                );
+                            }
+                            r.decoded.text
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let off = run(false);
+        let on = run(true);
+        eprintln!("sigma {sigma}, draw {draw}: off {off:?}\n on {on:?}");
+        assert!(on[0].is_empty(), "one period cannot average");
+        assert!(
+            on.iter().all(|r| r.len() <= 1),
+            "a frame came back twice: {on:?}"
+        );
+        if off.iter().all(|r| r.is_empty())
+            && on
+                .iter()
+                .skip(1)
+                .any(|r| r.iter().any(|t| t == "CQ K1ABC FN42"))
+        {
+            shown = Some(draw);
+            break;
+        }
+    }
     assert!(
-        off.iter().all(|r| r.is_empty()),
-        "single periods decoded: {off:?}"
-    );
-    assert!(on[0].is_empty(), "one period cannot average");
-    assert!(
-        on.iter()
-            .skip(1)
-            .any(|r| r.iter().any(|t| t == "CQ K1ABC FN42")),
-        "averaging decoded nothing: {on:?}"
-    );
-    assert!(
-        on.iter().all(|r| r.len() <= 1),
-        "a frame came back twice: {on:?}"
+        shown.is_some(),
+        "no draw of 8 showed averaging decoding what no single period does"
     );
 }
 

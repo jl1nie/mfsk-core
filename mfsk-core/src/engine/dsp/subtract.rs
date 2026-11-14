@@ -77,9 +77,11 @@ fn generate_iq(tones: &[u8], freq_hz: f32, cfg: &SubtractCfg) -> (Vec<f32>, Vec<
     let mut w_sin = vec![0.0f32; n];
     // The transmitter's own phase accumulator (`cpfsk`), so the waveform rebuilt
     // here is the one `cpfsk::synth_f32_into` sent, not a second copy of its loop.
-    // That loop wraps at ±2π where this one wrapped at +π: the same angle, a
-    // different last bit of `cos`/`sin`, and only WSPR's `internal-testing` second
-    // SIC layer (`wspr::decode`) and tests reach this branch (#425).
+    // That phase is an `engine::dsp::nco::Nco` turn count now (it was an `f32` wrapped at ±2π,
+    // where this one wrapped at +π), advanced before the sample as the Modulator does, so the
+    // reference is a sample and a constant phase from the old one, which the least-squares fit
+    // absorbs. Only WSPR's `internal-testing` second SIC layer (`wspr::decode`) and tests
+    // reach this branch (#425).
     crate::engine::dsp::cpfsk::for_each_phase(
         tones,
         cfg.samples_per_symbol,
