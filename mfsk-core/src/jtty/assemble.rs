@@ -224,6 +224,10 @@ pub struct Assembler {
     /// `(f1, tsync)` of frames decoded in earlier windows, whose own region later windows do
     /// not search (see [`super::rx::Params::skip_decoded_hz`]).
     pub(super) decoded: Vec<(f32, f64)>,
+    /// The last frames decoded, which a later candidate is checked against for being a misaligned
+    /// view of one (`is_frame_alias`); a ring, newest over oldest.
+    pub(super) alias_refs: Vec<super::rx::AliasRef>,
+    pub(super) next_alias_ref: usize,
 }
 
 impl core::fmt::Debug for Assembler {
