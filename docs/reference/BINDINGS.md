@@ -449,7 +449,8 @@ first sample goes to, where WSJT-X's own transmitter starts it (`Modulator.cpp:1
 FT8 6000 and the 1 s modes including WSPR, JT9 and JT65 12000, where the frame lands at DT = 0; FT4
 3600 (300 ms, since 0.16.1, #749; 5424 in 0.16.0). FT4's waveform carries a ramp symbol each side
 (`gen_ft4wave`), so its tones start 576 samples into the buffer, at 0.348 s, and over a chain with no
-latency decode at DT -0.152 s, as a WSJT-X station's do. `tx_start_offset_s` is the DT = 0 reference,
+latency decode at DT -0.152 s (measured on this crate's decoder; a WSJT-X receiver should agree,
+`ft4_decode.f90:477` using the same 0.5 s reference, but `jt9` has not been run on it). `tx_start_offset_s` is the DT = 0 reference,
 not the placement. The field was appended in 0.16.0; a host built against this header and run on an
 older library checks `size`.
 

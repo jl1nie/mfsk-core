@@ -313,7 +313,7 @@ pub struct ProtocolMeta {
     /// Where a synthesised frame goes, in samples at 12 kHz from the start of the slot: put the first
     /// sample of `Encoded::synthesize`'s buffer here, where WSJT-X's own transmitter starts it
     /// (`Modulator.cpp:163-168` `delay_ms`; #749). FT4 3600 (300 ms: its tones decode at DT −0.152 s over
-    /// a chain with no latency, as a WSJT-X station's do), FT8 6000, WSPR/JT9/JT65 12000; for every mode
+    /// a chain with no latency, measured on this crate's decoder), FT8 6000, WSPR/JT9/JT65 12000; for every mode
     /// but FT4 the frame then lands at DT = 0. Integer on purpose. For DT = 0 placement (FT4 5424) see
     /// `engine::tx::dt0_buffer_start`. 0 for a mode with no tone stage.
     pub tx_buffer_start_samples_12k: u32,

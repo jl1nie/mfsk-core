@@ -2500,7 +2500,8 @@ WSJT-X 自身の送信機がバッファを出し始める位置、つまり `Mo
 （`Modulator.cpp:163-168`、`FrameLayout::TX_DELAY_MS`）。FT4 以外のモードでは `TX_START_OFFSET_S` から
 先行分を引いた値で、フレームは DT = 0 に来る（FT8 は 6000、1 秒のモードは 12 000）。FT4 は 3600
 （`delay_ms = 300`。0.16.1 から、#749。0.16.0 では 5424）で、トーンは 0.348 s に出て、遅延のない経路なら
-WSJT-X の局と同じく DT -0.152 s でデコードされる。フレームを DT = 0 に置きたいとき（シミュレータ、
+DT -0.152 s でデコードされる（この crate のデコーダで測定。`ft4_decode.f90:477` も同じ 0.5 s 基準なので
+WSJT-X の受信側も同じ値になるはずだが、`jt9` では試していない）。フレームを DT = 0 に置きたいとき（シミュレータ、
 `ft4sim.f90:91`。FT4 は 5424）は `engine::tx::dt0_buffer_start::<P>(rate)` を使う。0.15 までの FT4 は、`gen_ft8wave` と同じ 103 シンボル・
 `nsps / 8` ランプの形で、`gen_ft4wave` から -45 dB ずれていた。
 `tests/gen_wave_vs_wsjtx.rs` が FT8・FT4・FST4 を WSJT-X v3.3.0-beta6 自身の

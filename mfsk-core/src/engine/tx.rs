@@ -263,7 +263,9 @@ pub fn synth_lead_samples<P: FskWaveform>(sample_rate: u32) -> usize {
 /// For every mode but FT4 that is where the frame's first tone lands at
 /// [`FrameLayout::TX_START_OFFSET_S`], DT = 0 on a WSJT-X receiver: FT8 0.5 s, the 1 s modes 1.0 s.
 /// FT4 is [`FrameLayout::TX_DELAY_MS`] = 300 ms (3600 samples at 12 kHz), so its tones leave at
-/// 0.348 s and, over a chain with no latency, decode at DT −0.152 s, as a WSJT-X station's do.
+/// 0.348 s and, over a chain with no latency, decode at DT −0.152 s (measured on this crate's
+/// decoder, `tests/encoder.rs`; a WSJT-X receiver should agree, `ft4_decode.f90:477` using the same
+/// 0.5 s reference, but `jt9` has not been run on it).
 /// For a frame at DT = 0 instead (a simulator, `ft4sim.f90:91`), place it at
 /// [`dt0_buffer_start`].
 pub fn tx_buffer_start<P: FskWaveform>(sample_rate: u32) -> usize {

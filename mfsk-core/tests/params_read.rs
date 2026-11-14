@@ -74,7 +74,7 @@ fn message(mode: Mode) -> (&'static str, &'static str, &'static str, f32) {
     }
 }
 
-/// The frame at the mode's nominal start in deterministic noise
+/// The frame at the mode's `tx_buffer_start` in deterministic noise
 /// (`tests/encoder.rs`'s `period_of`).
 fn period(mode: Mode, seed: u32) -> Vec<i16> {
     let (text, _, _, f0) = message(mode);

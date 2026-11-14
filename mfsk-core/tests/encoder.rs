@@ -48,7 +48,7 @@ fn dt_tol_sec(mode: Mode) -> f32 {
 fn period_of(mode: Mode, frame: &[f32], seed: u32) -> Vec<i16> {
     let meta = mode.meta();
     let slot = meta.slot_samples_12k as usize;
-    // where the registry says the buffer goes, the same rule for every mode (#726)
+    // where the registry says the buffer goes: WSJT-X's `delay_ms` (#726, #749)
     let start = meta.tx_buffer_start_samples_12k as usize;
     let mut x = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
     (0..slot)
@@ -145,6 +145,47 @@ fn tx_buffer_start_is_wsjtx_delay_ms() {
             "{name} at 48 kHz"
         );
     }
+}
+
+/// `dt0_buffer_start` is the placement that puts the first tone at DT = 0 (`ft4sim.f90:91`): FT4 a
+/// ramp symbol before 0.5 s, 5424, and it decodes there at DT 0; every other mode is where WSJT-X
+/// starts it anyway, so it equals `tx_buffer_start`.
+#[cfg(feature = "ft4")]
+#[test]
+fn dt0_buffer_start_lands_the_frame_at_dt_zero() {
+    use mfsk_core::engine::tx::dt0_buffer_start;
+    assert_eq!(dt0_buffer_start::<mfsk_core::Ft4>(FS), 6_000 - 576);
+    #[cfg(feature = "ft8")]
+    assert_eq!(
+        dt0_buffer_start::<mfsk_core::Ft8>(FS),
+        mfsk_core::engine::tx::tx_buffer_start::<mfsk_core::Ft8>(FS)
+    );
+    let mode = Mode::Ft4;
+    let (text, f0) = message_and_carrier(mode);
+    let tx = encode(mode, text).unwrap();
+    let audio = tx.synthesize(&TxAudio::new(FS, f0));
+    let start = dt0_buffer_start::<mfsk_core::Ft4>(FS);
+    let mut x = 9u32;
+    let period: Vec<i16> = (0..mode.meta().slot_samples_12k as usize)
+        .map(|i| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let n = ((x >> 16) as i16 / 109) as f32;
+            let s = i.checked_sub(start).and_then(|k| audio.get(k)).copied();
+            (s.unwrap_or(0.0) * AMP + n).clamp(-32_768.0, 32_767.0) as i16
+        })
+        .collect();
+    let res = AnyDecoder::with_defaults(mode).decode_i16(&period, Some(0));
+    let dts: Vec<f32> = res
+        .rows
+        .iter()
+        .filter(|r| r.decoded.text == tx.text())
+        .map(|r| r.decoded.dt_sec)
+        .collect();
+    assert!(!dts.is_empty(), "FT4 at dt0_buffer_start did not decode");
+    assert!(
+        dts.iter().all(|dt| dt.abs() <= dt_tol_sec(mode)),
+        "FT4 at dt0_buffer_start: DT {dts:?}, want 0"
+    );
 }
 
 #[test]

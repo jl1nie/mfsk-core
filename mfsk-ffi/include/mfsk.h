@@ -1045,9 +1045,11 @@ typedef struct MfskModeInfo {
      * (`Modulator.cpp:163-168` `delay_ms`). At another rate scale it and round:
      * `round(v * rate / 12000)` is exact at 48 kHz and 44.1 kHz too (FT4: 14 400 and 13 230). FT8
      * 6000, WSPR, JT9 and JT65 12000, where the frame lands at DT = 0; FT4 3600 (300 ms, since
-     * 0.16.1, #749; 5424 in 0.16.0), so over a chain with no latency its tones decode at DT -0.152 s,
-     * as a WSJT-X station's do. 0 for JTTY and MSK144, which have no slot. A library older than the
-     * caller's header leaves it as the caller set it: check `size` covers it.
+     * 0.16.1, #749; 5424 in 0.16.0), so over a chain with no latency its tones decode at DT -0.152 s
+     * (this crate's decoder, measured; `ft4_decode.f90:477` shares the 0.5 s reference, so a WSJT-X
+     * receiver should read the same, not run against `jt9`). 0 for JTTY and MSK144, which have no
+     * slot. A library older than the caller's header leaves it as the caller set it: check `size`
+     * covers it.
      */
     uint32_t tx_buffer_start_samples_12k;
 } MfskModeInfo;
