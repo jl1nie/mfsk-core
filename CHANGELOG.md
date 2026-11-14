@@ -12,6 +12,12 @@
   `synthesisedLeadLength`), so a caller places the buffer that much before `TX_START_OFFSET_S` (`ft4sim.f90:91`); `Waveform` is
   `#[non_exhaustive]` with a new `Ft4` variant. New tier A `tests/gen_wave_vs_wsjtx.rs` (FT8 -68 dB, FT4 -82 dB). **Open:** FT4's subtraction reference
   is still the FT8 form (#734); the CoreS3's `GfskStream` is not changed.
+- **JTTY: a candidate that is a misaligned view of a frame already decoded is refused** (#726, upstream PR #702, v3.3.0-beta6
+  `is_frame_alias`). A strong signal left repeatable false frames (`IG4QXF TU`): a sync candidate a whole number of symbols inside a
+  decoded frame matched 7 of 13 sync tones by chance and still gave a TBCC codeword. It is dropped when, within 2.5 tone spacings and
+  at a near-whole-symbol offset, >= 80 % of >= 9 overlapping received tones equal that frame's, shifted alike. Measured on upstream's
+  own case (`tests/jtty_alias.rs`, fox at -3 dB, 24 seeded trials): 4 false frames before, 0 after, 24/24 decoded in full, and a
+  second station 30 Hz away at 18.5 symbols still decodes. Tier B (`jtty_rx` vectors) unchanged.
 - **WSPR: an out-of-range type-2 suffix and the reserved type 63 are refused, as `wsprd` of v3.3.0-beta6 does** (#726, upstream
   `ffa884606`). `unpackpfx` kept `nc` in a `char`, so a suffix field past 60255 wrapped into a valid suffix; the port reproduced
   that. Measured on the 26 046-row `unpk_` fixture, rebuilt from beta6 (`wsprd_unpack_beta6.tsv`): 1 488 rows change, none left
