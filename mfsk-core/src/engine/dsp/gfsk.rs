@@ -267,6 +267,45 @@ impl GfskStream {
     }
 }
 
+/// A phase accumulator that needs no `f64` per sample: the phase is a `u64` of turns (2^64 is one cycle),
+/// so adding to it is exact and wraps by itself. An f32 sum of `2 pi f0 / fs` drifts (the increment is off
+/// by ~3e-8 rad and the error is systematic: 3e-3 rad over an FST4-15 frame, a degree over a long one),
+/// and an `f64` one is software on an Xtensa LX7. The carrier is turned into its increment once, in
+/// `f64`; the modulation increments (small, an `f32` each) are rounded to turns one at a time, which
+/// does not accumulate. Against WSJT-X v3.3.0-beta6, which sums in `f64`, the waveforms agree to the
+/// same -85 dB or better as an `f64` sum does (`tests/gen_wave_vs_wsjtx.rs`).
+struct Nco {
+    turns: u64,
+    carrier: u64,
+}
+
+impl Nco {
+    /// Radians to turns: `2^64 / 2 pi`, exact enough in f32 (it is a scale, not a phase).
+    const TURNS_PER_RAD: f32 = 18_446_744_073_709_551_616.0 / (2.0 * PI);
+
+    fn new(f0_hz: f32, sample_rate: f32) -> Self {
+        // once per call; the fraction of a turn per sample, `f0 / fs`, to 2^-64
+        let frac = f64::from(f0_hz) / f64::from(sample_rate);
+        Self {
+            turns: 0,
+            carrier: ((frac - frac.floor()) * 18_446_744_073_709_551_616.0_f64) as u64,
+        }
+    }
+
+    /// The phase now, radians in `[0, 2 pi)`, from its top 32 bits.
+    #[inline]
+    fn phase(&self) -> f32 {
+        ((self.turns >> 32) as u32) as f32 * (2.0 * PI / 4_294_967_296.0)
+    }
+
+    /// Advance by one sample: the carrier and `modulation_rad`.
+    #[inline]
+    fn step(&mut self, modulation_rad: f32) {
+        let m = (modulation_rad * Self::TURNS_PER_RAD) as i64 as u64;
+        self.turns = self.turns.wrapping_add(self.carrier).wrapping_add(m);
+    }
+}
+
 /// Synthesise a PCM waveform from an FSK tone sequence into a caller-
 /// provided output buffer. **No allocation** — `out` must already be
 /// sized to [`synth_output_len`]`(tones.len(), cfg.samples_per_symbol)`.
@@ -300,7 +339,6 @@ pub fn synth_f32_into(out: &mut [f32], tones: &[u8], f0_hz: f32, amplitude: f32,
         "synth_f32_into: out.len() must equal synth_output_len()"
     );
     let twopi = 2.0 * PI;
-    let dt = 1.0 / cfg.sample_rate;
 
     let pulse_len = 3 * nsps;
     // `do i=1,3*nsps; tt=(i-1.5*nsps)/real(nsps)` (`gen_ft8wave.f90:22-24`,
@@ -337,18 +375,12 @@ pub fn synth_f32_into(out: &mut [f32], tones: &[u8], f0_hz: f32, amplitude: f32,
         }
     }
 
-    // Carrier
-    for d in dphi.iter_mut() {
-        *d += twopi * f0_hz * dt;
-    }
-
-    let mut phi = 0.0f32;
+    // Phase and carrier in an integer accumulator ([`Nco`]): beta6's `waveform_kernels.f90` sums in f64,
+    // which an f32 sum cannot match and an LX7 cannot afford.
+    let mut nco = Nco::new(f0_hz, cfg.sample_rate);
     for k in 0..nwave {
-        out[k] = amplitude * phi.sin();
-        phi += dphi[nsps + k];
-        if phi > twopi {
-            phi -= twopi;
-        }
+        out[k] = amplitude * nco.phase().sin();
+        nco.step(dphi[nsps + k]);
     }
 
     // Half-cosine envelope on each end
@@ -406,7 +438,6 @@ pub fn synth_f32_lead_tail_into(
         "synth_f32_lead_tail_into: out.len() must equal synth_lead_tail_len()"
     );
     let twopi = 2.0 * PI;
-    let dt = 1.0 / cfg.sample_rate;
 
     let pulse_len = 3 * nsps;
     // `do i=1,3*nsps; tt=(i-1.5*nsps)/real(nsps)` (`gen_ft4wave.f90`).
@@ -425,23 +456,94 @@ pub fn synth_f32_lead_tail_into(
             *d += dphi_peak * p * tone as f32;
         }
     }
-    for d in dphi.iter_mut() {
-        *d += twopi * f0_hz * dt;
-    }
-
-    let mut phi = 0.0f32;
+    // Phase and carrier in an integer accumulator, as for `synth_f32_into`.
+    let mut nco = Nco::new(f0_hz, cfg.sample_rate);
     for (o, &d) in out.iter_mut().zip(dphi.iter()) {
-        *o = amplitude * phi.sin();
-        phi += d;
-        if phi > twopi {
-            phi -= twopi;
-        }
+        *o = amplitude * nco.phase().sin();
+        nco.step(d);
     }
 
     for i in 0..nsps {
         let x = twopi * i as f32 / (2.0 * nsps as f32);
         out[i] *= (1.0 - x.cos()) / 2.0;
         out[(nsym + 1) * nsps + i] *= (1.0 + x.cos()) / 2.0;
+    }
+}
+
+/// FST4's GFSK waveform, as `lib/fst4/gen_fst4wave.f90` builds it: `tones.len() * nsps`
+/// samples, `cfg.bt`'s Gaussian pulse, and **no** extension of the first and last
+/// tone symbol (unlike [`synth_f32_into`], `gen_ft8wave`'s form): the first
+/// symbol has no left neighbour's tail and the last no right one. The phase
+/// integrates from sample 0, and `f0_hz` is the tone-0 frequency (the Fortran
+/// takes the band centre and subtracts `1.5 * hmod / tsym`).
+///
+/// The envelope is a half-symbol raised cosine: `nsps / 4` samples up at the
+/// start, and `nsps / 4` (+1, the last of which is past the frame) down from
+/// sample `(n - 1) * nsps + 3 * nsps / 4` (`gen_fst4wave.f90`, `FST4_NOSHAPING`
+/// off). `cfg.ramp_samples` is not read.
+///
+/// # Panics
+///
+/// If `out.len() != tones.len() * cfg.samples_per_symbol` or `tones` is empty.
+pub fn synth_f32_fst4_into(
+    out: &mut [f32],
+    tones: &[u8],
+    f0_hz: f32,
+    amplitude: f32,
+    cfg: &GfskCfg,
+) {
+    let nsps = cfg.samples_per_symbol;
+    let nsym = tones.len();
+    assert!(nsym > 0, "synth_f32_fst4_into: empty tone sequence");
+    let total = nsym * nsps;
+    assert_eq!(
+        out.len(),
+        total,
+        "synth_f32_fst4_into: out.len() must equal tones.len() * samples_per_symbol"
+    );
+    let twopi = 2.0 * PI;
+
+    let pulse_len = 3 * nsps;
+    let pulse: Vec<f32> = (0..pulse_len)
+        .map(|i| {
+            let tt = ((i + 1) as f32 - 1.5 * nsps as f32) / nsps as f32;
+            gfsk_pulse(cfg.bt, tt)
+        })
+        .collect();
+
+    let mut dphi = vec![0.0f32; total];
+    let dphi_peak = twopi * cfg.hmod / nsps as f32;
+    for (j, &tone) in tones.iter().enumerate() {
+        if tone == 0 {
+            continue;
+        }
+        // Symbol j's pulse spans blocks j-1, j, j+1; the part outside the frame is dropped.
+        for (i, &p) in pulse.iter().enumerate() {
+            let at = (j * nsps + i).wrapping_sub(nsps);
+            if at < total {
+                dphi[at] += dphi_peak * p * tone as f32;
+            }
+        }
+    }
+
+    // Phase and carrier in an integer accumulator ([`Nco`]); over FST4's 160 symbols (21 M samples at -1800)
+    // an f32 sum drifts by more than a degree.
+    let mut nco = Nco::new(f0_hz, cfg.sample_rate);
+    for (o, &d) in out.iter_mut().zip(dphi.iter()) {
+        *o = amplitude * nco.phase().sin();
+        nco.step(d);
+    }
+
+    let ramp = nsps / 4;
+    let half = (nsps / 2) as f32;
+    for i in 0..ramp {
+        out[i] *= (1.0 - (twopi * i as f32 / half).cos()) / 2.0;
+    }
+    let k1 = (nsym - 1) * nsps + 3 * nsps / 4;
+    for i in 0..=ramp {
+        if k1 + i < total {
+            out[k1 + i] *= (1.0 + (twopi * i as f32 / half).cos()) / 2.0;
+        }
     }
 }
 

@@ -11,27 +11,27 @@
 use crate::engine::dsp::gfsk::GfskCfg;
 
 /// FST4-15 GFSK configuration: 12 kHz, 720 samples/symbol, BT=2.0,
-/// hmod=1.0, NSPS/8-sample cosine ramp.
+/// hmod=1.0, NSPS/4-sample cosine ramp.
 pub const FST4_15_GFSK: GfskCfg = GfskCfg {
     sample_rate: 12_000.0,
     samples_per_symbol: 720,
     bt: 2.0,
     hmod: 1.0,
-    ramp_samples: 720 / 8,
+    ramp_samples: 720 / 4,
 };
 
 /// FST4-30 GFSK configuration: 12 kHz, 1680 samples/symbol, BT=2.0,
-/// hmod=1.0, NSPS/8-sample cosine ramp.
+/// hmod=1.0, NSPS/4-sample cosine ramp.
 pub const FST4_30_GFSK: GfskCfg = GfskCfg {
     sample_rate: 12_000.0,
     samples_per_symbol: 1_680,
     bt: 2.0,
     hmod: 1.0,
-    ramp_samples: 1_680 / 8,
+    ramp_samples: 1_680 / 4,
 };
 
 /// FST4-60A GFSK configuration: 12 kHz, 3888 samples/symbol, BT=2.0,
-/// hmod=1.0, NSPS/8-sample cosine ramp.
+/// hmod=1.0, NSPS/4-sample cosine ramp.
 ///
 /// Was `samples_per_symbol: 3840, bt: 1.0` — hardcoded independently
 /// of [`crate::engine::ModulationParams`] and never updated to match WSJT-X
@@ -42,47 +42,47 @@ pub const FST4_60A_GFSK: GfskCfg = GfskCfg {
     samples_per_symbol: 3_888,
     bt: 2.0,
     hmod: 1.0,
-    ramp_samples: 3_888 / 8,
+    ramp_samples: 3_888 / 4,
 };
 
 /// FST4-120 GFSK configuration: 12 kHz, 8200 samples/symbol, BT=2.0,
-/// hmod=1.0, NSPS/8-sample cosine ramp.
+/// hmod=1.0, NSPS/4-sample cosine ramp.
 pub const FST4_120_GFSK: GfskCfg = GfskCfg {
     sample_rate: 12_000.0,
     samples_per_symbol: 8_200,
     bt: 2.0,
     hmod: 1.0,
-    ramp_samples: 8_200 / 8,
+    ramp_samples: 8_200 / 4,
 };
 
 /// FST4-300 GFSK configuration: 12 kHz, 21504 samples/symbol, BT=2.0,
-/// hmod=1.0, NSPS/8-sample cosine ramp.
+/// hmod=1.0, NSPS/4-sample cosine ramp.
 pub const FST4_300_GFSK: GfskCfg = GfskCfg {
     sample_rate: 12_000.0,
     samples_per_symbol: 21_504,
     bt: 2.0,
     hmod: 1.0,
-    ramp_samples: 21_504 / 8,
+    ramp_samples: 21_504 / 4,
 };
 
 /// FST4-900 / FST4W-900 GFSK configuration: 12 kHz, 66560 samples/symbol,
-/// BT=2.0, hmod=1.0, NSPS/8-sample cosine ramp (`fst4_decode.f90:420`
+/// BT=2.0, hmod=1.0, NSPS/4-sample cosine ramp (`fst4_decode.f90:420`
 /// `nsps=66560`; `gen_fst4wave.f90` has no period branch).
 pub const FST4_900_GFSK: GfskCfg = GfskCfg {
     sample_rate: 12_000.0,
     samples_per_symbol: 66_560,
     bt: 2.0,
     hmod: 1.0,
-    ramp_samples: 66_560 / 8,
+    ramp_samples: 66_560 / 4,
 };
 
 /// FST4-1800 / FST4W-1800 GFSK configuration: 12 kHz, 134400 samples/symbol,
-/// BT=2.0, hmod=1.0, NSPS/8-sample cosine ramp (`fst4_decode.f90:426`
+/// BT=2.0, hmod=1.0, NSPS/4-sample cosine ramp (`fst4_decode.f90:426`
 /// `nsps=134400`).
 pub const FST4_1800_GFSK: GfskCfg = GfskCfg {
     sample_rate: 12_000.0,
     samples_per_symbol: 134_400,
     bt: 2.0,
     hmod: 1.0,
-    ramp_samples: 134_400 / 8,
+    ramp_samples: 134_400 / 4,
 };

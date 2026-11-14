@@ -22,6 +22,13 @@
   `ffa884606`). `unpackpfx` kept `nc` in a `char`, so a suffix field past 60255 wrapped into a valid suffix; the port reproduced
   that. Measured on the 26 046-row `unpk_` fixture, rebuilt from beta6 (`wsprd_unpack_beta6.tsv`): 1 488 rows change, none left
   unmatched; the full tier A+B gate is green. Detail in `scripts/wsprd/`.
+- **FST4 transmit waveform is `gen_fst4wave`'s** (#726). The first and last symbol were extended and ramped `nsps / 8` (as FT8); upstream
+  does not extend them and ramps a half symbol (`Waveform::Fst4`). **FT8, FT4 and FST4 keep phase and carrier in a `u64` turn accumulator**
+  (no `f64` per sample, which an LX7 cannot afford; beta6 sums in `f64`): an f32 sum drifted (FST4-60: -42 dB over 51 s). This is the
+  batch `synthesize` path; the CoreS3's streaming `GfskStream` (its live transmitter) is not changed.
+- Against WSJT-X's own generators on a fixed tone list (new tier A `tests/gen_wave_vs_wsjtx.rs`, beta6): FT8 -68 -> -95 dB, FT4 -21 -> -95 dB,
+  FST4-15 -16 -> -88 dB (over the whole frame: the extra pulse tail moves the phase throughout), JTTY already -99 dB (pinned, unchanged),
+  max 3e-5 to 1.1e-4. The full-slot subtract pin was re-recorded (the input moved by up to 2 LSB).
 
 ### Docs
 
