@@ -4,12 +4,18 @@
 
 ### Fixed
 
+- **Q65 decodes a noiseless frame (#735). Marked divergence from WSJT-X.** `condition_symbol_spectra` clips the symbol energies at 20x their 40th
+  percentile (`q65_loops.f90`'s `s3lim`). On float input with no noise that percentile is f32 rounding, 160 dB below the peak, so the clip saturated the
+  tones' sidelobes too (30-67 of 192 bins a symbol tied) and BP failed: an aligned noiseless Q65-15A frame with its start cut was lost with noise at 1e-9
+  and decoded at 1e-7 (found while making the CPFSK phase exact, #726). WSJT-X cannot meet it (`int16` audio has 128 dB of range at Q65-15; `jt9` decodes the
+  `int16` form of this slot); `base` is now floored at that range, `peak / (3 * 32767^2 * nsps)`. The floor never engaged on the vendored recordings (margin >= 114 dB) or the noisy
+  synthetic tests; it can engage on a noiseless int16 file (the quantisation error of a tone is not white; about -12 dBFS and louder), with the same decode. 4 of 12 new inputs fail without
+  it (noise 0 and 1e-9, cuts 3750 and 6000); the `dt_window` noise added for it is gone.
 - **WSPR, JT9, JT65 and Q65 transmit waveforms are `Modulator::modulate`'s** (#726). The loop took `cos` of an `f32` phase before advancing
   it, with `f0 + tone * spacing` in `f32`; WSJT-X advances a `double` phase first and takes `sin`. Against that, on a 110 s WSPR frame:
   -35 dB (an `f32` sum drifts 0.04 rad), and a different phase. Now a `u64` turn accumulator (`engine/dsp/nco.rs`, shared with
   the GFSK modes; no `f64` per sample) with the per-symbol frequency formed in `f64` (from the `f32` `f0` and spacing, widened: JT9's `12000/6912` is not exact in `f32`, 1e-4 rad over a frame): within 2e-4 of an `f64` reference of the Modulator's loop
-  (`cpfsk::tests`). `engine::dsp::subtract` rebuilds the same waveform through it. Test fixtures that were exact zeros around an exact tone burst
-  (`dt_window` Q65) now carry a little noise, and the JT65 averaging test tries up to 8 noise draws: the 0.8 dB window it relied on moved.
+  (`cpfsk::tests`). `engine::dsp::subtract` rebuilds the same waveform through it. The JT65 averaging test tries up to 8 noise draws: the window it relied on moved. (The exact-zero Q65 slot that this exposed is fixed, #735.)
 - **FT4 transmit waveform is `gen_ft4wave`'s** (#726). It was synthesised like `gen_ft8wave`: 103 symbols, an `nsps / 8` ramp, the phase
   starting at the first tone. WSJT-X frames the tones with a ramp symbol each side (105 symbols, 60 480 samples) and ramps a whole symbol.
   On a fixed tone list against WSJT-X's own generator, tones aligned: -21 dB over the frame before (-45 dB inside it, edges excluded), -103 dB
