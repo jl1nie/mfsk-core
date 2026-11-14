@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! JT9's candidate stage, as `jt9` runs it: the half-symbol spectra (`symspec.f90`, the `ss` it fills
-//! for JT9), the per-bin sync and spectral-excess scores (`sync9.f90`), and the bin loop that picks
-//! which frequencies `softsym` is run at (`jt9_decode.f90:203-283`). Ported from WSJT-X v3.3.0-beta6.
+//! JT9's candidate stage, as `jt9` runs it: the half-symbol spectra (`jt9_decode.f90:59-98`,
+//! `decode_pcm` and `prepare_spectra`, beta6's form of what `symspec.f90` fills for JT9), the per-bin
+//! sync and spectral-excess scores (`sync9.f90`), and the bin loop that picks which frequencies
+//! `softsym` is run at (`jt9_decode.f90:204-284`, in `jt9/mod.rs`). Ported from WSJT-X v3.3.0-beta6.
 //!
 //! Until #726 this crate chose JT9 candidates with its own spectrogram scorer (`search::coarse_search`)
 //! and tried them in score order. `jt9` instead walks 0.732 Hz bins upwards and decodes at the *first*
@@ -21,22 +22,21 @@ use num_complex::Complex;
 
 use crate::engine::fft::default_planner;
 
-/// `symspec.f90`: `nfft3 = 16384`, so `df3 = 12000/16384 = 0.732 Hz`.
+/// `prepare_spectra`'s 16384-point FFT, so `df3 = 12000/16384 = 0.732 Hz`.
 const NFFT3: usize = 16_384;
-/// Bin width of `ss`, Hz (`jt9_decode.f90:182` `df3 = 1500.0/2048.0`, the same number).
+/// Bin width of `ss`, Hz (`jt9_decode.f90:183` `df3 = 1500.0/2048.0`, the same number).
 pub(crate) const DF3: f32 = 12_000.0 / NFFT3 as f32;
-/// `constants.f90` `NSMAX`: bins kept, up to 5000 Hz (`symspec.f90` `iz = nint(5000/df3)`).
+/// `constants.f90` `NSMAX`: bins kept (`prepare_spectra` keeps `output(0:6826)`).
 const NSMAX: usize = 6827;
-/// Half-symbols `jt9` computes before it decodes a 60 s JT9 file: it stops at `nhsym >= 181`
-/// (`jt9.f90` WAV path, `streaming_io.f90:1040`), and that is `nzhsym`.
-const NZHSYM: usize = 181;
-/// `symspec.f90` `jstep = nsps/2`: one half-symbol of JT9-1 (`nsps = 6912`).
+/// `decode_pcm`'s cap on the half-symbols: `half_symbols = min(181, (count-2048)/3456)`.
+const NZHSYM_MAX: usize = 181;
+/// One half-symbol of JT9-1 (`nsps = 6912`), the step of `prepare_spectra`'s rows.
 const KSTEP: usize = 3456;
 /// `jt9sync.f90` `ii2`: the sync symbols' half-symbol positions, 1-based.
 const II2: [i32; 16] = [
     1, 3, 9, 19, 31, 45, 65, 69, 101, 103, 109, 119, 131, 145, 165, 169,
 ];
-/// `jt9_decode.f90:184` `tstep = 0.5*nsps/12000`.
+/// `jt9_decode.f90:185` `tstep = 0.5*nsps/12000`.
 const TSTEP: f32 = 0.5 * 6912.0 / 12_000.0;
 
 /// `pctile.f90`: sort a copy, take element `nint(n*0.01*npct)`, 1-based, clamped to `1..=n`.
@@ -73,7 +73,7 @@ impl Sync9 {
     }
 }
 
-/// The bin range `jt9_decode.f90:189-190` scans for a band in Hz: `ia = max(1, nint(fa/df3))`,
+/// The bin range `jt9_decode.f90:190-191` scans for a band in Hz: `ia = max(1, nint(fa/df3))`,
 /// `ib = min(NSMAX, nint(fb/df3))`.
 pub(crate) fn bin_range(fa_hz: f32, fb_hz: f32) -> (usize, usize) {
     let ia = ((fa_hz / DF3).round() as i64).max(1) as usize;
@@ -81,27 +81,31 @@ pub(crate) fn bin_range(fa_hz: f32, fb_hz: f32) -> (usize, usize) {
     (ia, ib)
 }
 
-/// `symspec.f90` (the `ss` half of it) for bins `ia..=ib`, then `sync9.f90` over them.
+/// `prepare_spectra` for bins `ia..=ib`, then `sync9.f90` over them.
 ///
-/// `ss(ihsym, i)` is the power of a 16384-point FFT of the audio whose window *ends* at sample
-/// `ihsym * 3456` (1-based), zeros before the buffer, no window (`jt9` passes
-/// `bLowSidelobes = .false.`). `symspec` scales `id2` by `fac0 = 0.1` and the power by
-/// `(1/nfft3)^2`; `sync9` only takes ratios of `ss` (percentiles, the median of `ccfred`, an rms),
-/// so neither is applied here.
+/// `ss(row, i)` is the power of a 16384-point FFT, without a window, of the audio whose window *ends*
+/// at sample `row * 3456` (1-based), zeros before the buffer. `prepare_spectra` scales the samples by
+/// 0.1 and the power by `(1/16384)^2`; `sync9` only takes ratios of `ss` (percentiles, the median of
+/// `ccfred`, an rms), so neither is applied here.
 ///
-/// Returns `None` for an empty range (`jt9_decode.f90:191` `if(ib.le.ia) go to 999`).
+/// Returns `None` where `jt9` decodes nothing: fewer than 2 half-symbols of audio or all of it zero
+/// (`decode_pcm`, `jt9_decode.f90:70-73`), or an empty range (`:192` `if(ib.le.ia) go to 999`).
+/// `nzhsym` is `decode_pcm`'s `half_symbols`, so a buffer shorter than 60 s is scored over what it has.
 pub(crate) fn sync9(audio: &[f32], ia: usize, ib: usize) -> Option<Sync9> {
-    if ib <= ia {
+    let count = audio.len().min(60 * 12_000);
+    let nzhsym = (count.saturating_sub(2048) / KSTEP).min(NZHSYM_MAX);
+    if nzhsym < 2 || audio[..count].iter().all(|&x| x == 0.0) || ib <= ia {
         return None;
     }
+    let audio = &audio[..count];
     let nb = ib - ia + 1;
     // ss[bin - ia][ihsym - 1], bin-major so `sync9`'s per-bin loop reads a contiguous row.
-    let mut ss = vec![0.0f32; nb * NZHSYM];
+    let mut ss = vec![0.0f32; nb * nzhsym];
     let r2c = default_planner().plan_real_forward(NFFT3);
     let mut xc = vec![0.0f32; NFFT3];
     let mut cx = vec![Complex::new(0.0f32, 0.0); NFFT3 / 2 + 1];
-    for ihsym in 1..=NZHSYM {
-        // `ja = ihsym*jstep`; `xc(i) = id2(ja+i-(nfft3-1))` for i = 0..nfft3-1, 1-based `id2`.
+    for ihsym in 1..=nzhsym {
+        // `last = row*3456`, `first = last-16384+1`; `input(i) = samples(first+i-1)`, 1-based.
         let ja = ihsym * KSTEP;
         for (i, x) in xc.iter_mut().enumerate() {
             let j = ja as i64 + i as i64 - (NFFT3 as i64 - 1); // 1-based
@@ -112,9 +116,9 @@ pub(crate) fn sync9(audio: &[f32], ia: usize, ib: usize) -> Option<Sync9> {
             };
         }
         r2c.process(&mut xc, &mut cx);
-        // `ss(ihsym, i)` = |cx(i-1)|^2.
+        // `spectra(row, i)` = |output(i-1)|^2.
         for b in 0..nb {
-            ss[b * NZHSYM + ihsym - 1] = cx[ia + b - 1].norm_sqr();
+            ss[b * nzhsym + ihsym - 1] = cx[ia + b - 1].norm_sqr();
         }
     }
 
@@ -123,9 +127,9 @@ pub(crate) fn sync9(audio: &[f32], ia: usize, ib: usize) -> Option<Sync9> {
     let lag1 = -((2.5 / TSTEP + 0.9999) as i32);
     let lag2 = (5.0 / TSTEP + 0.9999) as i32;
     let mut ccfred = vec![0.0f32; nb];
-    let mut ss1 = vec![0.0f32; NZHSYM];
+    let mut ss1 = vec![0.0f32; nzhsym];
     for b in 0..nb {
-        ss1.copy_from_slice(&ss[b * NZHSYM..(b + 1) * NZHSYM]);
+        ss1.copy_from_slice(&ss[b * nzhsym..(b + 1) * nzhsym]);
         let xmed = pctile(&ss1, 40);
         if xmed <= 0.0 {
             continue;
@@ -142,7 +146,7 @@ pub(crate) fn sync9(audio: &[f32], ia: usize, ib: usize) -> Option<Sync9> {
             let mut sum1 = 0.0f32;
             for &k in &II2 {
                 let k = k + lag;
-                if k >= 1 && k as usize <= NZHSYM {
+                if k >= 1 && k as usize <= nzhsym {
                     sum1 += ss1[k as usize - 1];
                 }
             }
@@ -163,7 +167,7 @@ pub(crate) fn sync9(audio: &[f32], ia: usize, ib: usize) -> Option<Sync9> {
     // the larger of the values ten bins either side.
     let mut savg = vec![0.0f32; nb];
     for (b, s) in savg.iter_mut().enumerate() {
-        *s = ss[b * NZHSYM..(b + 1) * NZHSYM].iter().sum::<f32>() / NZHSYM as f32;
+        *s = ss[b * nzhsym..(b + 1) * nzhsym].iter().sum::<f32>() / nzhsym as f32;
     }
     let smo = |j: i32| -> f32 {
         if (0..=20).contains(&j) {

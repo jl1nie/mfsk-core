@@ -135,8 +135,9 @@ impl<'a> DecodeRequest<'a> {
     }
 
     /// [`Self::decode`], whether the budget ([`Self::budget`]) said stop at least
-    /// once (`false` without a budget), and how many candidates the first coarse search
-    /// kept (`SlotResult::candidates`, #697).
+    /// once (`false` without a budget), and how many bins the band pass may try (`ccfok`, taken
+    /// before that pass, so it includes bins an Rx-window decode marked done; `None` if the budget
+    /// stopped the scan in the Rx-window pass; `SlotResult::candidates`, #697).
     pub fn decode_reported(&self) -> (Vec<Jt9Result>, bool, Option<u32>) {
         let gate = crate::engine::pipeline::BudgetGate::new(self.budget);
         let rows = super::decode_scan_inner(

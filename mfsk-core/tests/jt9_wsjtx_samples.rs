@@ -40,27 +40,28 @@ const fn row(msg: &'static str, freq: f32, dt: f32, snr: f32) -> GoldenEntry {
     }
 }
 
-/// `jt9 -9 -p 60 -L 1050 -H 1550 -d 3 -f 1119 -F 20 130418_1742.wav` (the local `jt9` build of 2026-08-12, run 2026-11-14), in
-/// full. The Rx window at 1119 Hz is what decodes `CQ GM7GAX IO75` (the `nqd = 1` pass's lower gates):
-/// without `-f 1119` neither `jt9` nor this crate reports it, and it was in this table from the WSJT-X
-/// GUI's output (2026-05-06), whose Rx frequency was there.
+/// Every table below is `jt9 -9 -p 60 <args> 130418_1742.wav` from WSJT-X v3.3.0-beta6
+/// (`scripts/build_jt9_upstream.sh ../WSJT-X v3.3.0-beta6`, 2026-11-14), in full. v3.2.0-rc1 prints the
+/// same except `K1JT N5KDV EM41` at -1 dB and, over 200-4000 Hz at `-d 3`, `G7CNF N4HFA EL89` at 1460 Hz,
+/// DT 0.0 (this crate, a beta6 port, gives beta1's and beta6's -0.2).
 ///
-/// Until #726 this crate reached these seven with its own candidate scan, at other bins: the DTs differed
-/// from `jt9`'s by up to 0.2 s (tolerance was 0.5) and the SNRs by up to 4 dB. Since `jt9::sync9` the
-/// rows are `jt9`'s.
+/// `-L 1050 -H 1550 -d 3 -f 1119 -F 20`. The Rx window at 1119 Hz is what decodes `CQ GM7GAX IO75` on
+/// the narrow band (the `nqd = 1` pass's lower gates); without it, over 1050-1550, neither `jt9` nor this
+/// crate reports it. Until #726 this crate reached these seven with its own candidate scan, at other bins:
+/// DTs up to 0.2 s and SNRs up to 4 dB from `jt9`'s (the tolerances were 0.5 s and 4 dB).
 static JT9_DEEP_RX_1119: &[GoldenEntry] = &[
     row("CQ GM7GAX IO75", 1119.0, 0.0, -25.0),
     row("TF3G N7MQ CN84", 1186.0, 0.0, -18.0),
     row("K1JT KF4RWA 73", 1224.0, 0.0, -18.0),
     row("CQ M0WAY IO82", 1290.0, 0.1, -22.0),
-    row("K1JT N5KDV EM41", 1346.0, 0.1, -1.0),
+    row("K1JT N5KDV EM41", 1346.0, 0.1, -2.0),
     row("G7CNF N4HFA EL89", 1461.0, -0.2, -15.0),
     row("JA1KAU PD0JAC -23", 1505.0, 1.2, -5.0),
 ];
 
-/// `jt9 -9 -p 60 -L 1050 -H 1550 -d 1` on the same file (same build and date), in full: `ccflim` 3.0
-/// keeps `K1JT N5KDV EM41` out (it decodes from the 1344.0 Hz bin, `ccfred` 2.60), and so `G7CNF N4HFA
-/// EL89` is decoded at another bin, DT 0.0 and -13 dB instead of -0.2 and -15. `-d 2` prints the same.
+/// `-L 1050 -H 1550 -d 1`: `ccflim` 3.0 keeps `K1JT N5KDV EM41` out (it decodes from the 1344.0 Hz bin,
+/// `ccfred` 2.60), and so `G7CNF N4HFA EL89` is decoded at another bin, DT 0.0 and -13 dB instead of -0.2
+/// and -15. `-d 2` prints the same.
 static JT9_FAST: &[GoldenEntry] = &[
     row("TF3G N7MQ CN84", 1186.0, 0.0, -17.0),
     row("K1JT KF4RWA 73", 1224.0, 0.0, -18.0),
@@ -69,12 +70,39 @@ static JT9_FAST: &[GoldenEntry] = &[
     row("JA1KAU PD0JAC -23", 1505.0, 1.2, -5.0),
 ];
 
-fn jt9_search_params() -> SearchParams {
+/// `-L 200 -H 4000 -d 3`. Over the full band `ccfred`'s median is lower, so `CQ GM7GAX IO75` passes
+/// `ccflim` without an Rx window; this recording is band-limited, so `red2` saturates at +-99 there and
+/// its gate passes about a quarter of the bins.
+static JT9_FULL_DEEP: &[GoldenEntry] = &[
+    row("CQ GM7GAX IO75", 1119.0, 0.0, -25.0),
+    row("TF3G N7MQ CN84", 1186.0, 0.0, -18.0),
+    row("K1JT KF4RWA 73", 1224.0, 0.0, -18.0),
+    row("CQ M0WAY IO82", 1290.0, 0.1, -22.0),
+    row("K1JT N5KDV EM41", 1346.0, 0.1, -2.0),
+    row("G7CNF N4HFA EL89", 1461.0, -0.2, -15.0),
+    row("JA1KAU PD0JAC -23", 1505.0, 1.2, -5.0),
+];
+
+/// `-L 200 -H 4000 -d 1`.
+static JT9_FULL_FAST: &[GoldenEntry] = &[
+    row("CQ GM7GAX IO75", 1119.0, 0.0, -25.0),
+    row("TF3G N7MQ CN84", 1186.0, 0.0, -17.0),
+    row("K1JT KF4RWA 73", 1224.0, 0.0, -18.0),
+    row("CQ M0WAY IO82", 1290.0, 0.1, -22.0),
+    row("G7CNF N4HFA EL89", 1461.0, 0.0, -13.0),
+    row("JA1KAU PD0JAC -23", 1505.0, 1.2, -5.0),
+];
+
+fn band(lo: f32, hi: f32) -> SearchParams {
     SearchParams {
-        freq_min_hz: 1050.0,
-        freq_max_hz: 1550.0,
+        freq_min_hz: lo,
+        freq_max_hz: hi,
         ..mfsk_core::jt9::search::default_search_params()
     }
+}
+
+fn jt9_search_params() -> SearchParams {
+    band(1050.0, 1550.0)
 }
 
 fn check(
@@ -132,6 +160,51 @@ fn jt9_wsjtx_sample_fast_is_jt9s() {
         .depth(Jt9Depth::Fast)
         .decode();
     check("JT9 130418_1742.wav -d 1", &decodes, JT9_FAST);
+}
+
+/// Over the full band, `-d 3` and `-d 1`: `red2` saturates and `ccfred`'s median moves, which the
+/// 1050-1550 Hz tables do not exercise (found in review of #726).
+#[test]
+fn jt9_wsjtx_sample_full_band_is_jt9s() {
+    let audio = read_wsjtx_wav_f32(Path::new(SAMPLE_PATH));
+    for (depth, name, want) in [
+        (
+            Jt9Depth::Deep,
+            "JT9 130418_1742.wav -L 200 -H 4000 -d 3",
+            JT9_FULL_DEEP,
+        ),
+        (
+            Jt9Depth::Fast,
+            "JT9 130418_1742.wav -L 200 -H 4000 -d 1",
+            JT9_FULL_FAST,
+        ),
+    ] {
+        let decodes = DecodeRequest::new(&audio, 12_000)
+            .nominal_start(NOMINAL)
+            .params(band(200.0, 4000.0))
+            .depth(depth)
+            .decode();
+        check(name, &decodes, want);
+    }
+}
+
+/// `decode_pcm` scores a short buffer over the half-symbols it has (`half_symbols =
+/// min(181, (count-2048)/3456)`, `jt9_decode.f90:69`). Scored over a fixed 181 instead, a buffer under
+/// about 31 s leaves more than 40 % of every bin's rows zero, its 40th percentile 0, and every bin
+/// skipped (found in review of #726). 25 s of the recording hold no complete frame (JT9's is 49 s), so
+/// this asserts only that bins still pass `sync9`'s gates.
+#[test]
+fn jt9_short_buffer_is_scored_over_what_it_has() {
+    let audio = read_wsjtx_wav_f32(Path::new(SAMPLE_PATH));
+    let (_, _, n) = DecodeRequest::new(&audio[..25 * 12_000], 12_000)
+        .nominal_start(NOMINAL)
+        .params(jt9_search_params())
+        .depth(Jt9Depth::Deep)
+        .decode_reported();
+    assert!(
+        n.unwrap_or(0) > 0,
+        "no bin passed sync9 on a 25 s buffer: {n:?}"
+    );
 }
 
 /// `DecodeRequest::on_result` callback — real-signal

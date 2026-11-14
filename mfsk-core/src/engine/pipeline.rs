@@ -1383,7 +1383,7 @@ pub(crate) fn dedup_unique(raw: Vec<DecodeResult>, known: &[DecodeResult]) -> Ve
 /// tolerance that doesn't scale with a protocol's own parameter range
 /// costs, but changing any of them here is out of scope: this moves
 /// code, not thresholds.
-#[cfg(any(feature = "jt9", feature = "wspr", feature = "q65"))]
+#[cfg(any(feature = "wspr", feature = "q65"))]
 pub(crate) fn is_scan_dup<T: ScanRow>(
     seen: &[T],
     cand: &T,
@@ -1408,7 +1408,7 @@ pub(crate) fn is_scan_dup<T: ScanRow>(
 /// result type replaces the `|r| &r.message, |r| r.freq_hz,
 /// |r| r.start_sample as i64` closure triple every call site used to
 /// spell out (#419).
-#[cfg(any(feature = "jt9", feature = "wspr", feature = "q65"))]
+#[cfg(any(feature = "wspr", feature = "q65"))]
 pub(crate) trait ScanRow {
     type Message: PartialEq;
     fn scan_message(&self) -> &Self::Message;
@@ -1420,7 +1420,7 @@ pub(crate) trait ScanRow {
 /// there, reporting it to `on_result` first. Returns the pushed row, or
 /// `None` for a duplicate. The accept-and-report step every scan loop
 /// ran after its dedup check (#419).
-#[cfg(any(feature = "jt9", feature = "wspr", feature = "q65"))]
+#[cfg(any(feature = "wspr", feature = "q65"))]
 pub(crate) fn push_unique<'s, T: ScanRow>(
     seen: &'s mut Vec<T>,
     cand: T,
@@ -1451,7 +1451,7 @@ pub(crate) fn push_unique<'s, T: ScanRow>(
 /// pad-adjusted, the not-yet-built candidate isn't) — a pre-existing
 /// property of the original code, preserved here rather than
 /// "corrected" in what is meant to be a pure extraction.
-#[cfg(any(feature = "jt9", feature = "jt65", feature = "wspr", feature = "q65"))]
+#[cfg(any(feature = "jt65", feature = "wspr", feature = "q65"))]
 pub(crate) fn scan_dedup_match_cross<S, C, M: PartialEq>(
     seen: &[S],
     cand: &C,

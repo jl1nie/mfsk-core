@@ -8,7 +8,7 @@
 //! `start_sample` against a hand-added offset, and the snapshot tests only pinned this crate's own
 //! numbers. This file compares with `jt9` directly.
 //!
-//! Expected DTs are real `jt9` output (the local `jt9` build of 2026-08-12, run 2026-11-14):
+//! Expected DTs are real `jt9` output, WSJT-X v3.3.0-beta6 (`scripts/build_jt9_upstream.sh`, 2026-11-14):
 //! `jt9 -9 -p 60 -L 1050 -H 1550 -d 3 130418_1742.wav` and `jt9 -6 -p 60 -b A jt65a_5sig_m18.wav`.
 //! `jt9` prints DT to 0.1 s, so the tolerance is 0.1. Before `jt9::sync9` (#726) two JT9 rows were
 //! 0.2 s off (`K1JT N5KDV EM41` -0.10, `G7CNF N4HFA EL89` +0.01): the old scan decoded them at other bins.

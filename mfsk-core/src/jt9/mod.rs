@@ -37,12 +37,7 @@
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 use alloc::vec::Vec;
-#[cfg(not(feature = "std"))]
-#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-use num_traits::Float;
 
-#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-use crate::engine::pipeline::ScanRow;
 use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use crate::fec::ConvFano232;
 use crate::msg::Jt72Codec;
@@ -139,8 +134,10 @@ pub struct Jt9Result {
 /// Scan an audio buffer for JT9 frames the way `jt9_decode.f90:180-283` does: `sync9` scores every
 /// 0.732 Hz bin of the band ([`sync9`]), then two passes walk the bins upwards and run `softsym` +
 /// Fano at each bin that passes the gates, the first (`nqd = 1`) over `narrow`'s Rx window, the
-/// second (`nqd = 0`) over the band. A decode marks bins `i-1..=i+22` done, so a signal is reported
-/// once, at the lowest bin that decodes it. Public through [`DecodeRequest`].
+/// second (`nqd = 0`) over the band. A decode marks bins `i-1..=i+22` done, so the band pass does not
+/// decode the same signal again from the bins just above it; there is no message dedup, as upstream
+/// has none (a signal decoded in the Rx pass can be decoded again from a bin below that window).
+/// Public through [`DecodeRequest`].
 ///
 /// `params` supplies the band only: `sync9`'s lag range is upstream's fixed `-2.5..+5.0` s of the
 /// buffer and its gates are `ccflim`/`red2lim`, so `time_tolerance_*`, `score_threshold` and
@@ -178,7 +175,7 @@ fn decode_scan_inner(
     let mut found: Vec<Jt9Result> = Vec::new();
 
     for nqd in [1u8, 0] {
-        // `jt9_decode.f90:204-222`: the Fano limit and `ccflim` by depth; the Rx pass always deep.
+        // `jt9_decode.f90:205-223`: the Fano limit and `ccflim` by depth; the Rx pass always deep.
         let (limit, ccflim) = match (depth, nqd) {
             (Jt9Depth::Max, _) => (Jt9Depth::Max, 2.4),
             (_, 1) | (Jt9Depth::Deep, _) => (Jt9Depth::Deep, 2.5),
@@ -245,20 +242,6 @@ fn decode_scan_inner(
         }
     }
     found
-}
-
-#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-impl ScanRow for Jt9Result {
-    type Message = crate::msg::Jt72Message;
-    fn scan_message(&self) -> &Self::Message {
-        &self.message
-    }
-    fn scan_freq_hz(&self) -> f32 {
-        self.freq_hz
-    }
-    fn scan_start_sample(&self) -> i64 {
-        self.start_sample as i64
-    }
 }
 
 /// JT9 protocol marker.

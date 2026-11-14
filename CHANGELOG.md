@@ -14,15 +14,13 @@
 
 ### Fixed
 
-- **JT9 picks its candidates as `jt9` does** (#726). Its scan was this crate's own spectrogram search, tried in score
-  order and cut to `max(max_candidates, 32)`; `jt9` scores 0.732 Hz bins with `sync9` and walks them upwards, decoding at
-  the first bin that passes `ccflim`/`red2lim` (`jt9_decode.f90:203-283`). `peakdt9`'s DT depends on that bin, so two
-  rows on `130418_1742.wav` were 0.2 s off `jt9`. Now ported (`jt9::sync9`): at `-d 1`, `-d 3` and `-d 3 -f 1119` the same
-  messages, frequencies, DT (within its 0.1 s print) and SNR (within 0.5 dB) as `jt9`. `CQ M0WAY IO82` is found with
-  default extras (it fell outside the 32); the crate's own `peakdt9` gate is gone. **API:** `Jt9Extras::search`'s time
-  tolerances, `score_threshold` and `max_candidates` are no longer read. Tier C: the JT9 sweep now decodes as its
-  upstream comparison runs `jt9` (`-d 3`, 200-3000 Hz; it used `Fast`, which is now `-d 1` and read -26.30 dB): -26.58 dB
-  (baseline -26.64), against `jt9` both 243 of 300, `jt9` only 3, crate only 0 (p 0.25).
+- **JT9 picks its candidates as `jt9` does** (#726). Its scan was this crate's own search, tried in score order and cut to
+  `max(max_candidates, 32)`; `jt9` walks `sync9`'s 0.732 Hz bins upwards and decodes at the first that passes `ccflim`/`red2lim`
+  (`jt9_decode.f90:59-284`), and `peakdt9`'s DT depends on that bin (two rows were 0.2 s off). Ported (`jt9::sync9`): on
+  `130418_1742.wav` the same rows as beta6's `jt9` at `-d 1`/`-d 3`, 1050-1550 and 200-4000 Hz, with and without an Rx window
+  (DT within its 0.1 s print, SNR 0.5 dB). The crate's `peakdt9` gate is gone. **API:** `Jt9Extras::search` reads only the band.
+  Tier C: the sweep now decodes as its upstream side runs (`-d 3`; `Fast` is `-d 1`, -26.30 dB): -26.58 dB (baseline -26.64),
+  `jt9` only 3 of 300, crate only 0.
 - **JT9 and JT65 report DT on WSJT-X's scale** (#726). Their `TX_START_OFFSET_S` was 0.0; WSJT-X starts both 1.0 s into the minute
   (`Modulator.cpp:163`, `jt9sim.f90:124`, `jt65sim.f90:217`) and reports DT from there (`jt65_decode.f90:425`), so every DT from `Decoder`
   was 1.0 s higher than `jt9`'s on the same file (JT65 golden: +1.02 vs 0.0) and the search window sat 1 s early. `ModeMeta::tx_start_offset_s`

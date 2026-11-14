@@ -33,7 +33,7 @@ fn gauss(seed: u64, n: usize) -> Vec<f32> {
 }
 
 /// JT9 counts the bins its band pass (`nqd = 0`) may try: `ccfred > ccflim` and `red2 > 1.6`, outside the Rx
-/// window (`jt9_decode.f90:233-240`, `jt9/mod.rs`). `max_candidates` is not read since #726 (it capped the old
+/// window (`jt9_decode.f90:236-243`, `jt9/mod.rs`). `max_candidates` is not read since #726 (it capped the old
 /// coarse list at `max(max_candidates, 32)`), and `ccflim` falls with depth (3.0 at `Fast`, 2.5 at `Deep`), so
 /// `Deep` counts more bins than `Fast` on a busy recording, and a count taken after decoding would be at most
 /// the 6 decodes, not that.
