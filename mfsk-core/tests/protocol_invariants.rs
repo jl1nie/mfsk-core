@@ -812,3 +812,72 @@ fn every_wired_protocol_has_a_unique_protocol_id() {
     // where exhaustiveness still binds; it points back here for the
     // `expected_distinct` tally above.
 }
+
+/// `N_RAMP` is the one definition of the transmitter's lead (`engine::tx::synth_lead_samples`, and
+/// the registry's `tx_buffer_start_samples_12k`), and `Waveform::Ft4` is what synthesises ramp
+/// symbols (exactly one each side, `gen_ft4wave`). So `N_RAMP` is 2 for that waveform and 0 for every
+/// other: a protocol that disagreed would publish a lead its audio does not have.
+fn assert_ramp_matches_waveform<P: mfsk_core::engine::tx::FskWaveform>(name: &str) {
+    use mfsk_core::engine::tx::{Waveform, synth_lead_samples, synth_len};
+    let ft4_form = matches!(P::WAVEFORM, Waveform::Ft4(_));
+    assert_eq!(
+        P::N_RAMP,
+        if ft4_form { 2 } else { 0 },
+        "{name}: N_RAMP vs waveform"
+    );
+    assert_eq!(
+        synth_lead_samples::<P>(12_000),
+        if ft4_form { P::NSPS as usize } else { 0 },
+        "{name}: lead"
+    );
+    assert_eq!(
+        synth_len::<P>(12_000),
+        (P::N_SYMBOLS + P::N_RAMP) as usize * P::NSPS as usize,
+        "{name}: frame length"
+    );
+}
+
+#[test]
+fn ramp_symbols_match_the_waveform_in_every_protocol() {
+    #[cfg(feature = "ft8")]
+    assert_ramp_matches_waveform::<Ft8>("Ft8");
+    #[cfg(feature = "ft4")]
+    assert_ramp_matches_waveform::<Ft4>("Ft4");
+    #[cfg(feature = "fst4")]
+    {
+        assert_ramp_matches_waveform::<Fst4s15>("Fst4s15");
+        assert_ramp_matches_waveform::<Fst4s30>("Fst4s30");
+        assert_ramp_matches_waveform::<Fst4s60>("Fst4s60");
+        assert_ramp_matches_waveform::<Fst4s120>("Fst4s120");
+        assert_ramp_matches_waveform::<Fst4s300>("Fst4s300");
+        assert_ramp_matches_waveform::<Fst4s900>("Fst4s900");
+        assert_ramp_matches_waveform::<Fst4s1800>("Fst4s1800");
+    }
+    #[cfg(feature = "fst4w")]
+    {
+        use mfsk_core::fst4w::{Fst4w120, Fst4w300, Fst4w900, Fst4w1800};
+        assert_ramp_matches_waveform::<Fst4w120>("Fst4w120");
+        assert_ramp_matches_waveform::<Fst4w300>("Fst4w300");
+        assert_ramp_matches_waveform::<Fst4w900>("Fst4w900");
+        assert_ramp_matches_waveform::<Fst4w1800>("Fst4w1800");
+    }
+    #[cfg(feature = "wspr")]
+    assert_ramp_matches_waveform::<Wspr>("Wspr");
+    #[cfg(feature = "jt9")]
+    assert_ramp_matches_waveform::<Jt9>("Jt9");
+    #[cfg(feature = "jt65")]
+    assert_ramp_matches_waveform::<Jt65>("Jt65");
+    #[cfg(feature = "q65")]
+    {
+        assert_ramp_matches_waveform::<Q65a15>("Q65a15");
+        assert_ramp_matches_waveform::<Q65a30>("Q65a30");
+        assert_ramp_matches_waveform::<Q65a60>("Q65a60");
+        assert_ramp_matches_waveform::<Q65b60>("Q65b60");
+        assert_ramp_matches_waveform::<Q65c60>("Q65c60");
+        assert_ramp_matches_waveform::<Q65d60>("Q65d60");
+        assert_ramp_matches_waveform::<Q65e60>("Q65e60");
+        assert_ramp_matches_waveform::<Q65d120>("Q65d120");
+        assert_ramp_matches_waveform::<Q65e120>("Q65e120");
+        assert_ramp_matches_waveform::<Q65a300>("Q65a300");
+    }
+}

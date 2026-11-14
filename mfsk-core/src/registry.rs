@@ -360,8 +360,8 @@ macro_rules! protocol_meta {
             fec_n: <<$ty as Protocol>::Fec as FecCodec>::N,
             payload_bits: <<$ty as Protocol>::Msg as MessageCodec>::PAYLOAD_BITS,
             tx_start_offset_s: <$ty as FrameLayout>::TX_START_OFFSET_S,
-            // `engine::tx::tx_buffer_start::<P>(12_000)` in const form: the lead is `N_RAMP / 2`
-            // symbols (only FT4 has any); `tests/encoder.rs` checks the two agree for every mode.
+            // `engine::tx::tx_buffer_start::<P>(12_000)` in const form, from the same `N_RAMP / 2`
+            // symbols `synth_lead_samples` uses; `tests/encoder.rs` checks the two agree per mode.
             tx_buffer_start_samples_12k: (<$ty as FrameLayout>::TX_START_OFFSET_S * 12_000.0)
                 as u32
                 - (<$ty as FrameLayout>::N_RAMP / 2) * <$ty as ModulationParams>::NSPS,
