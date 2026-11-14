@@ -26,15 +26,15 @@ fn message_and_carrier(mode: Mode) -> (&'static str, f32) {
     }
 }
 
-/// `frame` at the mode's nominal start in a period of silence, plus a little
-/// deterministic noise, as i16.
 /// Decoded DT of a frame placed at `tx_buffer_start`: within this of 0. A sixteenth of a symbol
 /// covers the slow modes' DT grids (measured: FST4-1800 +0.12 s, Q65-300A -0.136 s), and the 30 ms
-/// floor still fails FT4 placed by `tx_start_offset_s` (its tones 48 ms late).
+/// floor still fails FT4 placed by `tx_start_offset_s` (its tones 48 ms late; measured +0.0475 s).
 fn dt_tol_sec(mode: Mode) -> f32 {
     (mode.meta().symbol_dt / 16.0).max(0.03)
 }
 
+/// `frame` where the registry says the mode's buffer goes, in a period of silence, plus a little
+/// deterministic noise, as i16.
 fn period_of(mode: Mode, frame: &[f32], seed: u32) -> Vec<i16> {
     let meta = mode.meta();
     let slot = meta.slot_samples_12k as usize;

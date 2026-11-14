@@ -634,9 +634,9 @@ source. For FT8, with the T/R period boundary at t = 0:
           gated only on fTR < 0.75 so a late start is still allowed.
  +txDelay the rig confirms PTT; ptt1Timer then waits
           Configuration::txDelay(), default 0.200 s
-          (Configuration.cpp:1602), or a hard 20 ms for FT4
-          (mainwindow.cpp:4374-4375), and fires startTx2()
-          (mainwindow.cpp:861-862).
+          (Configuration.cpp:3720), or a hard 20 ms for FT4
+          (mainwindow.cpp:4375-4376), and fires startTx2()
+          (mainwindow.cpp:1491).
  0.500 s  audio begins. Modulator::start pads silence so the waveform
           lands exactly here: delay_ms = 500 for FT8, 300 for FT4,
           1000 otherwise (Modulator/Modulator.cpp:163-168). A late start
@@ -701,7 +701,7 @@ called upstream "internally inconsistent" where it is not.
 | `Modulator/Modulator.cpp:167` | `delay_ms = 300` | the waveform leaves the PC 0.300 s into the period |
 | `lib/ft4/ft4sim.f90:91` | `k = nint((xdt + 0.5)/dt) - NSPS` | **DT = 0 means the first active symbol at 0.500 s**; the 105-symbol waveform carries one 48 ms ramp symbol ahead of it |
 | `lib/ft4_decode.f90:477` | `xdt = ibest/666.67 - 0.5` | the decoder uses the same 0.5 s reference |
-| `widgets/mainwindow.cpp:4375` | `if (m_mode == "FT4") delay_ms = 20` | FT4 does not wait on a relay sequencer |
+| `widgets/mainwindow.cpp:4376` | `if (m_mode == "FT4") delay_ms = 20` | FT4 does not wait on a relay sequencer |
 | `widgets/mainwindow.cpp:2862` | `samples = 21*3456` | a WSJT-X receiver decodes 6.048 s of the period |
 
 So the first active symbol leaves the PC at 0.348 s, and over a path

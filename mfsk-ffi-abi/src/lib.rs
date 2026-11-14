@@ -255,8 +255,10 @@ pub struct MfskModeInfo {
     /// whole surface exists to end.
     pub caps: u64,
     /// Where a synthesised frame goes (appended in 0.16.0, ABI 3): put the first sample of the
-    /// 12 kHz buffer from `mfsk_encode` / `mfsk_synth` this many samples after the start of the
-    /// slot, and the frame lands at DT = 0 on a WSJT-X receiver. One rule for every mode: FT4 5424
+    /// 12 kHz buffer from `mfsk_tones_to_i16` / `mfsk_tones_to_f32` (or `mfsk_encode` at 12 kHz)
+    /// this many samples after the start of the slot, and the frame lands at DT = 0 on a WSJT-X
+    /// receiver. At another rate scale it and round: `round(v * rate / 12000)` is exact at 48 kHz
+    /// and 44.1 kHz too (FT4: 21 696 and 19 933). One rule for every mode: FT4 5424
     /// (its buffer starts a ramp symbol, 576 samples, before the tones at 0.5 s), FT8 6000, WSPR,
     /// JT9 and JT65 12000; 0 for JTTY and MSK144, which have no slot. WSJT-X's own transmitter
     /// sends FT4 about 150 ms earlier (`Modulator.cpp:167`). A library older than the caller's
