@@ -14,6 +14,8 @@
 
 ### Fixed
 
+- **C: a JT9 decoder refuses `t_early_s`, `t_late_s`, `score_threshold` and `max_cand`** (`MFSK_STATUS_UNSUPPORTED`), as every
+  option a mode lacks is: JT9's scan is `jt9`'s since #742 and reads none of them, and they were accepted and ignored.
 - **JT9 picks its candidates as `jt9` does** (#726). Its scan was this crate's own search, tried in score order and cut to
   `max(max_candidates, 32)`; `jt9` walks `sync9`'s 0.732 Hz bins upwards and decodes at the first that passes `ccflim`/`red2lim`
   (`jt9_decode.f90:59-284`), and `peakdt9`'s DT depends on that bin (two rows were 0.2 s off). Ported (`jt9::sync9`): on
