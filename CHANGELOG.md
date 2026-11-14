@@ -16,6 +16,8 @@ does. Measurements behind each entry: [`docs/notes/WSJTX_BETA6_PORT.md`](docs/no
   above `jt9`'s, and a host placing by it keyed up 1 s early.
 - **Types:** `Waveform` is `#[non_exhaustive]` with `Ft4` and `Fst4`; `GfskParams` gains `frame_ramp: bool` (a struct literal needs it);
   `Jt9Extras::search` supplies only the band. `mfsk_synth_lead_len` and the other lead helpers were added and removed within this cycle.
+  `FrameLayout::N_RAMP` is the one definition of the lead (`N_RAMP / 2` symbols, registry and engine alike): it must be 2 exactly
+  for `Waveform::Ft4`, which `tests/protocol_invariants.rs` checks for every protocol.
 
 ### Fixed — transmit
 
