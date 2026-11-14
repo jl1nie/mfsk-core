@@ -565,6 +565,12 @@ struct Pick {
 struct Outcome {
     frame: FrameDecode,
     text: String,
+    /// The hard-decision tone of each of the frame's 59 symbols: the strongest of the four at
+    /// each sync symbol, then at each payload symbol (`rx_frame`, `jtty_mdecode.f90`).
+    rx_frame: [u8; FRAME_SYMBOLS],
+    /// Whether [`Work::is_frame_alias`] applies (`ic_label >= 0`): not for the sticky retry at a
+    /// remembered sync point.
+    alias_check: bool,
 }
 
 impl Receiver {
@@ -760,6 +766,7 @@ impl Receiver {
             seen: Vec::new(),
             ch0_ok: Vec::new(),
             subtracted: Vec::new(),
+            alias_rejected: Vec::new(),
             subtractions: 0,
             any_sub: false,
             asm,
@@ -1245,6 +1252,7 @@ impl Receiver {
         let gate_span = self.stats.time(super::stats::Stage::Gate);
         let (mut pt, mut pa) = (0f32, 0f32);
         let mut hits = 0usize;
+        let mut rx_frame = [0u8; FRAME_SYMBOLS];
         for (j, &sent) in SYNC.iter().enumerate() {
             let i0 = start + j * NSS;
             if i0 + NSS > c0.len() {
@@ -1252,6 +1260,7 @@ impl Receiver {
             }
             let pow: [f32; 4] = core::array::from_fn(|k| rot.power(k, &c0[i0..i0 + NSS]));
             let best = (0..4).fold(0, |b, k| if pow[k] > pow[b] { k } else { b });
+            rx_frame[j] = best as u8;
             hits += usize::from(best == usize::from(sent));
             pt += pow[usize::from(sent)];
             pa += pow.iter().sum::<f32>();
@@ -1309,6 +1318,7 @@ impl Receiver {
         for (s, &sent) in tones.iter().enumerate() {
             let pow: [f32; 4] = core::array::from_fn(|k| zsym[s][k].norm_sqr());
             let best = (0..4).fold(0, |b, k| if pow[k] > pow[b] { k } else { b });
+            rx_frame[SYNC_SYMBOLS + s] = best as u8;
             errs += usize::from(best != usize::from(sent));
             pt += pow[usize::from(sent)];
             pa += pow.iter().sum::<f32>();
@@ -1326,6 +1336,8 @@ impl Receiver {
         let text = atom.render();
         Some(Outcome {
             text,
+            rx_frame,
+            alias_check: peak,
             frame: FrameDecode {
                 channel: pick.channel,
                 f1_hz: f1,
@@ -1873,6 +1885,29 @@ impl Subtracted {
 
 /// Subtractions and channel-0 successes kept per window (`MAX_SUBTRACTED`, 16).
 const MAX_KEPT: usize = 16;
+
+// Alias rejection (`is_frame_alias`, `jtty_mdecode.f90`, WSJT-X v3.3.0-beta6, PR #702). A sync candidate
+// that lands a whole number of symbols inside an already decoded frame of the same signal, or a tone
+// spacing or two from it, can pass the permissive sync gate and still yield a TBCC codeword: a plausible
+// but false frame (`IG4QXF TU`). Its received symbols are that frame's tones, shifted; an independent
+// overlapping station's are not.
+/// Tone spacings (= baud) a candidate may sit from the frame it aliases.
+const ALIAS_FREQ_TONES: f32 = 2.5;
+/// How far from a whole number of symbols its offset in time may be.
+const ALIAS_MAX_SYMBOL_FRACTION: f64 = 0.25;
+/// Overlapping symbols needed to judge, and the share of them that must agree.
+const ALIAS_MIN_OVERLAP: usize = 9;
+const ALIAS_MIN_AGREEMENT: f32 = 0.8;
+/// Frames remembered.
+const MAX_ALIAS_REFERENCES: usize = 32;
+
+/// A frame decoded earlier in this recording (kept by the [`Assembler`](super::assemble::Assembler), newest overwriting oldest, as
+/// upstream resets its ring only at a recording's first window): where it was and its 59 tones.
+pub(super) struct AliasRef {
+    pub(super) f1_hz: f32,
+    pub(super) tsync_s: f64,
+    pub(super) tones: [u8; FRAME_SYMBOLS],
+}
 /// Rounds of re-decoding failed candidates against the residual within one pass.
 const MAX_ROUNDS: usize = 3;
 
@@ -1895,6 +1930,8 @@ struct Work<'a> {
     /// `(f1, tsync)` of channel-0 successes, so channels 1 and 2 do not repeat them
     ch0_ok: Vec<(f32, f64)>,
     subtracted: Vec<Subtracted>,
+    /// Candidates of the last [`Self::settle`] rejected as aliases, by index into its outcomes.
+    alias_rejected: Vec<usize>,
     subtractions: usize,
     any_sub: bool,
     asm: &'a mut Assembler,
@@ -2179,13 +2216,17 @@ impl Work<'_> {
                 stat_add!(self.rx, RetryCandidates, todo.len());
                 stat_add!(self.rx, RetryLadderCalls, now - ladder_before);
             }
-            let failed: Vec<Pick> = todo
+            let mut failed_at: Vec<usize> = outcomes
                 .iter()
-                .zip(&outcomes)
+                .enumerate()
                 .filter(|(_, o)| o.is_none())
-                .map(|(p, _)| *p)
+                .map(|(i, _)| i)
                 .collect();
             decoded |= self.settle(outcomes, ch);
+            // upstream's alias check fails the candidate, so it is tried again against the residual too
+            failed_at.extend(self.alias_rejected.iter().copied());
+            failed_at.sort_unstable();
+            let failed: Vec<Pick> = failed_at.into_iter().map(|i| todo[i]).collect();
             if self.subtractions == before || failed.is_empty() || !self.p.subtract {
                 break;
             }
@@ -2215,11 +2256,96 @@ impl Work<'_> {
         let _ = decoded;
     }
 
+    /// `remember_alias_reference`: a frame decoded again (same start, same frequency) is not a
+    /// second reference.
+    fn remember_alias_reference(&mut self, f1_hz: f32, tsync_s: f64, tones: [u8; FRAME_SYMBOLS]) {
+        if self
+            .asm
+            .alias_refs
+            .iter()
+            .any(|r| (r.tsync_s - tsync_s).abs() < 0.01 && (r.f1_hz - f1_hz).abs() < 3.0)
+        {
+            return;
+        }
+        let r = AliasRef {
+            f1_hz,
+            tsync_s,
+            tones,
+        };
+        if self.asm.alias_refs.len() < MAX_ALIAS_REFERENCES {
+            self.asm.alias_refs.push(r);
+        } else {
+            self.asm.alias_refs[self.asm.next_alias_ref] = r;
+        }
+        self.asm.next_alias_ref = (self.asm.next_alias_ref + 1) % MAX_ALIAS_REFERENCES;
+    }
+
+    /// `is_frame_alias`: true when a candidate frame (frequency `f1_hz`, start `tsync_s`, hard-decision
+    /// tones `rx`) is a misaligned view of a recently decoded frame: within [`ALIAS_FREQ_TONES`] tone
+    /// spacings of it, overlapping it in time at a near-whole number of symbols (but not frame-aligned,
+    /// which is a duplicate), and with its received tones matching that frame's, shifted by the same
+    /// symbols and tones. A frame already subtracted in this window is skipped: its energy is gone from
+    /// the data, so the candidate cannot be seeing it.
+    fn is_frame_alias(&self, f1_hz: f32, tsync_s: f64, rx: &[u8; FRAME_SYMBOLS]) -> bool {
+        for r in &self.asm.alias_refs {
+            let df = f1_hz - r.f1_hz;
+            if df.abs() >= ALIAS_FREQ_TONES * BAUD {
+                continue;
+            }
+            if self
+                .subtracted
+                .iter()
+                .any(|x| (x.tsync_s - r.tsync_s).abs() < 0.001 && (x.f1_hz - r.f1_hz).abs() < 0.1)
+            {
+                continue;
+            }
+            let dt = tsync_s - r.tsync_s;
+            if dt.abs() >= FRAME_PERIOD_S {
+                continue;
+            }
+            let nsym = dt * f64::from(BAUD); // offset in symbols (tone spacing = baud)
+            if (nsym - nsym.round()).abs() > ALIAS_MAX_SYMBOL_FRACTION {
+                continue;
+            }
+            let nshift = nsym.round() as i64;
+            if nshift == 0 {
+                continue; // frame-aligned: a dupe, not an alias
+            }
+            let ktone = -((df / BAUD).round() as i64); // a higher candidate sees lower tones
+            let (mut overlap, mut agree) = (0usize, 0usize);
+            for (j, &got) in rx.iter().enumerate() {
+                let m = j as i64 + nshift;
+                if !(0..FRAME_SYMBOLS as i64).contains(&m) {
+                    continue;
+                }
+                let expected = i64::from(r.tones[m as usize]) + ktone;
+                if !(0..=3).contains(&expected) {
+                    continue;
+                }
+                overlap += 1;
+                agree += usize::from(i64::from(got) == expected);
+            }
+            if overlap >= ALIAS_MIN_OVERLAP && agree as f32 >= ALIAS_MIN_AGREEMENT * overlap as f32
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// The sequential part for a pass's outcomes; `true` if any candidate decoded
     /// (a duplicate counts).
     fn settle(&mut self, outcomes: Vec<Option<Outcome>>, ch: u8) -> bool {
         let mut any = false;
-        for o in outcomes.into_iter().flatten() {
+        self.alias_rejected.clear();
+        for (index, o) in outcomes.into_iter().enumerate() {
+            let Some(o) = o else { continue };
+            // before anything else, as upstream returns from the candidate: not a decode, not a
+            // duplicate, not subtracted
+            if o.alias_check && self.is_frame_alias(o.frame.f1_hz, o.frame.tsync_s, &o.rx_frame) {
+                self.alias_rejected.push(index);
+                continue;
+            }
             any = true;
             let f = &o.frame;
             if ch == 0 && self.ch0_ok.len() < MAX_KEPT {
@@ -2238,6 +2364,7 @@ impl Work<'_> {
             if dupe {
                 continue;
             }
+            self.remember_alias_reference(f.f1_hz, f.tsync_s, super::tx::frame_tones(&f.payload));
             if self.p.skip_decoded_hz > 0.0 {
                 self.asm.decoded.push((f.f1_hz, f.tsync_s));
             }
