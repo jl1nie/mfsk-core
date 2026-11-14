@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! `msg::wspr::unpack` and the text the WSPR decoder reports, against WSJT-X v3.2.0-rc1's own `wsprd`
+//! `msg::wspr::unpack` and the text the WSPR decoder reports, against WSJT-X v3.3.0-beta6's own `wsprd`
 //! (tier A: bit-exact parity on a vendored fixture; a missing fixture is a failure).
 //!
 //! WSJT-X's WSPR receiver is `wsprd` (C), not `wqdecode` (Fortran, which `wspr_pack_message.rs` compares
 //! the other direction): the message text is `unpk_`'s `call_loc_pow` (`lib/wsprd/wsprd_utils.c`),
-//! printed by `wsprd.c:1535,1553`. `tests/fixtures/wsprd_unpack_rc1.tsv` is made by
-//! `scripts/wsprd/gen_cases.sh` from `scripts/wsprd/wsprd_unpack_oracle.c`, which calls rc1's `unpk_` the way
+//! printed by `wsprd.c:1535,1553`. `tests/fixtures/wsprd_unpack_beta6.tsv` is made by
+//! `scripts/wsprd/gen_cases.sh` from `scripts/wsprd/wsprd_unpack_oracle.c`, which calls beta6's `unpk_` the way
 //! `wsprd.c:1496` does, with an empty hash table or one holding the row's seed call.
 //!
 //! Each row: 50 payload bits, seed call (`-` = empty table), `unpk_`'s return (1 = `wsprd` prints nothing)
@@ -27,9 +27,9 @@ struct Row {
 fn fixture_text() -> String {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/wsprd_unpack_rc1.tsv"
+        "/tests/fixtures/wsprd_unpack_beta6.tsv"
     );
-    std::fs::read_to_string(path).expect("tests/fixtures/wsprd_unpack_rc1.tsv is vendored")
+    std::fs::read_to_string(path).expect("tests/fixtures/wsprd_unpack_beta6.tsv is vendored")
 }
 
 fn rows() -> Vec<Row> {
@@ -77,7 +77,7 @@ fn fixture_is_the_one_documented() {
     let text = fixture_text();
     let header: Vec<&str> = text.lines().take_while(|l| l.starts_with('#')).collect();
     assert!(
-        header[0].contains("v3.2.0-rc1 (567ad29ce6abf3d4a44f181cdbc7ceba0d73e5f4)"),
+        header[0].contains("v3.3.0-beta6 (7255454d37c4c834dc88869bce810e39df91582b)"),
         "{}",
         header[0]
     );
@@ -97,17 +97,9 @@ fn fixture_is_the_one_documented() {
 #[test]
 fn unpack_matches_wsprd() {
     let mut failures = Vec::new();
-    let mut empty_text = 0;
     for r in rows() {
         let got = reported(&r.bits, &r.seed);
         let want = (!r.noprint).then_some(r.text.clone());
-        // The one deliberate divergence (`msg::wspr::unpack`'s doc): `unpk_` returns 0 with an empty
-        // `call_loc_pow` for `ntype == 63`, so `wsprd` prints a decode with no text; this crate
-        // reports no decode.
-        if want.as_deref() == Some("") && got.is_none() {
-            empty_text += 1;
-            continue;
-        }
         if got != want {
             let bits: String = r.bits.iter().map(|&b| char::from(b'0' + b)).collect();
             failures.push(format!(
@@ -116,7 +108,6 @@ fn unpack_matches_wsprd() {
             ));
         }
     }
-    assert!(empty_text > 0, "the fixture has no ntype 63 row");
     assert!(
         failures.is_empty(),
         "{} mismatches:\n{}",
