@@ -68,8 +68,23 @@ fn sweep_dir() -> PathBuf {
 }
 
 /// Parse `jt9_awgn_<snr_tag>_<trial>.wav`. snr_tag: `m20` = -20, `p10` = +10.
+///
+/// Decoded as the upstream comparison runs `jt9` (`scripts/upstream_tasks.json`: `-9 -p 60 -d 3 -L 200
+/// -H 3000`): depth `Deep`, 200-3000 Hz. Until #726 this used `DecodeRequest`'s defaults (`Fast`,
+/// 200-4000 Hz), which only matched `-d 3` because the old scan had no `ccflim`; with `jt9`'s candidate
+/// stage, `Fast` is `-d 1` (`ccflim` 3.0) and sat 0.34 dB behind on the same corpus.
 fn decode_wav_jt9(audio: &[f32]) -> bool {
-    DecodeRequest::new(audio, 12_000).decode().iter().any(|d| {
+    let band = mfsk_core::jt9::search::SearchParams {
+        freq_min_hz: 200.0,
+        freq_max_hz: 3000.0,
+        ..mfsk_core::jt9::search::default_search_params()
+    };
+    DecodeRequest::new(audio, 12_000)
+        .params(band)
+        .depth(mfsk_core::jt9::Jt9Depth::Deep)
+        .decode()
+        .iter()
+        .any(|d| {
         matches!(
             &d.message,
             mfsk_core::msg::Jt72Message::Standard { call1, call2, grid_or_report }
