@@ -83,7 +83,7 @@ fn period(mode: Mode, seed: u32) -> Vec<i16> {
         .synthesize(&TxAudio::new(FS, f0));
     let meta = mode.meta();
     let slot = meta.slot_samples_12k as usize;
-    let start = (meta.tx_start_offset_s * FS as f32).round() as usize;
+    let start = meta.tx_buffer_start_samples_12k as usize;
     let mut x = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
     (0..slot)
         .map(|i| {

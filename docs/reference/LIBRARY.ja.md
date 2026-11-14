@@ -2492,10 +2492,13 @@ impl FskWaveform for Ft4 {
 （`synth_len`）。`N_RAMP` が 0 でないのは FT4 だけで、`gen_ft4wave.f90` は 103 個のトーンシンボルの前後に 1 シンボルずつ
 ランプシンボルを置く（105 シンボル、12 kHz で 60 480 サンプル）。レイズドコサイン
 ランプも丸 1 シンボル分の長さになる。したがってトーンはバッファの
-`synth_lead_samples::<P>(rate)` サンプル目（FT4 は 576、他は 0。`Encoded::synth_lead`、
-`ModeMeta::tx_lead_samples_12k`、C の `mfsk_synth_lead_len`、Swift の `synthesisedLeadLength`）から始まる。
-`TX_START_OFFSET_S` からそのサンプル数だけ手前にバッファを置くこと
-（`ft4sim.f90:91`）。0.15 までの FT4 は、`gen_ft8wave` と同じ 103 シンボル・
+`synth_lead_samples::<P>(rate)` サンプル目（FT4 は 576、他は 0）から始まる。**バッファは
+`tx_buffer_start::<P>(rate)` に置く**（`Encoded::tx_buffer_start`、`ModeMeta::tx_buffer_start_samples_12k`、
+C の `MfskModeInfo::tx_buffer_start_samples_12k`、Swift の `txBufferStartSamples12k`、Kotlin も同名）。
+`TX_START_OFFSET_S` からその先行分を引いた値なので、どのモードも同じやり方で置けて、フレームは
+DT = 0 に来る（FT4 は 5424、FT8 は 6000。`ft4sim.f90:91`）。秒ではなくサンプル数なのは、0.452 s が
+`f32` で正確に表せないため。WSJT-X 自身の送信機は FT4 を約 150 ms 早く出す（`Modulator.cpp:167`、
+`delay_ms = 300`）。これは本家との意図的な相違として記してある（`engine::tx::tx_buffer_start`）。0.15 までの FT4 は、`gen_ft8wave` と同じ 103 シンボル・
 `nsps / 8` ランプの形で、`gen_ft4wave` から -45 dB ずれていた。
 `tests/gen_wave_vs_wsjtx.rs` が FT8・FT4・FST4 を WSJT-X v3.3.0-beta6 自身の
 生成器と突き合わせる（-88〜-95 dB）。FST4（`Waveform::Fst4`）は `gen_fst4wave.f90` と同じく
@@ -2760,10 +2763,13 @@ for p in PROTOCOLS {
 `n_sync`, `n_symbols`, `t_slot_s`)、コーデック (`fec_k`, `fec_n`,
 `payload_bits`)。この幾何情報に加えて、ホストが他に尋ねる手段の無いものを公開する:
 
-* `tx_start_offset_s` — スロットバッファの先頭から最初のシンボルまでの秒数で、
-  `dt = 0` の基準。FT8、FT4、FST4-15、Q65 の 15 / 30 s で 0.5、他の FST4
-  サブモードと Q65 の 60 s 以上で 1.0（Q65 は `q65.f90:130-131` と同じく
-  `nsps` に従う。#399 まではどのサブモードも 1.0 を公開していた）。
+* `tx_start_offset_s` — スロットの先頭から、DT = 0 のフレームの最初のトーンまでの秒数で、
+  `dt_sec` を測る基準。FT8、FT4、FST4-15、Q65 の 15 / 30 s で 0.5、他の FST4
+  サブモード、Q65 の 60 s 以上、WSPR、JT9、JT65 で 1.0（Q65 は `q65.f90:130-131` と同じく
+  `nsps` に従う。#399 まではどのサブモードも 1.0 を公開していた。JT9 と JT65 は #726 まで 0.0）。
+* `tx_buffer_start_samples_12k` — 合成したバッファの置き場所。スロット先頭からのサンプル数で、
+  オフセットから FT4 の先行ランプシンボル分を引いたもの（FT4 は 5424、FT8 は 6000、
+  1 秒のモードは 12 000）。送信はこれで置き、`tx_start_offset_s` では置かない。
 * `slot_samples_12k` — サンプル数で表したスロット（FT4 90 000、FT8 180 000、
   FST4-300 3 600 000）と、`decode_fft1_size` — デコーダがスロット全体に
   かける前方 FFT（`Protocol::DECODE_FFT1_SIZE`。FT4 92 160、FT8 192 000、

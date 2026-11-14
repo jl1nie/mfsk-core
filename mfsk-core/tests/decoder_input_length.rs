@@ -46,9 +46,10 @@ where
     place::<P>(synthesize::<P>(&tones, FS, freq_hz, 1.0), slot)
 }
 
-/// `wave` at `P`'s nominal start in a period of `slot` samples.
-fn place<P: FrameLayout>(wave: Vec<f32>, slot: usize) -> Vec<f32> {
-    let start = (P::TX_START_OFFSET_S * FS as f32).round() as usize;
+/// `wave` where `P`'s buffer goes (`tx_buffer_start`: FT4's starts a ramp symbol early) in a
+/// period of `slot` samples.
+fn place<P: FskWaveform>(wave: Vec<f32>, slot: usize) -> Vec<f32> {
+    let start = mfsk_core::engine::tx::tx_buffer_start::<P>(FS);
     let mut v = vec![0.0f32; slot];
     for (i, s) in wave.into_iter().enumerate() {
         if let Some(d) = v.get_mut(start + i) {

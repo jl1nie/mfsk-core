@@ -303,22 +303,21 @@ pub struct ProtocolMeta {
     pub fec_n: usize,
     /// Message-codec payload width — `MessageCodec::PAYLOAD_BITS`.
     pub payload_bits: u32,
-    /// Seconds from the start of the slot buffer to the first frame
-    /// symbol — the `dt = 0` reference (`FrameLayout::TX_START_OFFSET_S`). The first *tone* symbol:
-    /// FT4's synthesised frame starts `tx_lead_samples_12k` before it.
-    /// 0.5 for FT8, FT4, FST4-15 and the Q65 15/30 s periods; 1.0 for
-    /// the other FST4 sub-modes and for Q65 from 60 s up. Q65 follows
-    /// `nsps`, as upstream does (`q65.f90:130-131`) — this enumeration
-    /// omitted Q65 entirely until #399, which is how it went unnoticed
-    /// that every Q65 sub-mode was publishing 1.0.
-    /// A host that synthesises a slot has to know this and could not
-    /// ask for it.
+    /// Seconds from the start of the slot to the first tone symbol of a frame at DT = 0: the
+    /// reference every decode's `dt_sec` is measured from (`FrameLayout::TX_START_OFFSET_S`).
+    /// 0.5 for FT8, FT4, FST4-15 and the Q65 15/30 s periods; 1.0 for the other FST4 sub-modes,
+    /// Q65 from 60 s up, WSPR, JT9 and JT65 (the last two 0.0 until #726). Q65 follows `nsps`, as
+    /// upstream does (`q65.f90:130-131`). To place a transmission, use
+    /// `tx_buffer_start_samples_12k`, not this: FT4's buffer starts before its first tone.
     pub tx_start_offset_s: f32,
-    /// Samples a synthesised frame has before its first tone symbol (and after its last), at 12 kHz:
-    /// 576 for FT4, whose `gen_ft4wave` frames the tones with a ramp symbol each side, 0 for every other
-    /// mode. The buffer from `Encoded::synthesize` starts this many samples before the tones, so a host
-    /// that places it by `tx_start_offset_s` starts it that much earlier (`ft4sim.f90:91`).
-    pub tx_lead_samples_12k: u32,
+    /// Where a synthesised frame goes, in samples at 12 kHz from the start of the slot: put the first
+    /// sample of `Encoded::synthesize`'s buffer here and the frame lands at DT = 0 on a WSJT-X
+    /// receiver. Every mode the same way: `tx_start_offset_s * 12000` less the samples before the
+    /// first tone, which only FT4 has (a ramp symbol, 576; `ft4sim.f90:91`), so FT4 5424, FT8 6000,
+    /// WSPR/JT9/JT65 12000. Integer on purpose: 0.452 s has no exact `f32`. WSJT-X's own transmitter
+    /// sends FT4 about 150 ms earlier (`engine::tx::tx_buffer_start`). 0 for a mode with no tone
+    /// stage.
+    pub tx_buffer_start_samples_12k: u32,
     /// Slot length in samples at the 12 kHz working rate — `t_slot_s`
     /// made exact, so a caller sizes a buffer without repeating the
     /// multiply. FT4 90 000, FT8 180 000, FST4-300 3 600 000.
@@ -361,8 +360,11 @@ macro_rules! protocol_meta {
             fec_n: <<$ty as Protocol>::Fec as FecCodec>::N,
             payload_bits: <<$ty as Protocol>::Msg as MessageCodec>::PAYLOAD_BITS,
             tx_start_offset_s: <$ty as FrameLayout>::TX_START_OFFSET_S,
-            tx_lead_samples_12k: (<$ty as FrameLayout>::N_RAMP / 2)
-                * <$ty as ModulationParams>::NSPS,
+            // `engine::tx::tx_buffer_start::<P>(12_000)` in const form: the lead is `N_RAMP / 2`
+            // symbols (only FT4 has any); `tests/encoder.rs` checks the two agree for every mode.
+            tx_buffer_start_samples_12k: (<$ty as FrameLayout>::TX_START_OFFSET_S * 12_000.0)
+                as u32
+                - (<$ty as FrameLayout>::N_RAMP / 2) * <$ty as ModulationParams>::NSPS,
             slot_samples_12k: (<$ty as FrameLayout>::T_SLOT_S * 12_000.0) as u32,
             decode_fft1_size: <$ty as Protocol>::DECODE_FFT1_SIZE,
             profile: $profile,

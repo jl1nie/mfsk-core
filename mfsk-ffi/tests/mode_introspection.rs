@@ -238,6 +238,17 @@ fn mode_info_reports_real_geometry() {
     assert_eq!(ft4.slot_samples_12k, 90_000);
     assert_eq!(ft4.decode_fft1_size, 92_160);
 
+    // Where the synthesised buffer goes (#726): the tone start less FT4's ramp symbol, so 0.452 s for
+    // FT4, which an `f32` of seconds cannot hold exactly; the 1 s modes include JT9 and JT65.
+    assert_eq!(ft8.tx_buffer_start_samples_12k, 6_000);
+    assert_eq!(ft4.tx_buffer_start_samples_12k, 6_000 - 576);
+    assert_eq!(info(MfskMode::Fst4s30).tx_buffer_start_samples_12k, 12_000);
+    for m in [MfskMode::Wspr, MfskMode::Jt9, MfskMode::Jt65] {
+        assert_eq!(info(m).tx_start_offset_s, 1.0, "{m:?}");
+        assert_eq!(info(m).tx_buffer_start_samples_12k, 12_000, "{m:?}");
+    }
+    assert_eq!(info(MfskMode::Jtty).tx_buffer_start_samples_12k, 0);
+
     // The five FST4 sub-modes the pre-v2 ABI could not address at all.
     let f15 = info(MfskMode::Fst4s15);
     let f300 = info(MfskMode::Fst4s300);

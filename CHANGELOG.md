@@ -51,9 +51,9 @@
   starting at the first tone. WSJT-X frames the tones with a ramp symbol each side (105 symbols, 60 480 samples) and ramps a whole symbol.
   On a fixed tone list against WSJT-X's own generator, tones aligned: -21 dB over the frame before (-45 dB inside it, edges excluded), -103 dB
   (beta4) / -82 dB (beta6) now. **API (next release is a minor):** `synthesize::<Ft4>` / `synth_len` return 60 480 samples; the tones start
-  `synth_lead_samples::<Ft4>(rate)` (576) in (`Encoded::synth_lead`, `ModeMeta::tx_lead_samples_12k`, C `mfsk_synth_lead_len`, Swift
-  `synthesisedLeadLength`), so a caller places the buffer that much before `TX_START_OFFSET_S` (`ft4sim.f90:91`); `Waveform` is
-  `#[non_exhaustive]` with a new `Ft4` variant. New tier A `tests/gen_wave_vs_wsjtx.rs` (FT8 -68 dB, FT4 -82 dB). FT4's subtraction reference follows (#734); the CoreS3's `GfskStream` is not changed.
+  576 samples in, so **a host that placed FT4 at `tx_start_offset_s` now sends 48 ms late**: place every mode at the new
+  `tx_buffer_start` (`Encoded`, `ModeMeta::tx_buffer_start_samples_12k`, appended to C `MfskModeInfo`, Swift, Kotlin):
+  FT4 5424, FT8 6000, 1 s modes 12 000, for DT = 0 (WSJT-X sends FT4 ~150 ms earlier). `Waveform` is `#[non_exhaustive]`. New tier A `tests/gen_wave_vs_wsjtx.rs` (FT8 -68 dB, FT4 -82 dB). FT4's subtraction reference follows (#734); the CoreS3's `GfskStream` is not changed.
 - **JTTY: a candidate that is a misaligned view of a frame already decoded is refused** (#726, upstream PR #702, v3.3.0-beta6
   `is_frame_alias`). A strong signal left repeatable false frames (`IG4QXF TU`): a sync candidate a whole number of symbols inside a
   decoded frame matched 7 of 13 sync tones by chance and still gave a TBCC codeword. It is dropped when, within 2.5 tone spacings and

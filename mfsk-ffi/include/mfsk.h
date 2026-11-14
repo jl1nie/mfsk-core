@@ -1000,10 +1000,11 @@ typedef struct MfskModeInfo {
      */
     uint32_t slot_samples_12k;
     /**
-     * Seconds from the start of the slot buffer to the first frame
-     * symbol — the `dt = 0` reference. 0.5 for FT8, FT4 and FST4-15;
-     * 1.0 for the other FST4 sub-modes. A host that synthesises a slot
-     * has to know this and previously could not ask.
+     * Seconds from the start of the slot to the first tone symbol of a frame at DT = 0, the
+     * reference decoded `dt_sec` is measured from. 0.5 for FT8, FT4, FST4-15 and Q65-15/30; 1.0
+     * for the other FST4 sub-modes, Q65 from 60 s, WSPR, JT9 and JT65. To place a transmission use
+     * [`tx_buffer_start_samples_12k`](Self::tx_buffer_start_samples_12k): FT4's buffer starts
+     * before its first tone.
      */
     float tx_start_offset_s;
     /**
@@ -1037,6 +1038,18 @@ typedef struct MfskModeInfo {
      * whole surface exists to end.
      */
     uint64_t caps;
+    /**
+     * Where a synthesised frame goes (appended in 0.16.0, ABI 3): put the first sample of the
+     * 12 kHz buffer from `mfsk_tones_to_i16` / `mfsk_tones_to_f32` (or `mfsk_encode` at 12 kHz)
+     * this many samples after the start of the slot, and the frame lands at DT = 0 on a WSJT-X
+     * receiver. At another rate scale it and round: `round(v * rate / 12000)` is exact at 48 kHz
+     * and 44.1 kHz too (FT4: 21 696 and 19 933). One rule for every mode: FT4 5424
+     * (its buffer starts a ramp symbol, 576 samples, before the tones at 0.5 s), FT8 6000, WSPR,
+     * JT9 and JT65 12000; 0 for JTTY and MSK144, which have no slot. WSJT-X's own transmitter
+     * sends FT4 about 150 ms earlier (`Modulator.cpp:167`). A library older than the caller's
+     * header leaves it as the caller set it: check `size` covers it.
+     */
+    uint32_t tx_buffer_start_samples_12k;
 } MfskModeInfo;
 
 /**
@@ -1837,8 +1850,8 @@ enum MfskStatus mfsk_encode_ft8(const char *call1,
 
 /**
  * Synthesise a standard FT4 message at `freq_hz`. 12 kHz f32 PCM, 60 480 samples: the 103 tone
- * symbols between a ramp symbol each side, as `gen_ft4wave` frames them, so the tones start
- * [`mfsk_synth_lead_len`] (576) samples in. Place the buffer that many samples before the 0.5 s tone start.
+ * symbols between a ramp symbol each side, as `gen_ft4wave` frames them, so the tones start 576
+ * samples in. Place the buffer at [`MfskModeInfo::tx_buffer_start_samples_12k`] (5424).
  *
  * # Safety
  *
@@ -2214,16 +2227,6 @@ uintptr_t mfsk_symbol_count(uint32_t mode);
  */
 MFSK_API
 uintptr_t mfsk_synth_output_len(uint32_t mode);
-
-/**
- * Samples at the start of a full frame that precede its first tone symbol, at 12 kHz: 576 for FT4
- * (`gen_ft4wave` frames the 103 tone symbols with a ramp symbol each side), 0 for every other mode,
- * and 0 if the mode has no tone stage. A host that places a frame by [`MfskModeInfo::tx_start_offset_s`]
- * puts the *tones* there, so the buffer starts this many samples earlier. Already inside
- * [`mfsk_synth_output_len`].
- */
-MFSK_API
-uintptr_t mfsk_synth_lead_len(uint32_t mode);
 
 /**
  * Pack a standard exchange: `call1 call2 report` (WSJT type 1/2).

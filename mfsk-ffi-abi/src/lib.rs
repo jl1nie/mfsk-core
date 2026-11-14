@@ -227,10 +227,11 @@ pub struct MfskModeInfo {
     /// caller sizes a buffer without repeating the multiply. FT4
     /// 90 000, FT8 180 000, FST4-300 3 600 000.
     pub slot_samples_12k: u32,
-    /// Seconds from the start of the slot buffer to the first frame
-    /// symbol — the `dt = 0` reference. 0.5 for FT8, FT4 and FST4-15;
-    /// 1.0 for the other FST4 sub-modes. A host that synthesises a slot
-    /// has to know this and previously could not ask.
+    /// Seconds from the start of the slot to the first tone symbol of a frame at DT = 0, the
+    /// reference decoded `dt_sec` is measured from. 0.5 for FT8, FT4, FST4-15 and Q65-15/30; 1.0
+    /// for the other FST4 sub-modes, Q65 from 60 s, WSPR, JT9 and JT65. To place a transmission use
+    /// [`tx_buffer_start_samples_12k`](Self::tx_buffer_start_samples_12k): FT4's buffer starts
+    /// before its first tone.
     pub tx_start_offset_s: f32,
     /// FEC information bits — 91 (CRC-14) or 101 (CRC-24).
     pub fec_k: u32,
@@ -253,6 +254,16 @@ pub struct MfskModeInfo {
     /// re-derives the bit positions by hand, which is the failure this
     /// whole surface exists to end.
     pub caps: u64,
+    /// Where a synthesised frame goes (appended in 0.16.0, ABI 3): put the first sample of the
+    /// 12 kHz buffer from `mfsk_tones_to_i16` / `mfsk_tones_to_f32` (or `mfsk_encode` at 12 kHz)
+    /// this many samples after the start of the slot, and the frame lands at DT = 0 on a WSJT-X
+    /// receiver. At another rate scale it and round: `round(v * rate / 12000)` is exact at 48 kHz
+    /// and 44.1 kHz too (FT4: 21 696 and 19 933). One rule for every mode: FT4 5424
+    /// (its buffer starts a ramp symbol, 576 samples, before the tones at 0.5 s), FT8 6000, WSPR,
+    /// JT9 and JT65 12000; 0 for JTTY and MSK144, which have no slot. WSJT-X's own transmitter
+    /// sends FT4 about 150 ms earlier (`Modulator.cpp:167`). A library older than the caller's
+    /// header leaves it as the caller set it: check `size` covers it.
+    pub tx_buffer_start_samples_12k: u32,
 }
 
 // ──────────────────────────────────────────────────────────────────────────

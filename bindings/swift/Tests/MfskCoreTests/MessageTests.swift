@@ -79,9 +79,14 @@ final class MessageTests: XCTestCase {
         for (mode, length) in lengths {
             XCTAssertGreaterThan(length, 0, "\(mode.name)")
             let info = try mode.info
-            // Tone symbols plus, for FT4, a ramp symbol each side (`gen_ft4wave`).
-            let lead = mode.synthesisedLeadLength
-            XCTAssertEqual(length, Int(info.totalSymbols * info.samplesPerSymbol) + 2 * lead, "\(mode.name)")
+            // Tone symbols plus, for FT4, a ramp symbol each side (`gen_ft4wave`), and the buffer
+            // starts that ramp symbol before the tones' DT = 0 position.
+            let tones = Int(info.totalSymbols * info.samplesPerSymbol)
+            let lead = (length - tones) / 2
+            XCTAssertEqual(length, tones + 2 * lead, "\(mode.name)")
+            XCTAssertEqual(lead, mode == .ft4 ? 576 : 0, "\(mode.name)")
+            XCTAssertEqual(Int(info.txBufferStartSamples12k),
+                           Int((info.txStartOffsetSeconds * 12_000).rounded()) - lead, "\(mode.name)")
         }
     }
 }

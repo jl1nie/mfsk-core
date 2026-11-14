@@ -303,12 +303,13 @@ impl Encoded {
         synth_len(self.mode, sample_rate)
     }
 
-    /// Samples at the start of the audio that precede the first tone symbol, at `sample_rate`: a ramp
-    /// symbol for FT4 (`gen_ft4wave`), 0 for every other mode. Part of
-    /// [`synth_len`](Self::synth_len). A caller that places the audio by the mode's start offset
-    /// (`ModeMeta::tx_start_offset_s`, where the first *tone* starts) starts it this many samples earlier.
-    pub fn synth_lead(&self, sample_rate: u32) -> usize {
-        synth_lead(self.mode, sample_rate)
+    /// Where to put the audio: its first sample goes this many samples (at `sample_rate`) after
+    /// the start of the slot, and the frame then lands at DT = 0 on a WSJT-X receiver. One rule for
+    /// every mode; FT4's buffer starts a ramp symbol before its tones, and this has subtracted it.
+    /// [`engine::tx::tx_buffer_start`](crate::engine::tx::tx_buffer_start) has the detail and the
+    /// one divergence (WSJT-X itself sends FT4 about 150 ms earlier).
+    pub fn tx_buffer_start(&self, sample_rate: u32) -> usize {
+        tx_buffer_start(self.mode, sample_rate)
     }
 }
 
@@ -514,10 +515,10 @@ macro_rules! encoder_modes {
             }
         }
 
-        fn synth_lead(mode: Mode, fs: u32) -> usize {
+        fn tx_buffer_start(mode: Mode, fs: u32) -> usize {
             let _ = fs;
             match mode {
-                $( #[cfg(feature = $feat)] Mode::$var => crate::engine::tx::synth_lead_samples::<$ty>(fs), )*
+                $( #[cfg(feature = $feat)] Mode::$var => crate::engine::tx::tx_buffer_start::<$ty>(fs), )*
             }
         }
     };
