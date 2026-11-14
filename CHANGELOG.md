@@ -39,6 +39,8 @@ does. Measurements behind each entry: [`docs/notes/WSJTX_BETA6_PORT.md`](docs/no
   `int16` input cannot reach that. The floor never engages on the vendored recordings.
 - **JTTY refuses a misaligned view of a decoded frame** (#728; upstream PR #702, `is_frame_alias`): upstream's own case went from 4
   false frames in 24 trials to 0, with 24/24 still decoded in full.
+- **C: a JT9 decoder refuses `t_early_s`, `t_late_s`, `score_threshold` and `max_cand`** (#744, `MFSK_STATUS_UNSUPPORTED`), as
+  every option a mode lacks is: its scan reads none of them since #742, and they were accepted and ignored.
 - **WSPR refuses an out-of-range type-2 suffix and type 63** (#727; upstream `ffa884606`), as beta6's `wsprd` does: `unpackpfx` no
   longer wraps. 1 488 rows of the 26 046-row `unpk_` fixture, rebuilt from beta6, change.
 

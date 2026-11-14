@@ -717,8 +717,14 @@ fn apply_extras(
                 e.a7 != 0 || e.sniper_hz > 0.0 || hint.is_some(),
                 "a-priori hint",
             )?;
+            // JT9's scan is `jt9`'s (`sync9`: a fixed lag range, `ccflim` by depth, #742), so it
+            // reads none of these; refused, as every option a mode does not have is.
+            refuse(
+                search_set,
+                "search window (t_early_s, t_late_s, score_threshold)",
+            )?;
+            refuse(max_cand.is_some(), "candidate budget (max_cand)")?;
             *x = Default::default();
-            x.search = search_tuning(e);
         }
         #[cfg(feature = "legacy")]
         AnyExtras::Jt65(x) => {
