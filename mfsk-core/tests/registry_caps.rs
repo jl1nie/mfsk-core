@@ -361,7 +361,8 @@ fn slot_geometry_matches_the_protocols() {
     // FST4 sub-mode starts 1.0 s into the slot.
     assert_eq!(meta("FST4-15").tx_start_offset_s, 0.5);
     assert_eq!(meta("FT8").tx_start_offset_s, 0.5);
-    for m in ["FST4-30", "FST4-60A", "FST4-120", "FST4-300"] {
+    // JT9 and JT65 as WSJT-X starts their audio (`Modulator.cpp:163`); 0.0 until #726.
+    for m in ["FST4-30", "FST4-60A", "FST4-120", "FST4-300", "JT9", "JT65"] {
         assert_eq!(meta(m).tx_start_offset_s, 1.0, "{m}");
     }
 }

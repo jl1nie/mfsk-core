@@ -199,7 +199,9 @@ mod jt9_impl {
     use super::*;
     use crate::jt9::{DecodeRequest, Jt9, Jt9Depth, Jt9Result};
 
-    /// JT9's library options.
+    /// JT9's library options. Of `search`, JT9 reads the band only: its scan is `jt9`'s (`sync9`'s
+    /// fixed lag range and `ccflim` gates), so the time tolerances, `score_threshold` and
+    /// `max_candidates` are not read (#726).
     #[derive(Clone, Debug, Default)]
     #[non_exhaustive]
     pub struct Jt9Extras {

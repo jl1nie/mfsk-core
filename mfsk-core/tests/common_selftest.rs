@@ -547,7 +547,10 @@ mod sharing_ratchet_selftest {
     /// structurally different single-slot state machine, not a
     /// `Vec`-accumulating scan) are deliberately not adopters here —
     /// see the plan file for why each was out of scope for this pass.
-    const EXPECTED_SCAN_DEDUP_ADOPTERS: &[&str] = &["jt9", "jt65", "wspr", "q65"];
+    /// JT9 left in #726: its scan is `jt9_decode.f90`'s bin loop, whose
+    /// dedup is upstream's (a decode marks bins `i-1..=i+22` done), not a
+    /// message match.
+    const EXPECTED_SCAN_DEDUP_ADOPTERS: &[&str] = &["jt65", "wspr", "q65"];
 
     /// Protocols building their coarse-search spectrogram via the
     /// shared `engine::spectrogram::Spectrogram` (found in a bottom-up

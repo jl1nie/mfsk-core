@@ -23,11 +23,10 @@ use super::Jt9Result;
 use super::decode::Jt9Depth;
 use super::search::{SearchParams, default_search_params};
 
-/// Wide-band JT9 decode request: coarse (freq, time) search over
-/// `params`, then the WSJT-X-faithful `softsym` pipeline (`downsam9` +
-/// `peakdt9` + `symspec2` + Fano) on each candidate in score order,
-/// collapsing duplicates that decode to the same message within ±4 Hz /
-/// ±1 symbol.
+/// Wide-band JT9 decode request, as `jt9_decode.f90` runs it: `sync9` scores every 0.732 Hz bin of
+/// `params`' band, then the bins that pass its gates are tried upwards (the Rx window first, with
+/// [`Self::narrow`]) through `softsym` (`downsam9` + `peakdt9` + `symspec2`) and Fano; a decode marks
+/// the next 22 bins done. Of `params` only the band is read (#726).
 ///
 /// ```no_run
 /// # #[cfg(feature = "internal-testing")] {
@@ -136,8 +135,9 @@ impl<'a> DecodeRequest<'a> {
     }
 
     /// [`Self::decode`], whether the budget ([`Self::budget`]) said stop at least
-    /// once (`false` without a budget), and how many candidates the first coarse search
-    /// kept (`SlotResult::candidates`, #697).
+    /// once (`false` without a budget), and how many bins the band pass may try (`ccfok`, taken
+    /// before that pass, so it includes bins an Rx-window decode marked done; `None` if the budget
+    /// stopped the scan in the Rx-window pass; `SlotResult::candidates`, #697).
     pub fn decode_reported(&self) -> (Vec<Jt9Result>, bool, Option<u32>) {
         let gate = crate::engine::pipeline::BudgetGate::new(self.budget);
         let rows = super::decode_scan_inner(

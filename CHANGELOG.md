@@ -14,6 +14,19 @@
 
 ### Fixed
 
+- **JT9 picks its candidates as `jt9` does** (#726). Its scan was this crate's own search, tried in score order and cut to
+  `max(max_candidates, 32)`; `jt9` walks `sync9`'s 0.732 Hz bins upwards and decodes at the first that passes `ccflim`/`red2lim`
+  (`jt9_decode.f90:59-284`), and `peakdt9`'s DT depends on that bin (two rows were 0.2 s off). Ported (`jt9::sync9`): on
+  `130418_1742.wav` the same rows as beta6's `jt9` at `-d 1`/`-d 3`, 1050-1550 and 200-4000 Hz, with and without an Rx window
+  (DT within its 0.1 s print, SNR 0.5 dB). The crate's `peakdt9` gate is gone. **API:** `Jt9Extras::search` reads only the band.
+  Tier C: the sweep now decodes as its upstream side runs (`-d 3`; `Fast` is `-d 1`, -26.30 dB): -26.58 dB (baseline -26.64),
+  `jt9` only 3 of 300, crate only 0.
+- **JT9 and JT65 report DT on WSJT-X's scale** (#726). Their `TX_START_OFFSET_S` was 0.0; WSJT-X starts both 1.0 s into the minute
+  (`Modulator.cpp:163`, `jt9sim.f90:124`, `jt65sim.f90:217`) and reports DT from there (`jt65_decode.f90:425`), so every DT from `Decoder`
+  was 1.0 s higher than `jt9`'s on the same file (JT65 golden: +1.02 vs 0.0) and the search window sat 1 s early. `ModeMeta::tx_start_offset_s`
+  is now 1.0 for both, so a host placing a JT9/JT65 transmission by it no longer keys up 1 s early. Same messages on the vendored recordings
+  through `Decoder`; the re-centred window picks other lags, so numbers move (JT65 golden SNR -18.9 -> -18.3 dB on four carriers, -18.6 -> -20.1 on
+  1500 Hz, `jt9` -19; JT9 `JA1KAU` DT 1.12, `jt9` 1.2). `tests/jt_dt_vs_jt9.rs` compares with `jt9`.
 - **Q65 decodes a noiseless frame (#735). Marked divergence from WSJT-X.** `condition_symbol_spectra` clips the symbol energies at 20x their 40th
   percentile (`q65_loops.f90`'s `s3lim`). On float input with no noise that percentile is f32 rounding, 160 dB below the peak, so the clip saturated the
   tones' sidelobes too (30-67 of 192 bins a symbol tied) and BP failed: an aligned noiseless Q65-15A frame with its start cut was lost with noise at 1e-9
