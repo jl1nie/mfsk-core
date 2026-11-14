@@ -57,7 +57,7 @@ WSJT-X(Joe Taylor K1JT ら)から移植しており、WSJT-X が引き続きリ�
 | FST4 | `jt9 -7 -d 3` | 同等、20条件中1で上回る | 4.3〜5.0 倍高速 |
 | FST4W | `jt9 -W -d 3`(`v3.3.0-beta1`) | 同等(8条件) | 3.3〜3.6 倍高速 |
 | Q65 | `jt9 -3 -d 1` | 同等、20条件中9で上回る | 3.4〜3.8 倍高速 |
-| JT9 | `jt9 -9 -d 3` | 同等 | 5.3 倍高速 |
+| JT9 | `jt9 -9 -d 3` | 同等（0.16 から `jt9` 自身の候補段） | 2.6〜4.0 倍高速 |
 | JTTY | `rjtty` | 完全一致: 360 試行すべて一致 | 7〜9 倍高速 |
 | WSPR | `wsprd` | 同等 | 0.8〜4.2 倍(デコード限界付近では遅い。10 ファイル) |
 | JT65 | `jt9 -6 -d 3` | **劣る**(既知。レガシーのため追わない) | 4〜20 倍高速 |
@@ -98,7 +98,7 @@ MSK144 はまだ表にありません。以前に本物の `jt9` と比べたと
 ```toml
 # Cargo.toml
 [dependencies]
-mfsk-core = { version = "0.15", features = ["ft8", "ft4"] }
+mfsk-core = { version = "0.16", features = ["ft8", "ft4"] }
 ```
 
 変更はマージされ次第 `main` に入り、crates.io へのリリースは2週間ごとです。リリース前の修正が
@@ -115,7 +115,7 @@ let tx = encode(Mode::Ft8, "CQ JA1ABC PM95").unwrap();
 let frame = tx.synthesize_i16(&TxAudio::new(12_000, /* freq */ 1500.0), /* amp */ 20_000);
 
 let mut audio = vec![0i16; 180_000]; // 15 s @ 12 kHz
-let start = (0.5 * 12_000.0) as usize;
+let start = tx.tx_buffer_start(12_000); // このモードのバッファの置き場所。FT8 は 6000
 let end = (start + frame.len()).min(audio.len());
 audio[start..end].copy_from_slice(&frame[..end - start]);
 

@@ -41,6 +41,8 @@ Ryzen 9 9900X. `main` at `787e0cbd`, all nine protocols re-swept on 2026-10-10 a
 (#642-#646: Q65 `jz` / caller list, JTTY packing / SNR / time, packer fixes); every 50 %-crossing, every unexpected-decode
 count and every paired count below is identical to the sweeps of 2026-10-09 (FT8, FT4, FST4; `2cd38b8e`, after the OSD
 rewrite, #613), 2026-10-04 (WSPR, JT65, JT9, Q65; `dbdf244c`) and 2026-10-01 (JTTY; `2e56279b`), so the tables stand.
+Except JT9, re-swept on 2026-11-14 (`68c9a1d8`) after #742 gave it `jt9`'s own candidate stage: the crate side now runs
+`Depth::Deep` over 200-3000 Hz, as the task says; `Fast` is `jt9 -d 1` now and would read 0.34 dB worse ([`WSJTX_BETA6_PORT.md`](WSJTX_BETA6_PORT.md)).
 Upstream: WSJT-X `v3.2.0-rc1`
 (`scripts/build_jt9_upstream.sh`; `rjtty` from `gen_jtty_sweep_wavs.sh`).
 
@@ -50,7 +52,7 @@ Upstream: WSJT-X `v3.2.0-rc1`
 | `ft4/t1` | `jt9 -5 -d 3` | 4 | 1 040 | 528 | 21 | 27 | 0 | 0 | +0.17 … −0.50 dB | 0 / 0 |
 | `fst4/t1` | `jt9 -7 -d 3` | 20 | 3 360 | 1 782 | 69 | 99 | 0 | 1 | +0.50 … −0.79 dB | 7 / 4 |
 | `q65/t1` | `jt9 -3 -d 1 -f 1500 -F 20` | 20 | 2 640 | 1 021 | 8 | 147 | 0 | 9 | +0.33 … −2.31 dB | 0 / not counted |
-| `jt9/t1` | `jt9 -9 -d 3` | 1 | 300 | 240 | 6 | 3 | 0 | 0 | +0.09 dB | 0 / not counted |
+| `jt9/t1` | `jt9 -9 -d 3` | 1 | 300 | 243 | 3 | 0 | 0 | 0 | +0.14 dB | 0 / not counted |
 | `jtty/t1` | `rjtty 4.6 0 384 1500 50` | 2 | 360 | 160 | 0 | 0 | 0 | 0 | 0.00 dB | 0 / 0 |
 | `wspr/t1` | `wsprd` | 1 | 260 | 217 | 1 | 0 | 0 | 0 | +0.04 dB | 1 / not counted |
 | `fst4w/t1` | `jt9 -W -d 3 -f 1500 -F 100` (`v3.3.0-beta1`) | 8 | 1 760 | 927 | 20 | 16 | 0 | 0 | +0.17 … −0.17 dB | 0 / 0 |
@@ -86,7 +88,7 @@ Crate's time as a fraction of upstream's on the same files.
 | `ft4/t1` | 20 | 0.15 (2.4 / 15.9 ms) | 0.30 (7.0 / 23.2 ms) |
 | `fst4/t1` | 20 | 0.20 (49 / 244 ms) | 0.23 (66 / 285 ms) |
 | `q65/t1` | 20 | 0.29 (60 / 211 ms) | 0.26 (46 / 174 ms) |
-| `jt9/t1` | 10 | 0.19 (15.1 / 77.9 ms) | 0.19 (17.9 / 96.2 ms) |
+| `jt9/t1` | 10 | 0.25 (18.8 / 74.0 ms) | 0.38 (33.9 / 89.9 ms) |
 | `jtty/t1` | 20 | 0.11 (14 / 127 ms) | 0.14 (19 / 132 ms) |
 | `wspr/t1` | 10 | 0.24 (19 / 79 ms) | 1.22 (208 / 170 ms) |
 | `fst4w/t1` | 8 | 0.28 (29 / 103 ms) | 0.30 (53 / 176 ms) |

@@ -4,29 +4,29 @@
     "note": "Provenance for the 50%-recall crossing SNRs below. Written and read by scripts/sweep-regression-check.py; scripts/release-status.sh uses each protocol's own date to decide what a release actually needs re-swept. Entries stamped c757d32 were seeded before this block existed and carry no trial count \u2014 the CSVs were not kept. Every later entry is written by --update-baseline from the run itself. Each crossing is one corpus at MFSK_SIM_SEED=1 (the generators are deterministic since 2026-09-23 -- scripts/sim_sgran_stub.c), and that is deliberate: against a fixed corpus a code change shows up exactly, which is what this file is for. It is NOT an accurate absolute threshold -- one draw is worth up to ~1.1 dB on a fading channel (FT8 ccir_poor ranged -18.90..-20.00 over eight seeds). Quote docs/notes/BENCHMARKS.md for absolute figures, not this file; it carries multi-seed means and the paired comparison against real jt9 on the same corpus.",
     "protocols": {
       "fst4": {
-        "date": "2026-10-31",
-        "commit": "18b37c06",
+        "date": "2026-11-14",
+        "commit": "68c9a1d8-dirty",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 3360,
         "groups": 20
       },
       "fst4w": {
-        "date": "2026-10-11",
-        "commit": "ec26204b-dirty",
+        "date": "2026-11-14",
+        "commit": "68c9a1d8-dirty",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 1760,
         "groups": 8
       },
       "ft4": {
-        "date": "2026-10-31",
-        "commit": "18b37c06",
+        "date": "2026-11-14",
+        "commit": "68c9a1d8-dirty",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 1040,
         "groups": 4
       },
       "ft8": {
-        "date": "2026-10-31",
-        "commit": "18b37c06",
+        "date": "2026-11-14",
+        "commit": "68c9a1d8-dirty",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 1040,
         "groups": 4
@@ -53,29 +53,29 @@
         "groups": 8
       },
       "jt65": {
-        "date": "2026-10-31",
-        "commit": "18b37c06",
+        "date": "2026-11-14",
+        "commit": "68c9a1d8-dirty",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 300,
         "groups": 1
       },
       "jt65_chase": {
-        "date": "2026-10-31",
-        "commit": "18b37c06",
+        "date": "2026-11-14",
+        "commit": "68c9a1d8-dirty",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 300,
         "groups": 1
       },
       "jt9": {
-        "date": "2026-10-31",
-        "commit": "18b37c06",
+        "date": "2026-11-14",
+        "commit": "68c9a1d8-dirty",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 300,
         "groups": 1
       },
       "jtty": {
-        "date": "2026-10-31",
-        "commit": "18b37c06",
+        "date": "2026-11-14",
+        "commit": "68c9a1d8-dirty",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 360,
         "groups": 2
@@ -88,15 +88,15 @@
         "groups": 2
       },
       "q65": {
-        "date": "2026-10-31",
-        "commit": "18b37c06",
+        "date": "2026-11-14",
+        "commit": "68c9a1d8-dirty",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 2640,
         "groups": 20
       },
       "wspr": {
-        "date": "2026-10-31",
-        "commit": "18b37c06",
+        "date": "2026-11-14",
+        "commit": "68c9a1d8-dirty",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 260,
         "groups": 1
@@ -137,7 +137,7 @@
       "ft4/ccir_poor": {"-23": [0, 20], "-22": [0, 20], "-21": [0, 20], "-20": [0, 20], "-19": [0, 20], "-18": [0, 20], "-17": [0, 20], "-16": [0, 20], "-15": [0, 20], "-14": [0, 20], "-13": [0, 20], "-10": [0, 20], "-5": [0, 20]},
       "ft8/awgn": {"-26": [0, 20], "-25": [0, 20], "-24": [0, 20], "-23": [0, 20], "-22": [0, 20], "-21": [0, 20], "-20": [0, 20], "-19": [0, 20], "-18": [0, 20], "-17": [0, 20], "-15": [0, 20], "-10": [0, 20], "-5": [0, 20]},
       "ft8/ccir_good": {"-26": [0, 20], "-25": [0, 20], "-24": [0, 20], "-23": [0, 20], "-22": [0, 20], "-21": [0, 20], "-20": [0, 20], "-19": [0, 20], "-18": [0, 20], "-17": [0, 20], "-15": [0, 20], "-10": [0, 20], "-5": [0, 20]},
-      "ft8/ccir_moderate": {"-26": [0, 20], "-25": [0, 20], "-24": [0, 20], "-23": [0, 20], "-22": [0, 20], "-21": [0, 20], "-20": [0, 20], "-19": [0, 20], "-18": [0, 20], "-17": [0, 20], "-15": [0, 20], "-10": [0, 20], "-5": [0, 20]},
+      "ft8/ccir_moderate": {"-26": [0, 20], "-25": [0, 20], "-24": [0, 20], "-23": [0, 20], "-22": [0, 20], "-21": [1, 20], "-20": [0, 20], "-19": [0, 20], "-18": [0, 20], "-17": [0, 20], "-15": [0, 20], "-10": [0, 20], "-5": [0, 20]},
       "ft8/ccir_poor": {"-26": [0, 20], "-25": [0, 20], "-24": [0, 20], "-23": [0, 20], "-22": [0, 20], "-21": [0, 20], "-20": [0, 20], "-19": [0, 20], "-18": [0, 20], "-17": [0, 20], "-15": [0, 20], "-10": [0, 20], "-5": [0, 20]},
       "ft8_itu/itu_hd": {"-26": [0, 20], "-24": [0, 20], "-23": [0, 20], "-22": [0, 20], "-21": [0, 20], "-20": [0, 20], "-19": [0, 20], "-18": [0, 20], "-16": [0, 20], "-14": [0, 20], "-12": [0, 20], "-10": [0, 20], "-8": [0, 20], "-5": [0, 20], "0": [0, 20], "5": [0, 20], "10": [0, 20]},
       "ft8_itu/itu_hm": {"-26": [0, 20], "-24": [0, 20], "-23": [0, 20], "-22": [0, 20], "-21": [0, 20], "-20": [0, 20], "-19": [0, 20], "-18": [0, 20], "-16": [0, 20], "-14": [0, 20], "-12": [0, 20], "-10": [0, 20], "-8": [0, 20], "-5": [0, 20], "0": [0, 20], "5": [0, 20], "10": [0, 20]},
@@ -255,10 +255,10 @@
   "ft4/ccir_good": -18.285714285714285,
   "ft4/ccir_moderate": -17.0,
   "ft4/ccir_poor": -16.8,
-  "ft8/awgn": -21.9,
-  "ft8/ccir_good": -21.615384615384617,
+  "ft8/awgn": -21.88888888888889,
+  "ft8/ccir_good": -22.0,
   "ft8/ccir_moderate": -20.0,
-  "ft8/ccir_poor": -19.583333333333332,
+  "ft8/ccir_poor": -19.9,
   "ft8_itu/itu_hq": -19.0,
   "ft8_itu/itu_lm": -18.583333333333332,
   "ft8_itu/itu_lq": -19.0,
@@ -275,7 +275,7 @@
   "ft8_itu_ap/itu_mq": -21.125,
   "jt65/awgn": -22.5,
   "jt65_chase/awgn": -23.5,
-  "jt9/awgn": -26.636363636363637,
+  "jt9/awgn": -26.583333333333332,
   "jtty/awgn": -16.2,
   "jtty/mid_moderate": -15.25,
   "msk144/long": -5.166666666666667,

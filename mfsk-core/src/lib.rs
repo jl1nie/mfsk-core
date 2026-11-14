@@ -274,7 +274,7 @@
 //! ```toml
 //! # Cargo.toml
 //! [dependencies]
-//! mfsk-core = { version = "0.15", features = ["ft8", "ft4"] }
+//! mfsk-core = { version = "0.16", features = ["ft8", "ft4"] }
 //! ```
 //!
 //! Round-trip a synthesised FT8 frame through the decoder:
@@ -285,13 +285,13 @@
 //! use mfsk_core::prelude::*;
 //!
 //! // 1. Encode a message and synthesise 12 kHz PCM. The synth produces
-//! //    just the transmitted frame (~12.64 s); pad to the full 15 s slot
-//! //    with the signal starting at 0.5 s.
+//! //    just the transmitted frame (~12.64 s); pad to the full 15 s slot,
+//! //    placed where `tx_buffer_start` says (0.5 s for FT8).
 //! let tx = encode(Mode::Ft8, "CQ JA1ABC PM95").expect("encode");
 //! let frame = tx.synthesize_i16(&TxAudio::new(12_000, /* freq */ 1500.0), /* amp */ 20_000);
 //!
 //! let mut audio = vec![0i16; 180_000]; // 15 s @ 12 kHz
-//! let start = (0.5 * 12_000.0) as usize;
+//! let start = tx.tx_buffer_start(12_000); // where this mode's buffer goes: 6000 for FT8
 //! for (i, &s) in frame.iter().enumerate() {
 //!     if start + i < audio.len() { audio[start + i] = s; }
 //! }
@@ -318,7 +318,7 @@
 //! ```toml
 //! # Cargo.toml — TX-only, no_std + alloc, no FFT backend needed
 //! [dependencies]
-//! mfsk-core = { version = "0.15", default-features = false, features = ["alloc", "ft8"] }
+//! mfsk-core = { version = "0.16", default-features = false, features = ["alloc", "ft8"] }
 //! ```
 //!
 //! Encoding (`message_to_tones` / `synthesize_i16`) never touches `std` — no

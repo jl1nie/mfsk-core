@@ -59,7 +59,7 @@ type である。配線済みの全プロトコルが同じ受信フロー
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.15", features = ["ft8", "ft4", "wspr"] }
+mfsk-core = { version = "0.16", features = ["ft8", "ft4", "wspr"] }
 ```
 
 必要なプロトコル feature だけを入れる。以下の例は説明のために複数を
@@ -77,7 +77,7 @@ let tx = encode(Mode::Ft8, "CQ JA1ABC PM95").unwrap();
 let frame = tx.synthesize_i16(&TxAudio::new(12_000, /* freq */ 1500.0), /* amp */ 20_000);
 
 let mut audio = vec![0i16; 180_000]; // 15 s @ 12 kHz
-let start = (0.5 * 12_000.0) as usize;
+let start = tx.tx_buffer_start(12_000); // このモードのバッファの置き場所。FT8 は 6000
 for (i, &s) in frame.iter().enumerate() {
     if start + i < audio.len() { audio[start + i] = s; }
 }
@@ -424,7 +424,7 @@ API は無い。一発の呼び出しにしかできないことが無いから�
 | `unpack77`: テレメトリ（type 0.5） | 先頭のゼロを落として表示 | 16 進 18 桁すべて（`3z6.6`、`packjt77.f90:1640`） | — |
 | `unpack77`: 28 ビットのフィールドが 532444 以上（範囲外の `CQ` トークン） | `<?>` | `<...>`（hash22、`packjt77.f90:283`） | — |
 | JT9 / JT65: 自由文と複合コール | `Jt72Message::Unsupported`: 行は捨てられた（JT9）か `<unsupported …>` と表示された（JT65） | `jt9` と同じ形で表示（`Jt72Message::Compound`、`FreeText`、`packjt.f90:537-741`）。フィルタは本家と同じ: JT9 は `000AAA`（`jt9fano.f90:87-88`）、JT65 は `000AAA` と `0L6MWK` のバースト（`decode65b.f90:27-28`） | rc1 自身の `packmsg` / `unpackmsg`、7 651 行。JT65（4/5）と JT9（7/7）のゴールデンは同一で extra 0: 参照結果にそのようなメッセージは無い |
-| WSPR の文面 | Type 3 のコールはハッシュのまま `<#hhhhh>` と表示。`unpackcall` / `unpackpfx` は近似で、一部のコールが捨てられた | `wsprd` が表示するとおり（`wsprd_utils.c:324-405`、`unpk_`）: 聞いていない Type 3 のコールは `<...>`、デコーダが聞いていれば `<CALL>`（`WsprResult::hashed_call`）。`PFX/CALL` は `wsprd` の書き方。`unpackcall` は厳密で、捨てられていた一部のコールがデコードされる | rc1 自身の `unpk_`、26 046 行。WSPR のゴールデンは 9/9、extra 0、文面と freq / dt / snr は同一。差異は 1 つ: `ntype == 63` は `None`（`unpk_` は空のメッセージを表示する） |
+| WSPR の文面 | Type 3 のコールはハッシュのまま `<#hhhhh>` と表示。`unpackcall` / `unpackpfx` は近似で、一部のコールが捨てられた | `wsprd` が表示するとおり（`wsprd_utils.c:324-405`、`unpk_`）: 聞いていない Type 3 のコールは `<...>`、デコーダが聞いていれば `<CALL>`（`WsprResult::hashed_call`）。`PFX/CALL` は `wsprd` の書き方。`unpackcall` は厳密で、捨てられていた一部のコールがデコードされる | rc1 自身の `unpk_`、26 046 行。WSPR のゴールデンは 9/9、extra 0、文面と freq / dt / snr は同一。差異は 1 つ: `ntype == 63` は `None`（`unpk_` は空のメッセージを表示する）。0.16 からフィクスチャは beta6 の `unpk_` で、こちらも拒否する（#727） |
 | FT8 のシンボルのスケーリングと `nsync` 判定 | `* (1/1000)`。`nsync` は粗いスペクトログラムで数え直していた | `/ 1e3` と精製後のスペクトル（`ft8b.f90` と同じ） | 動いた群は無い。判定が変わったのは tier-A/B 全体で 1 候補（[#423](https://github.com/jl1nie/mfsk-core/issues/423)） |
 
 **コード。**
@@ -829,7 +829,7 @@ extra で設定したものは除く（[§2.5](#25-extras-と-decoder-の外に�
 | FT4 | sync 1.18、候補 200、1 パス、OSD なし、AP なし | 3 パス、OSD なし | 3 パス、OSD あり | `ft4_decode.f90:31,192-203,323-324` |
 | FST4 | minsync 1.20（FST4-15 は 1.15）、候補 200、OSD あり、`i0 ± 1` タイミング再試行なし、AP なし | + 再試行（`jittermax`） | 同じ | `fst4_decode.f90:53,234-248,308-309,421-423` |
 | WSPR | `wsprd -qB`: 2 パス、ジッタなし | `-C 500 -o 4`: 3 パス、OSD あり | `+ -d`: 候補が増える | `wsprd.c:819-900`、GUI の `mainwindow.cpp:2824-2826` |
-| JT9 | Fano limit 5000 | 10000 | 30000 | `jt9_decode.f90:83-100` |
+| JT9 | Fano limit 5000、`ccflim` 3.0 | 10000、2.7 | 30000、2.5（Rx 窓のパスは常にこれ） | `jt9_decode.f90:205-223` |
 | JT65 | 2 パス、`nvec` 100 | 2 パス、1000 | 4 パス、1000 | `jt65_decode.f90:110-119` |
 | Q65 | `maxiters` 40、`(idf, idt, maxdist)` (1, 1, 4) | 60、(3, 3, 5) | 100、(5, 5, 5) | `q65_decode.f90:183-188`、`q65_loops.f90:27-40` |
 
@@ -1099,7 +1099,7 @@ let msg77 = pack77("CQ", "JA1ABC", "PM95").unwrap();
 let tones = message_to_tones::<Ft8>(&msg77);
 let frame = synthesize_i16::<Ft8>(&tones, 12_000, /* freq */ 1000.0, /* amp */ 20_000);
 let mut audio = vec![0i16; 180_000]; // 15 s @ 12 kHz
-let start = (0.5 * 12_000.0) as usize;
+let start = mfsk_core::engine::tx::tx_buffer_start::<Ft8>(12_000); // 6000
 audio[start..start + frame.len()].copy_from_slice(&frame);
 
 let mut decoder = Decoder::<Ft8>::new(DecodeParams::for_band((200.0, 3_000.0)).rx_freq(1000.0));
@@ -1319,7 +1319,7 @@ assert!(decoder.params().averaging);
 
 **`dt_sec`、`SearchParams`、`SyncCandidate`。** WSPR・JT9・JT65・Q65 では、
 結果の `dt_sec` は**公称開始位置** — モードの `tx_start_offset_s`
-（WSPR は固定の 1.0 s `TX_START_OFFSET_S`） — から測り、符号付きなので、
+（Q65-15/30 以外の 4 モードはどれも、WSJT-X が音声を始める 1.0 s） — から測り、符号付きなので、
 早く始まったフレームは負になる（#397。以前は Q65 と JT65 でバッファ先頭から
 測っており、0.5 s 早いフレームが −0.013 s と +0.442 s になっていた）。
 `Q65Result` / `Jt65Result` / `Jt9Result` の `to_decoded` はこのフィールドを読む。
@@ -1333,6 +1333,7 @@ freq_hz, score }`。`freq_hz` は tone 0 で、`.dt_sec(nominal, rate)` が
 変換する。`SearchParams::default()` は無い: 既定値はモード固有のデータなので、
 各モードが `search::default_search_params()` を持つ
 （Q65: 200-3000 Hz、±1.0 s、8 候補、threshold 0.1）— `SearchTuning` が上書きするのはこれである。
+JT9 はここから帯域だけを取る。JT9 のスキャンは `jt9` の `sync9` 段で、独自の時間窓やスコア閾値を持たない（#726）。
 FT8・FT4・FST4 は、
 `start_sample` の代わりに `dt_sec` を持つ `engine::sync::SyncCandidate` を
 意図的にそのまま使う。
@@ -2025,7 +2026,7 @@ Q65-120D と -300A について同じことを確認します。C ABI は
 | **FT4** | `Fast` は単一パス・OSD なし・AP なし、`Normal` は `SicRounds(3)`、`Deep` は OSD 付きの `SicRounds(3)` | `Tuning::strategy`（`SinglePass`、`SicRounds(n)`）、フルスロット・コヒーレント sync (`sync2d`) |
 | **FST4** | 全 depth で単一パス BP + OSD、`Normal` から `i0 ± 1` のタイミング再試行 | フルスロット2段コヒーレント sync 探索、`noise_blanker`（固定 % またはスイープ） |
 | **WSPR** | 四半シンボル・スペクトログラム走査の上で、wsprd の `-qB` / `-C 500 -o 4` / `+ -d` の各パス | `max_cycles_per_bit` |
-| **JT9** | 単一の専用パス、depth ごとの Fano limit。`rx_freq_hz` では Rx 周波数パス | — |
+| **JT9** | `jt9` の候補段: `sync9` の 0.732 Hz ビンを低い側から順に試す。`ccflim` と Fano limit は depth ごと。`rx_freq_hz` では Rx 周波数パスを先に | — |
 | **JT65** | 減算付きの 2 / 2 / 4 パス。depth の `nvec` 回の試行を持つ確率的 Chase デコーダ | `chase`（RS 消失復号は `jt65::SniperRequest::erasures`） |
 | **Q65** | `(Δf,Δt,b90)` グリッド + Lorentzian フェージング BP（スキャン）、グリッドの労力は depth で決まる | AP ヒント、明示的な高速フェージング、AP リスト、平均、**q3** リスト復号、Max Drift、Pileup、EME 遅延（[§2.5](#25-extras-と-decoder-の外にあるプロトコル)） |
 | **MSK144** | T/R 周期全体のバースト走査 | — |
@@ -2540,8 +2541,8 @@ FST4-60A は共有コードに一切触れずに追加できた。
 |---|---|
 | `resample` | 12 kHz への線形リサンプラ |
 | `downsample` | FFT ベース複素デシメーション (`DownsampleCfg`) |
-| `gfsk` | GFSK トーン→PCM 波形合成 (`GfskCfg`, `GfskStream`)。3 シンボルのガウスパルスは #482 以降 **1 始まり**で、`gen_ft8wave.f90` / `gen_ft4wave` / `gen_fst4wave` が作るとおり (`tt=(i-1.5*nsps)/nsps`、`i=1..3*nsps`)。以前は `i=0` から走って 1 サンプル早く、FT8 / FT4 / FST4 のあらゆる波形がずれていた（位相誤差は最大 2π·Δf/fs、FT8 で 0.023 rad）。`ft8sim`（v3.2.0-rc1、SNR 99）に対する正規化サンプル誤差の最悪値: 1.3e-2 → 1.2e-4 (`tests/gfsk_vs_wsjtx.rs`) |
-| `cpfsk` | 素の連続位相 FSK 合成器 — WSJT-X の正の `toneSpacing` の送信ループ、WSPR / JT9 / JT65 / Q65 (`synth_f32`, `synth_f32_into`)。4 つの `tx.rs` がそれぞれ持っていたものを 1 つにした |
+| `gfsk` | GFSK トーン→PCM 波形合成 (`GfskCfg`, `GfskStream`)。3 シンボルのガウスパルスは #482 以降 **1 始まり**で、`gen_ft8wave.f90` / `gen_ft4wave` / `gen_fst4wave` が作るとおり (`tt=(i-1.5*nsps)/nsps`、`i=1..3*nsps`)。以前は `i=0` から走って 1 サンプル早く、FT8 / FT4 / FST4 のあらゆる波形がずれていた（位相誤差は最大 2π·Δf/fs、FT8 で 0.023 rad）。`ft8sim`（v3.2.0-rc1、SNR 99）に対する正規化サンプル誤差の最悪値: 1.3e-2 → 1.2e-4 (`tests/gfsk_vs_wsjtx.rs`)。0.16 からはモードごとのフレーミング（`gen_ft4wave` のランプシンボル、`gen_fst4wave` の半シンボルのランプ）を持ち、パルスは beta6 の多項式、位相は `u64` の積算器。beta6 の生成器に対して FT8 / FT4 / FST4-15 は -95 / -95 / -88 dB（`tests/gen_wave_vs_wsjtx.rs`） |
+| `cpfsk` | 素の連続位相 FSK 合成器 — WSJT-X の正の `toneSpacing` の送信ループ、WSPR / JT9 / JT65 / Q65 (`synth_f32`, `synth_f32_into`)。4 つの `tx.rs` がそれぞれ持っていたものを 1 つにした。0.16 からは `Modulator::modulate` のループ（位相を先に進めてから `sin`、`u64` の積算器） |
 | `envelope` | WSJT-X の変調器がその 4 モードの送信に掛ける raised-cosine ランプ (`ramp_samples`, `apply_ramp`; #259) |
 | `symbol_fft` | `SymbolFft`: フレームの各シンボルで再利用する 1 本の `nsps` 点 FFT。`engine::fft` 経由で計画する — JT9、JT65、Q65 の復調器 (#390) |
 | `blanker` | `blanker(audio, nz, ndropmax, npct)`: `blanker.f90` のインパルスノイズブランカで、FST4 の `.noise_blanker()` の背後にある |

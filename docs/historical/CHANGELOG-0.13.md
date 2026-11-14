@@ -3,7 +3,7 @@
 0.13.0 and 0.13.1, split out from the top-level `CHANGELOG.md` when 0.15.0 was prepared. `CHANGELOG.md`
 keeps the unreleased section and the two latest minor series; the release PR of each new minor
 moves the oldest series here (`CLAUDE.md`, "Releases"). Full detail preserved verbatim, just
-relocated. See [`../../CHANGELOG.md`](../../CHANGELOG.md) for 0.14.0 onward,
+relocated. See [`CHANGELOG-0.14.md`](CHANGELOG-0.14.md) for 0.14.0 and [`../../CHANGELOG.md`](../../CHANGELOG.md) for 0.15.0 onward,
 [`CHANGELOG-0.12.md`](CHANGELOG-0.12.md) for what came before.
 
 ## 0.13.1 — the LPF subtract no longer panics on a slot shorter than the frame (#567, #574), 48 kHz input is low-passed before 12 kHz (#576), hashed calls keep /P and /R (#570), the licence is GPL-3.0-only (#569), the skimmer installers say how to install them

@@ -29,31 +29,14 @@ use super::softsym::{AudioFft, FSAMPLE_DOWN, afc9, llrs_from_c5, peakdt9, twkfre
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum Jt9Depth {
-    /// `limit=5000` — WSJT-X's own automatic per-slot scan default
-    /// (`jt9 -d1`, `jt9_decode.f90:84`). **The crate default** as of
-    /// task #24's fix — see that variant's own doc comment for why
-    /// `Fast` and `Normal` turned out to perform identically once the
-    /// real bug was found and fixed.
+    /// `jt9 -d 1`: Fano `limit` 5000, `ccflim` 3.0. The crate default (`DecodeRequest`);
+    /// `Decoder` takes its depth from `DecodeParams`, whose default is `Deep`. On
+    /// `130418_1742.wav` it decodes what `jt9 -d 1` does, one message fewer than `Deep`; on the
+    /// AWGN sweep -26.30 dB against `Deep`'s -26.58 (#742). Before #742 the scan had no
+    /// `ccflim` and `Fast` scored like `Normal` (`docs/notes/BENCHMARKS.md`, JT9).
     #[default]
     Fast,
-    /// `limit=10000` — this crate's original hardcoded default before
-    /// depth became configurable (2026-08-08). Initially *kept* as the
-    /// crate default over `Fast` after finding `Normal` closer (but
-    /// not equal) to real `jt9 -9 -d1`'s sensitivity — but that
-    /// comparison's real cause turned out to be unrelated to cycle
-    /// budget at all (task #24): `jt9::search::coarse_search`'s
-    /// frequency grid (one bin = one tone spacing, ≈1.736 Hz) had no
-    /// sub-bin refinement, so candidates routinely landed 0.3-1 Hz
-    /// off the true frequency — inside Fano's sharp non-convergence
-    /// zone regardless of cycle budget. Fixed via
-    /// `search::refine_freq_hz` (3-point parabolic interpolation,
-    /// same technique as JT65's own scalloping-loss fix, issue #169).
-    /// Post-fix, `Fast` and `Normal` score identically on the AWGN
-    /// sweep (both now *exceed* real `jt9 -d1`'s own −26/−27 dB
-    /// numbers) — so `Normal`'s extra cycle budget buys nothing
-    /// measurable anymore; `Fast` moved to being the default since
-    /// it's strictly cheaper for the same result. See
-    /// `docs/notes/BENCHMARKS.md` for the before/after numbers.
+    /// `jt9 -d 2`: `limit` 10000, `ccflim` 2.7.
     Normal,
     /// `limit=30000` — WSJT-X `-d3`.
     Deep,

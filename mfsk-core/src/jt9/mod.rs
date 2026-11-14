@@ -15,8 +15,8 @@
 //! `SyncMode` variant is required.
 //!
 //! References:
-//! - WSJT-X `lib/jt9_decode.f90`, `lib/jt9sync.f90`, `lib/conv232.f90`,
-//!   `lib/fano232.f90`, `lib/interleave9.f90`
+//! - WSJT-X `lib/jt9_decode.f90` (`decode_pcm`, `prepare_spectra`, the bin loop), `lib/sync9.f90`,
+//!   `lib/softsym.f90`, `lib/jt9sync.f90`, `lib/conv232.f90`, `lib/fano232.f90`, `lib/interleave9.f90`
 //!
 //! ## Quick example
 //!

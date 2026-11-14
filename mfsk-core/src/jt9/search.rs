@@ -1,16 +1,12 @@
-//! Coarse (frequency × time) search for JT9.
+//! JT9's search vocabulary ([`SearchParams`], [`default_search_params`]) and a standalone coarse
+//! (frequency × time) search, [`coarse_search`].
 //!
-//! JT9's 16 sync symbols all sit at a single tone (tone 0, one spacing
-//! below the 8 data tones). We build a symbol-length-FFT spectrogram
-//! at quarter-symbol steps, and for each candidate (`start_row`,
-//! `base_bin`) sum the FFT-bin power at `base_bin` for every
-//! `JT9_SYNC_POSITIONS`-indexed row. The candidate with the most
-//! concentrated sync-tone energy wins.
-//!
-//! This lets us decode WAV files where the transmitter's start time
-//! and carrier frequency aren't known — the common real-world case.
-//! The aligned [`super::SniperRequest`] remains available for callers
-//! that already know both.
+//! **The wide-band decoder does not use [`coarse_search`]** since #726: it runs `jt9`'s own
+//! candidate stage (`jt9::sync9`, `sync9.f90` over `prepare_spectra`'s half-symbol spectra, and
+//! `jt9_decode.f90`'s bin loop), and takes only the band from [`SearchParams`]. [`coarse_search`]
+//! stays a public building block: a symbol-length-FFT spectrogram at quarter-symbol steps, scored
+//! at every `(start_row, base_bin)` by the power at `base_bin` over the 16 sync symbols (tone 0).
+//! The aligned [`super::SniperRequest`] decodes at a known time and frequency.
 
 use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]

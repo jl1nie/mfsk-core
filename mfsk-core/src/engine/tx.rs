@@ -5,8 +5,10 @@
 //! agnostic given [`Protocol`]: iterate `SYNC_BLOCKS` and fill each data
 //! chunk between consecutive blocks with `chunk_len × BITS_PER_SYMBOL` bits.
 //!
-//! GFSK waveform synthesis lives in [`super::dsp::gfsk`] — the `tones_to_*`
-//! helpers there consume the output of this module.
+//! It also turns those tones into audio for any [`FskWaveform`]: [`synthesize`] and its `_into` /
+//! `_i16` forms dispatch on [`Waveform`] to the GFSK framings in [`super::dsp::gfsk`] (FT8's, FT4's,
+//! FST4's) or to the CPFSK modulator in [`super::dsp::cpfsk`]. [`synth_len`] sizes the buffer, and
+//! [`tx_buffer_start`] says where in the slot it goes.
 
 use alloc::vec;
 use alloc::vec::Vec;

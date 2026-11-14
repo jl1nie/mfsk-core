@@ -281,7 +281,7 @@ missing option.
 | field | meaning | modes |
 |---|---|---|
 | `sync_min` | sync threshold over the depth's; NaN is the depth's. **Not comparable across modes** | FT8, FT4, FST4 |
-| `max_cand` | candidate budget over the depth's; 0 is the depth's | all |
+| `max_cand` | candidate budget over the depth's; 0 is the depth's | all but JT9 (refused: its scan is `jt9`'s, whose bins pass `ccflim` by depth) |
 | `osd` | -1 the depth's, 0 off, 1 on | FT8, FT4, FST4 |
 | `strictness` | accept/reject profile: -1 default, 0 strict, 1 normal, 2 deep | FT8, FT4, FST4 |
 | `strategy`, `sic_rounds` | `MFSK_STRATEGY_DEFAULT` 0, `_SINGLE_PASS` 1 (one pass, no subtraction), `_SIC_ROUNDS` 2 (`sic_rounds` rounds), `_SIC_EARLY` 3 (checkpointed passes). FT8 and FT4 subtract by default, as WSJT-X does | FT8: 0–3; FT4: 0–2; FST4: 0–1 (upstream's `fst4_decode` has no subtraction) |
@@ -292,7 +292,7 @@ missing option.
 | `has_ap_hint`, `ap_call1`, `ap_call2`, `ap_grid`, `ap_report` | a free-form a-priori hint beside the QSO-context AP (it wins when given): the message's fields in order, `ap_call1` being `"CQ"` for a CQ, `ap_report` `"RRR"`, `"RR73"`, `"73"` or a report | FT8, FT4, FST4, Q65 |
 | `nb_percent` | impulse-noise blanker (WSJT-X's **NB**): blank the loudest `n` percent of samples, 0..=25, before the slot transform; 0 blanks nothing | FST4 (`MFSK_CAP_NOISE_BLANKER`) |
 | `nb_sweep_step`, `nb_ftol_hz` | non-zero (5, 2 or 1) decodes once per blanking level `0, step, 2*step, .. 20` percent; `nb_ftol_hz` (positive, required with it) is the blanked passes' half-width around `rx_freq_hz`, so **without an Rx frequency only the 0 % pass runs**. Costs up to 21 decodes | FST4 |
-| `t_early_s`, `t_late_s`, `score_threshold` | how far before/after the nominal start a frame may begin, seconds, and the coarse-sync acceptance 0..1; NaN is the mode's own | WSPR, JT9, JT65, Q65 |
+| `t_early_s`, `t_late_s`, `score_threshold` | how far before/after the nominal start a frame may begin, seconds, and the coarse-sync acceptance 0..1; NaN is the mode's own | WSPR, JT65, Q65 (JT9 refuses them: `sync9` has a fixed lag range and its own gates) |
 | `max_cycles_per_bit` | Fano cycles per bit (`wsprd -C`); 0 is the depth's | WSPR |
 | `chase_trials` | Chase trials (`nvec`); 0 is the depth's | JT65 |
 | `pileup` | **Q65 Pileup**: an AP hint naming both callsigns and nothing after them leaves the spare 78th bit free, so a reply carrying the "copied last Tx" flag still matches. Needs an AP hint | Q65 |
@@ -1076,7 +1076,7 @@ the Q65 lists, the runtime).
 | `mfsk_session_set_on_decode` / `_set_budget` / `_last_budget` / `_add_callsign` / `_copy_info` / `_last_error` | same names with `mfsk_decoder_` |
 | `mfsk_session_keep_known` / `_known_count` / `_keep_fft_cache` | gone; a decoder carries the state upstream carries. FT8's a7 (`MfskExtras::a7`, with a `period`) replaces carrying decodes forward |
 | `mfsk_stream_set_epoch(s, double utc_s)`, `_buffered`, `_take_slot_i16(…, double *utc)` | `mfsk_stream_set_time(s, utc_ns, at_sample, &change)` with `mfsk_stream_position`, `_dropped`; `_take_slot_i16(…, int64_t *period, int64_t *utc_ns)`. The stream follows the readings (400 ppm) instead of taking an epoch |
-| `mfsk_wspr_decode`, `mfsk_jt9_decode_at`, `mfsk_jt65_decode_at` | `mfsk_decoder_open(MFSK_MODE_WSPR / _JT9 / _JT65, …)` and `mfsk_decoder_decode_*`; the band is `band_lo_hz` / `band_hi_hz`, the frame window `t_early_s` / `t_late_s` |
+| `mfsk_wspr_decode`, `mfsk_jt9_decode_at`, `mfsk_jt65_decode_at` | `mfsk_decoder_open(MFSK_MODE_WSPR / _JT9 / _JT65, …)` and `mfsk_decoder_decode_*`; the band is `band_lo_hz` / `band_hi_hz`, the frame window (WSPR, JT65) `t_early_s` / `t_late_s` |
 | `mfsk_q65_decode`, `_with_ap`, `_fading`, `_with_ap_list`, `_decode_ex`, `mfsk_q65_params_init`, `MfskQ65Params` | one Q65 decoder: `pileup`, `max_drift`, `fading_*`, the AP hint in `MfskExtras`; `eme_delay` and averaging in `MfskParams::flags`; the AP list from the QSO context; contest callers via `mfsk_decoder_set_q65_callers` |
 | `mfsk_callsign_hash_table_*`, the `MfskCallsignHashTable*` argument | gone; every decoder owns its table, `mfsk_decoder_add_callsign` seeds it |
 | `mfsk_mode_defaults`, `MfskDecodeDefaults` | gone; `mfsk_params_init` writes the defaults |
