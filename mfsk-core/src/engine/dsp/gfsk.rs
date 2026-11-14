@@ -36,10 +36,132 @@ pub struct GfskCfg {
 }
 
 /// Gaussian pulse matching WSJT-X `gfsk_pulse` (3-symbol wide).
+///
+/// For `bt` of 1 or 2 (every GFSK mode here) the pulse is built from the polynomial tail of the Gaussian
+/// that WSJT-X v3.3.0-beta6 uses in `lib/waveform_kernels.f90`: no `exp`, no division, one degree-7
+/// polynomial per tail. Other `bt` take the `erf` form, which is also the reference the polynomial is
+/// tested against.
 #[inline]
 pub(crate) fn gfsk_pulse(bt: f32, t: f32) -> f32 {
+    if bt == 2.0 || bt == 1.0 {
+        let a = t.abs();
+        // pulse = 1 - H(1/2 + |t|) - H(1/2 - |t|) for |t| <= 1/2, H(|t| - 1/2) - H(|t| + 1/2) beyond,
+        // with H(s) = erfc(c * bt * s) / 2 (the same pulse as the erf form below).
+        return if a <= 0.5 {
+            1.0 - gauss_tail(0.5 + a, bt) - gauss_tail(0.5 - a, bt)
+        } else {
+            gauss_tail(a - 0.5, bt) - gauss_tail(a + 0.5, bt)
+        };
+    }
+    gfsk_pulse_erf(bt, t)
+}
+
+/// The `erf` form of [`gfsk_pulse`], for any `bt`.
+fn gfsk_pulse_erf(bt: f32, t: f32) -> f32 {
     let c = PI * (2.0_f32 / 2.0_f32.ln()).sqrt();
     0.5 * (erf(c * bt * (t + 0.5)) - erf(c * bt * (t - 0.5)))
+}
+
+/// `H(s) = erfc(2 pi sqrt(2 / ln 2) * (bt / 2) * s) / 2` for `s >= 0`, from `waveform_kernels.f90`'s
+/// `gaussian_tail_coefficients`: degree-7 near-minimax fits over six equal regions of the `bt = 2`
+/// argument `[0, 0.4]`; beyond that the tail is below 8e-10 and is dropped. `bt = 1` is the same
+/// function at half the argument.
+#[inline]
+fn gauss_tail(s: f32, bt: f32) -> f32 {
+    let x = s * (bt * 0.5);
+    if x >= 0.4 {
+        return 0.0;
+    }
+    let scaled = x * 15.0;
+    let region = (scaled as usize).min(5);
+    let u = scaled - region as f32;
+    let c = &GAUSS_TAIL[region];
+    let p = c[0]
+        + u * (c[1] + u * (c[2] + u * (c[3] + u * (c[4] + u * (c[5] + u * (c[6] + u * c[7]))))));
+    p.max(0.0)
+}
+
+/// `waveform_kernels.f90` `gaussian_tail_coefficients(0:7,0:5)` (WSJT-X v3.3.0-beta6), region by region.
+// Verbatim from the Fortran (10 digits); the f32 rounding is the same.
+#[allow(clippy::excessive_precision)]
+const GAUSS_TAIL: [[f32; 8]; 6] = [
+    [
+        5.0000001060e-01,
+        -4.0143699492e-01,
+        2.7879711670e-05,
+        6.7525139834e-02,
+        8.4390282254e-04,
+        -1.2019631203e-02,
+        1.8832168991e-03,
+        3.2416026847e-04,
+    ],
+    [
+        1.5714766810e-01,
+        -2.4196063061e-01,
+        1.2248410863e-01,
+        -4.0768555284e-04,
+        -2.0931988665e-02,
+        4.9998295295e-03,
+        1.3055976697e-03,
+        -5.5327145377e-04,
+    ],
+    [
+        2.2083633794e-02,
+        -5.2982998986e-02,
+        5.3648991606e-02,
+        -2.7283679391e-02,
+        4.7874692750e-03,
+        2.1822789881e-03,
+        -1.4261730032e-03,
+        2.5957854055e-04,
+    ],
+    [
+        1.2691003031e-03,
+        -4.2149261689e-03,
+        6.4025699484e-03,
+        -5.7789798419e-03,
+        3.3382097089e-03,
+        -1.2173568110e-03,
+        2.5020123015e-04,
+        -2.0330375958e-05,
+    ],
+    [
+        2.8487585466e-05,
+        -1.2180120633e-04,
+        2.4641871082e-04,
+        -3.1031749180e-04,
+        2.6601979334e-04,
+        -1.5570536506e-04,
+        5.6917427841e-05,
+        -9.7759014033e-06,
+    ],
+    [
+        2.4364111365e-07,
+        -1.2782691538e-06,
+        3.2216653813e-06,
+        -5.1118894247e-06,
+        5.5147612333e-06,
+        -3.9805748439e-06,
+        1.7311866883e-06,
+        -3.3974367042e-07,
+    ],
+];
+
+/// The 3-symbol frequency-pulse table every GFSK form builds: `pulse[i]` at `t = (i + 1 - 1.5 nsps) / nsps`
+/// (`do i=1,3*nsps; tt=(i-1.5*nsps)/real(nsps)`, #482). The pulse is even, so the second half is the first
+/// one mirrored: half the evaluations.
+fn pulse_table(bt: f32, nsps: usize) -> Vec<f32> {
+    let n = 3 * nsps;
+    let mut table = vec![0.0f32; n];
+    for k in 1..=n {
+        let m = n - k;
+        table[k - 1] = if m >= 1 && m < k {
+            table[m - 1]
+        } else {
+            gfsk_pulse(bt, (k as f32 - 1.5 * nsps as f32) / nsps as f32)
+        };
+    }
+    table
 }
 
 /// Approximate erf(x) — Abramowitz & Stegun 7.1.26, accurate to ~1e-5.
@@ -142,13 +264,7 @@ impl GfskStream {
         let nsym = tones.len();
         assert!(nsym > 0, "GfskStream::new: empty tone sequence");
         let nsps = cfg.samples_per_symbol;
-        let pulse_len = 3 * nsps;
-        let pulse: Vec<f32> = (0..pulse_len)
-            .map(|i| {
-                let tt = ((i + 1) as f32 - 1.5 * nsps as f32) / nsps as f32;
-                gfsk_pulse(cfg.bt, tt)
-            })
-            .collect();
+        let pulse = pulse_table(cfg.bt, nsps);
         let dphi_carrier = 2.0 * PI * f0_hz / cfg.sample_rate;
         Self {
             nsps,
@@ -307,12 +423,7 @@ pub fn synth_f32_into(out: &mut [f32], tones: &[u8], f0_hz: f32, amplitude: f32,
     // `do i=1,3*nsps; tt=(i-1.5*nsps)/real(nsps)` (`gen_ft8wave.f90:22-24`,
     // and `gen_ft4wave`, `gen_fst4wave` alike): the Fortran index is
     // 1-based, so element `i` here is at `i + 1` (#482).
-    let pulse: Vec<f32> = (0..pulse_len)
-        .map(|i| {
-            let tt = ((i + 1) as f32 - 1.5 * nsps as f32) / nsps as f32;
-            gfsk_pulse(cfg.bt, tt)
-        })
-        .collect();
+    let pulse = pulse_table(cfg.bt, nsps);
 
     let total = (nsym + 2) * nsps;
     let mut dphi = vec![0.0f32; total];
@@ -342,7 +453,7 @@ pub fn synth_f32_into(out: &mut [f32], tones: &[u8], f0_hz: f32, amplitude: f32,
     // which an f32 sum cannot match and an LX7 cannot afford.
     let mut nco = Nco::new(f0_hz, cfg.sample_rate);
     for k in 0..nwave {
-        out[k] = amplitude * nco.phase().sin();
+        out[k] = amplitude * nco.sin();
         nco.step(dphi[nsps + k]);
     }
 
@@ -404,12 +515,7 @@ pub fn synth_f32_lead_tail_into(
 
     let pulse_len = 3 * nsps;
     // `do i=1,3*nsps; tt=(i-1.5*nsps)/real(nsps)` (`gen_ft4wave.f90`).
-    let pulse: Vec<f32> = (0..pulse_len)
-        .map(|i| {
-            let tt = ((i + 1) as f32 - 1.5 * nsps as f32) / nsps as f32;
-            gfsk_pulse(cfg.bt, tt)
-        })
-        .collect();
+    let pulse = pulse_table(cfg.bt, nsps);
 
     let mut dphi = vec![0.0f32; total];
     let dphi_peak = twopi * cfg.hmod / nsps as f32;
@@ -422,7 +528,7 @@ pub fn synth_f32_lead_tail_into(
     // Phase and carrier in an integer accumulator, as for `synth_f32_into`.
     let mut nco = Nco::new(f0_hz, cfg.sample_rate);
     for (o, &d) in out.iter_mut().zip(dphi.iter()) {
-        *o = amplitude * nco.phase().sin();
+        *o = amplitude * nco.sin();
         nco.step(d);
     }
 
@@ -466,13 +572,7 @@ pub fn synth_f32_fst4_into(
     );
     let twopi = 2.0 * PI;
 
-    let pulse_len = 3 * nsps;
-    let pulse: Vec<f32> = (0..pulse_len)
-        .map(|i| {
-            let tt = ((i + 1) as f32 - 1.5 * nsps as f32) / nsps as f32;
-            gfsk_pulse(cfg.bt, tt)
-        })
-        .collect();
+    let pulse = pulse_table(cfg.bt, nsps);
 
     let mut dphi = vec![0.0f32; total];
     let dphi_peak = twopi * cfg.hmod / nsps as f32;
@@ -493,7 +593,7 @@ pub fn synth_f32_fst4_into(
     // an f32 sum drifts by more than a degree.
     let mut nco = Nco::new(f0_hz, cfg.sample_rate);
     for (o, &d) in out.iter_mut().zip(dphi.iter()) {
-        *o = amplitude * nco.phase().sin();
+        *o = amplitude * nco.sin();
         nco.step(d);
     }
 
@@ -547,12 +647,7 @@ pub fn synth_complex_f32_into(
     // `do i=1,3*nsps; tt=(i-1.5*nsps)/real(nsps)` (`gen_ft8wave.f90:22-24`,
     // and `gen_ft4wave`, `gen_fst4wave` alike): the Fortran index is
     // 1-based, so element `i` here is at `i + 1` (#482).
-    let pulse: Vec<f32> = (0..pulse_len)
-        .map(|i| {
-            let tt = ((i + 1) as f32 - 1.5 * nsps as f32) / nsps as f32;
-            gfsk_pulse(cfg.bt, tt)
-        })
-        .collect();
+    let pulse = pulse_table(cfg.bt, nsps);
 
     let total = (nsym + 2) * nsps;
     let mut dphi = vec![0.0f32; total];
@@ -653,6 +748,33 @@ pub fn synth_i16(tones: &[u8], f0_hz: f32, amplitude_i16: i16, cfg: &GfskCfg) ->
 
 #[cfg(test)]
 mod tests {
+
+    /// The polynomial pulse is the `erf` pulse to the `erf` approximation's own accuracy, for both `bt` in
+    /// use, across the whole 3-symbol span and a little beyond, and exactly even.
+    #[test]
+    fn polynomial_pulse_matches_the_erf_pulse() {
+        for bt in [1.0f32, 2.0] {
+            let mut worst = 0f32;
+            for k in 0..=6000 {
+                let t = -1.6 + k as f32 * (3.2 / 6000.0);
+                worst = worst.max((gfsk_pulse(bt, t) - gfsk_pulse_erf(bt, t)).abs());
+                assert_eq!(gfsk_pulse(bt, t), gfsk_pulse(bt, -t), "bt {bt} t {t}");
+            }
+            assert!(worst < 3e-6, "bt {bt}: worst {worst:.2e}");
+        }
+    }
+
+    /// The mirrored table is the table.
+    #[test]
+    fn pulse_table_is_the_pulse() {
+        for (bt, nsps) in [(2.0f32, 1920usize), (1.0, 576), (2.0, 7)] {
+            let t = pulse_table(bt, nsps);
+            for (i, &v) in t.iter().enumerate() {
+                let tt = ((i + 1) as f32 - 1.5 * nsps as f32) / nsps as f32;
+                assert_eq!(v, gfsk_pulse(bt, tt), "bt {bt} nsps {nsps} i {i}");
+            }
+        }
+    }
     use super::*;
 
     fn ft8_cfg() -> GfskCfg {

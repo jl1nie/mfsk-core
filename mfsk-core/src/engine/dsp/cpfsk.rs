@@ -32,7 +32,7 @@ pub fn nsps(sample_rate: u32, symbol_dt: f32) -> usize {
 }
 
 /// Walk the accumulated phase of a continuous-phase FSK transmission,
-/// calling `f(sample_index, phase)` for every sample, with `phase` in `[0, 2π)`.
+/// calling `f(sample_index, &nco)` for every sample; `nco.phase()` is in `[0, 2π)`.
 ///
 /// Symbol `k` runs at `f0_hz + tones[k] · tone_spacing_hz` for `nsps` samples
 /// and the phase carries across symbol boundaries. As WSJT-X's `Modulator::modulate`
@@ -50,7 +50,7 @@ pub(crate) fn for_each_phase(
     f0_hz: f32,
     tone_spacing_hz: f32,
     sample_rate_hz: f32,
-    mut f: impl FnMut(usize, f32),
+    mut f: impl FnMut(usize, &Nco),
 ) {
     let mut nco = Nco::new(f0_hz, sample_rate_hz);
     let mut idx = 0usize;
@@ -61,7 +61,7 @@ pub(crate) fn for_each_phase(
         );
         for _ in 0..nsps {
             nco.step(0.0);
-            f(idx, nco.phase());
+            f(idx, &nco);
             idx += 1;
         }
     }
@@ -97,7 +97,7 @@ pub fn synth_f32_into(
         f0_hz,
         tone_spacing_hz,
         sample_rate as f32,
-        |idx, phase| out[idx] = amplitude * phase.sin(),
+        |idx, nco| out[idx] = amplitude * nco.sin(),
     );
 
     // Transmit-envelope ramp (issue #259). Without it the burst starts
