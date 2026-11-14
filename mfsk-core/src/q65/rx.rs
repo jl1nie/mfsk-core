@@ -123,7 +123,7 @@ fn extract_data_energies<P: ModulationParams>(
 /// to +1.80 s without, and `jt9` reaches +2.0 s. Kept, as upstream keeps it.
 /// With the clip, every group is still at or above `jt9 -d 1`.
 /// `docs/notes/Q65_BENCHMARK.md`, "The `s3lim` clip".
-fn condition_symbol_spectra(energies: &mut [f32], row_len: usize) {
+fn condition_symbol_spectra(energies: &mut [f32], row_len: usize, nsps: usize) {
     use super::search::percentile;
     const NH: usize = 25;
     const S3LIM: f32 = 20.0;
@@ -163,7 +163,17 @@ fn condition_symbol_spectra(energies: &mut [f32], row_len: usize) {
             *e /= b + 0.001;
         }
     }
-    let base = percentile(energies, 40);
+    // Divergence from upstream: `base` is floored at the dynamic range int16
+    // input can carry (#735). WSJT-X's s3 comes from int16 audio, whose
+    // quantisation noise (1/12 LSB^2 a sample, nsps/12 a bin) is at least
+    // (32767 nsps/2)^2 / (nsps/12) = 3 * 32767^2 * nsps below a full-scale
+    // tone's bin (128 dB at Q65-15). Float input has no such floor: on an
+    // aligned noiseless Q65-15A frame `pctile(s3, 40)` is the f32 rounding
+    // noise, 160 dB below the peak, and the clip at 20x that saturates the
+    // tones' sidelobes too, 30-67 of 192 bins a symbol tied at `s3lim`, and BP
+    // fails. The floor never engages on int16-derived input.
+    let peak = energies.iter().copied().fold(0.0_f32, f32::max);
+    let base = percentile(energies, 40).max(peak / (3.0 * 32767.0_f32 * 32767.0 * nsps as f32));
     // All-zero input (digital silence): `0 / 0` would put NaN into the metric.
     if base <= 0.0 {
         return;
@@ -1361,7 +1371,7 @@ fn decode_at_grid_for<P: ModulationParams>(
                             chirp,
                         )
                         .map(|mut e| {
-                            condition_symbol_spectra(&mut e, 64 * (2 + (1usize << submode)));
+                            condition_symbol_spectra(&mut e, 64 * (2 + (1usize << submode)), nsps);
                             e
                         })
                     });

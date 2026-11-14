@@ -243,16 +243,7 @@ fn q65_decodes_frame_starting_before_the_buffer() {
     let dt = REFERENCE_Q65_EARLY_SEC;
     let drop = (-(nominal + dt) * FS as f32).round() as usize;
     assert!(drop > 0, "test only meaningful when the frame is truncated");
-    let mut slot = place(&signal[drop..], 0.0, 15.0);
-    // A little deterministic noise (+-0.01 against a 0.3 signal). The slot is otherwise exact zeros around
-    // an exact tone burst, and the decoder's answer then depends on the burst's last bits (#735): with the
-    // transmitter's phase made exact (#726) this very cut fails with no noise, and decodes at 0.1x, 1x and
-    // 3x of this noise (measured in review). A real recording is never noiseless.
-    let mut x: u32 = 12_345;
-    for v in slot.iter_mut() {
-        x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        *v += ((x >> 8) as f32 / 16_777_216.0 - 0.5) * 0.02;
-    }
+    let slot = place(&signal[drop..], 0.0, 15.0);
 
     let decodes = DecodeRequest::<Q65a15>::new(
         &slot,
@@ -384,4 +375,49 @@ fn q65_120d_default_window_reaches_reference_late_edge() {
         "Q65-120D must decode at Δt = {dt:+.1} s under the *default* SearchParams — real \
          `jt9 -3 -p 120 -b D` reaches +2.0 s at the window's edge"
     );
+}
+
+/// #735: an aligned, noiseless Q65-15A frame with its start cut, in a slot of exact zeros (or noise 160 dB
+/// down), is decoded. `condition_symbol_spectra`'s `s3lim` clip is 20x the 40th percentile of the symbol
+/// energies; with no noise that percentile is f32 rounding, the clip saturates the tones' sidelobes and BP
+/// fails. WSJT-X cannot meet this (its audio is `int16`, 128 dB of range); float input can, so `base` is floored
+/// at that range. Noise 0, 1e-9 and 1e-7 against a 0.3 signal, cuts 3000-6000 samples: 12 inputs, all of which
+/// failed or flipped on the last bits of the transmitter before the floor.
+#[test]
+fn q65_decodes_a_cut_frame_in_a_noiseless_slot() {
+    use mfsk_core::__internal::q65::decode_request::DecodeRequest;
+    use mfsk_core::q65::search::default_search_params as q65_default_search_params;
+    use mfsk_core::q65::{Q65a15, tx::synthesize_standard_for};
+
+    let signal = synthesize_standard_for::<Q65a15>("CQ", "JA1ABC", "PM95", FS, 1500.0, 0.3)
+        .expect("Q65-15A synth must succeed");
+    let mut failures = Vec::new();
+    for noise in [0.0f32, 1e-9, 1e-7] {
+        for drop in [3000usize, 3750, 4000, 6000] {
+            let mut x: u32 = 12_345;
+            let mut slot: Vec<f32> = (0..15 * FS as usize)
+                .map(|_| {
+                    x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    ((x >> 8) as f32 / 16_777_216.0 - 0.5) * 2.0 * noise
+                })
+                .collect();
+            let n = (signal.len() - drop).min(slot.len());
+            for (a, b) in slot[..n].iter_mut().zip(&signal[drop..drop + n]) {
+                *a += *b;
+            }
+            let hit = DecodeRequest::<Q65a15>::new(
+                &slot,
+                FS,
+                (0.5 * FS as f32) as usize,
+                q65_default_search_params(),
+            )
+            .decode()
+            .iter()
+            .any(|d| d.message.contains("JA1ABC"));
+            if !hit {
+                failures.push(format!("noise {noise:e}, cut {drop}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "not decoded: {failures:?}");
 }
