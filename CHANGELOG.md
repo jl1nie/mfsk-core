@@ -21,6 +21,14 @@
   `int16` form of this slot); `base` is now floored at that range, `peak / (3 * 32767^2 * nsps)`. The floor never engaged on the vendored recordings (margin >= 114 dB) or the noisy
   synthetic tests; it can engage on a noiseless int16 file (the quantisation error of a tone is not white; about -12 dBFS and louder), with the same decode. 4 of 12 new inputs fail without
   it (noise 0 and 1e-9, cuts 3750 and 6000); the `dt_window` noise added for it is gone.
+- **FT4's subtraction reference is `gen_ft4wave`'s frame** (#734, follows #729). It was `gen_ft8wave`'s form (103 symbols, an `nsps/8` ramp),
+  which left the two ramp symbols of a transmitted signal behind (-20.9 dB through the constant-amplitude LS subtraction, about -20 dB through
+  the decoder's LPF one; now nothing, and -29 dB); `subtractft4.f90` builds `cref` with `gen_ft4wave` over `(103+2)*NSPS` from
+  `nstart=dt*12000+1-NSPS`. **API:** `GfskParams` (a public struct built by literal) gains `frame_ramp: bool`, so a downstream literal needs the field:
+  a minor release. The FT4 snapshot fixtures moved (header of `decode_snapshot.rs`): no message appears, and three marginal ones go from
+  `ft4_eq_local` (Rust-only equaliser; still decoded by `ft4_default` and four other configurations), now guarded by
+  `ft4_wsjtx_sample_eq_local_recall_floor` (12 of `jt9`'s 14).
+
 - **WSPR, JT9, JT65 and Q65 transmit waveforms are `Modulator::modulate`'s** (#726). The loop took `cos` of an `f32` phase before advancing
   it, with `f0 + tone * spacing` in `f32`; WSJT-X advances a `double` phase first and takes `sin`. Against that, on a 110 s WSPR frame:
   -35 dB (an `f32` sum drifts 0.04 rad), and a different phase. Now a `u64` turn accumulator (`engine/dsp/nco.rs`, shared with
@@ -32,8 +40,7 @@
   (beta4) / -82 dB (beta6) now. **API (next release is a minor):** `synthesize::<Ft4>` / `synth_len` return 60 480 samples; the tones start
   `synth_lead_samples::<Ft4>(rate)` (576) in (`Encoded::synth_lead`, `ModeMeta::tx_lead_samples_12k`, C `mfsk_synth_lead_len`, Swift
   `synthesisedLeadLength`), so a caller places the buffer that much before `TX_START_OFFSET_S` (`ft4sim.f90:91`); `Waveform` is
-  `#[non_exhaustive]` with a new `Ft4` variant. New tier A `tests/gen_wave_vs_wsjtx.rs` (FT8 -68 dB, FT4 -82 dB). **Open:** FT4's subtraction reference
-  is still the FT8 form (#734); the CoreS3's `GfskStream` is not changed.
+  `#[non_exhaustive]` with a new `Ft4` variant. New tier A `tests/gen_wave_vs_wsjtx.rs` (FT8 -68 dB, FT4 -82 dB). FT4's subtraction reference follows (#734); the CoreS3's `GfskStream` is not changed.
 - **JTTY: a candidate that is a misaligned view of a frame already decoded is refused** (#726, upstream PR #702, v3.3.0-beta6
   `is_frame_alias`). A strong signal left repeatable false frames (`IG4QXF TU`): a sync candidate a whole number of symbols inside a
   decoded frame matched 7 of 13 sync tones by chance and still gave a TBCC codeword. It is dropped when, within 2.5 tone spacings and

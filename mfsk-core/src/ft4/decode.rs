@@ -38,10 +38,9 @@ pub const FT4_DOWNSAMPLE: DownsampleCfg = DownsampleCfg {
 /// GFSK shaping matches WSJT-X FT4 (`lib/ft4/subtractft4.f90` declares
 /// `bt=1.0`; `lib/ft4/gen_ft4wave.f90` calls `gfsk_pulse(1.0, tt)`).
 ///
-/// **Divergence, open (#734):** the reference this builds is `gen_ft8wave`'s form (103 symbols, extended
-/// first and last symbol, an `nsps/8` ramp). `subtractft4.f90` builds `cref` with `gen_ft4wave` over
-/// `(103+2)*NSPS` samples from `nstart=dt*12000+1-NSPS`, and the transmit waveform here is now that
-/// one (`engine::tx`, `Waveform::Ft4`); the subtraction has not followed it.
+/// The reference is `gen_ft4wave`'s frame, as `subtractft4.f90` builds `cref` (#734): `(103+2)*NSPS`
+/// samples from `nstart=dt*12000+1-NSPS` (`frame_ramp: true`), the same waveform `engine::tx` transmits
+/// (`Waveform::Ft4`).
 pub const FT4_SUBTRACT: SubtractCfg = SubtractCfg {
     sample_rate: 12_000.0,
     tone_spacing_hz: <Ft4 as crate::engine::ModulationParams>::TONE_SPACING_HZ,
@@ -51,6 +50,8 @@ pub const FT4_SUBTRACT: SubtractCfg = SubtractCfg {
         bt: 1.0,
         hmod: 1.0,
         ramp_samples: 576 / 8,
+        // `gen_ft4wave` over (103 + 2) * nsps from one symbol before the tones (`subtractft4.f90`)
+        frame_ramp: true,
     }),
 };
 

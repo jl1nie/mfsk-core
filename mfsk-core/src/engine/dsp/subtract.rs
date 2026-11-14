@@ -45,11 +45,36 @@ pub struct GfskParams {
     pub hmod: f32,
     /// Cosine ramp length at start/end (samples). FT8 uses `nsps / 8`.
     pub ramp_samples: usize,
+    /// The transmitted frame carries a ramp symbol before its first tone symbol and after its last: FT4
+    /// (`gen_ft4wave`; `subtractft4.f90` builds `cref` over `(103 + 2) * nsps` samples from
+    /// `nstart = dt * 12000 + 1 - nsps`). With `true`, the reference is `synth_complex_f32_lead_tail_into`'s
+    /// and `ramp_samples` is not read; with `false` it is `gen_ft8wave`'s form (FT8).
+    pub frame_ramp: bool,
+}
+
+impl SubtractCfg {
+    /// Samples of the transmitted frame before its first tone symbol.
+    fn lead_samples(&self) -> usize {
+        usize::from(self.gfsk.is_some_and(|g| g.frame_ramp)) * self.samples_per_symbol
+    }
+
+    /// Samples of the reference for `ntones` tone symbols, ramp symbols included.
+    fn frame_len(&self, ntones: usize) -> usize {
+        ntones * self.samples_per_symbol + 2 * self.lead_samples()
+    }
+
+    /// Where the reference starts in the audio, samples (negative: before it), for a signal whose tones
+    /// start at `base_offset_s + dt_sec`.
+    fn frame_start(&self, dt_sec: f32) -> i64 {
+        ((self.base_offset_s + dt_sec) * self.sample_rate).round() as i64
+            - self.lead_samples() as i64
+    }
 }
 
 /// Generate phase-continuous cosine/sine references for a symbol stream.
 ///
-/// Returns `(w_cos, w_sin)` each of length `tones.len() * cfg.samples_per_symbol`.
+/// Returns `(w_cos, w_sin)` each of length [`SubtractCfg::frame_len`]`(tones.len())`: `tones.len() *
+/// cfg.samples_per_symbol`, plus a ramp symbol each side when `GfskParams::frame_ramp`.
 /// `freq_hz` is the carrier of tone 0.
 ///
 /// When `cfg.gfsk` is `Some`, the references are GFSK-shaped (matches
@@ -57,7 +82,7 @@ pub struct GfskParams {
 /// against real WSJT-style signals). Otherwise the legacy abrupt
 /// per-symbol frequency switching is used.
 fn generate_iq(tones: &[u8], freq_hz: f32, cfg: &SubtractCfg) -> (Vec<f32>, Vec<f32>) {
-    let n = tones.len() * cfg.samples_per_symbol;
+    let n = cfg.frame_len(tones.len());
     if let Some(g) = cfg.gfsk {
         let gfsk_cfg = crate::engine::dsp::gfsk::GfskCfg {
             sample_rate: cfg.sample_rate,
@@ -68,9 +93,15 @@ fn generate_iq(tones: &[u8], freq_hz: f32, cfg: &SubtractCfg) -> (Vec<f32>, Vec<
         };
         let mut w_cos = vec![0.0f32; n];
         let mut w_sin = vec![0.0f32; n];
-        crate::engine::dsp::gfsk::synth_complex_f32_into(
-            &mut w_cos, &mut w_sin, tones, freq_hz, 1.0, &gfsk_cfg,
-        );
+        if g.frame_ramp {
+            crate::engine::dsp::gfsk::synth_complex_f32_lead_tail_into(
+                &mut w_cos, &mut w_sin, tones, freq_hz, 1.0, &gfsk_cfg,
+            );
+        } else {
+            crate::engine::dsp::gfsk::synth_complex_f32_into(
+                &mut w_cos, &mut w_sin, tones, freq_hz, 1.0, &gfsk_cfg,
+            );
+        }
         return (w_cos, w_sin);
     }
     let mut w_cos = vec![0.0f32; n];
@@ -108,7 +139,7 @@ fn generate_iq(tones: &[u8], freq_hz: f32, cfg: &SubtractCfg) -> (Vec<f32>, Vec<
 #[cfg(test)]
 fn ls_amp_mag(audio: &[i16], tones: &[u8], freq_hz: f32, dt_sec: f32, cfg: &SubtractCfg) -> f32 {
     let (w_cos, w_sin) = generate_iq(tones, freq_hz, cfg);
-    let signed_start = ((cfg.base_offset_s + dt_sec) * cfg.sample_rate).round() as i64;
+    let signed_start = cfg.frame_start(dt_sec);
     let (audio_off, ref_off) = if signed_start < 0 {
         (0usize, (-signed_start) as usize)
     } else {
@@ -138,7 +169,7 @@ fn ls_amp_mag(audio: &[i16], tones: &[u8], freq_hz: f32, dt_sec: f32, cfg: &Subt
 
 /// Number of samples between rotor-magnitude renormalizations in
 /// [`ls_amp_mag_tweaked`]'s incremental NCO. Bounds f32 rounding drift
-/// over the ~59k (FT4) / ~334k (FT8) sample buffers `refine_freq`
+/// over the ~60k (FT4, ramp symbols included) / ~334k (FT8) sample buffers `refine_freq`
 /// sweeps; cheap relative to the multiply-adds it guards (one `norm()`
 /// + divide every 256 samples).
 const NCO_RESYNC_SAMPLES: usize = 256;
@@ -172,7 +203,7 @@ fn ls_amp_mag_tweaked(
     dt: f32,
     cfg: &SubtractCfg,
 ) -> f32 {
-    let signed_start = ((cfg.base_offset_s + dt_sec) * cfg.sample_rate).round() as i64;
+    let signed_start = cfg.frame_start(dt_sec);
     let (audio_off, ref_off) = if signed_start < 0 {
         (0usize, (-signed_start) as usize)
     } else {
@@ -415,10 +446,10 @@ fn subtract_tones_lpf_direct(
     cfg: &SubtractCfg,
     lpf_half: usize,
 ) {
-    let nframe = tones.len() * cfg.samples_per_symbol;
+    let nframe = cfg.frame_len(tones.len());
     let (cref_re, cref_im) = generate_iq(tones, freq_hz, cfg);
 
-    let signed_start = ((cfg.base_offset_s + dt_sec) * cfg.sample_rate).round() as i64;
+    let signed_start = cfg.frame_start(dt_sec);
     let (audio_off, ref_off) = if signed_start < 0 {
         (0usize, (-signed_start) as usize)
     } else {
@@ -705,7 +736,7 @@ mod fft_lpf {
         endcorrection: bool,
         idt_offset: i64,
     ) {
-        let nframe = tones.len() * cfg.samples_per_symbol;
+        let nframe = cfg.frame_len(tones.len());
         // `subtractft8.f90`'s `NFFT = NMAX = 15*12000` (v3.2.0-rc1, lines
         // 10-11) is a *constant*, chosen to be at least `NFRAME`, so
         // `camp`/`cfilt` are always long enough to hold the whole frame and
@@ -739,8 +770,7 @@ mod fft_lpf {
         // bounds (matches `if(j.ge.1.and.j.le.NMAX) camp(i)=...`).
         // `idt_offset` mirrors `subtractft8.f90`'s `sqf(idt)` inner
         // function, which probes `nstart=dt*12000+1+idt`.
-        let signed_start =
-            ((cfg.base_offset_s + dt_sec) * cfg.sample_rate).round() as i64 + idt_offset;
+        let signed_start = cfg.frame_start(dt_sec) + idt_offset;
 
         // `j = signed_start + i` is in-bounds (`0..audio.len()`) only for
         // `i` in `i_lo..i_hi` — clamp once instead of re-checking
@@ -891,21 +921,21 @@ mod fft_lpf {
 
         let sq_m = residual_band_power(
             &cand_m,
-            tones.len() * cfg.samples_per_symbol,
+            cfg.frame_len(tones.len()),
             freq_hz,
             cfg.tone_spacing_hz,
             cfg.sample_rate,
         );
         let sq_p = residual_band_power(
             &cand_p,
-            tones.len() * cfg.samples_per_symbol,
+            cfg.frame_len(tones.len()),
             freq_hz,
             cfg.tone_spacing_hz,
             cfg.sample_rate,
         );
         let sq_0 = residual_band_power(
             &cand_0,
-            tones.len() * cfg.samples_per_symbol,
+            cfg.frame_len(tones.len()),
             freq_hz,
             cfg.tone_spacing_hz,
             cfg.sample_rate,
@@ -964,7 +994,7 @@ pub fn subtract_tones(
     // For e.g. `dt_sec = -0.78` (FT8 reports up to ±2.5 s) this misaligned
     // the reference by 3360 samples → near-zero LS amplitude → effectively
     // no-op subtract on legitimately-decoded signals at large negative DT.
-    let signed_start = ((cfg.base_offset_s + dt_sec) * cfg.sample_rate).round() as i64;
+    let signed_start = cfg.frame_start(dt_sec);
     let (audio_off, ref_off) = if signed_start < 0 {
         (0usize, (-signed_start) as usize)
     } else {
@@ -1023,6 +1053,7 @@ mod refine_dt_tests {
                 bt: 2.0,
                 hmod: 1.0,
                 ramp_samples: 1920 / 8,
+                frame_ramp: false,
             }),
         }
     }
@@ -1197,6 +1228,7 @@ mod tests {
                 bt: 1.0,
                 hmod: 1.0,
                 ramp_samples: 576 / 8,
+                frame_ramp: true, // as `ft4::decode::FT4_SUBTRACT`
             }),
         }
     }
@@ -1211,6 +1243,7 @@ mod tests {
                 bt: 2.0,
                 hmod: 1.0,
                 ramp_samples: 1920 / 8,
+                frame_ramp: false,
             }),
         }
     }
