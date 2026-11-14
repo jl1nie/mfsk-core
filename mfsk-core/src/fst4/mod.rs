@@ -470,11 +470,9 @@ mod tests {
             );
             assert_eq!(cfg.bt, P::GFSK_BT, "{name}: gfsk bt != GFSK_BT");
             assert_eq!(cfg.hmod, P::GFSK_HMOD, "{name}: gfsk hmod != GFSK_HMOD");
-            assert_eq!(
-                cfg.ramp_samples as u32,
-                P::NSPS / 4,
-                "{name}: gfsk ramp_samples != NSPS/4"
-            );
+            // `ramp_samples` is not read by the FST4 synthesiser (`synth_f32_fst4_into`: the ramp is
+            // `nsps / 4` by construction); the waveform itself is checked against `gen_fst4wave` in
+            // `tests/gen_wave_vs_wsjtx.rs`.
         }
 
         check_downsample::<Fst4s15>("Fst4s15", &decode::FST4_15_DOWNSAMPLE);

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! The FT8 and FT4 transmit waveforms against WSJT-X v3.3.0-beta6's own `gen_ft8wave` / `gen_ft4wave`
+//! The FT8, FT4, FST4 and JTTY transmit waveforms against WSJT-X v3.3.0-beta6's own `gen_ft8wave` / `gen_ft4wave` /
+//! `gen_fst4wave` / `gen_jttywave`
 //! (tier A: a vendored fixture, a missing one is a failure).
 //!
 //! `tests/fixtures/gen_wave/` is made by `scripts/wave/build_fixtures.sh` from a `git archive` of the tag: the

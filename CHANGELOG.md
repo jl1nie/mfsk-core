@@ -12,12 +12,13 @@
   `synthesisedLeadLength`), so a caller places the buffer that much before `TX_START_OFFSET_S` (`ft4sim.f90:91`); `Waveform` is
   `#[non_exhaustive]` with a new `Ft4` variant. New tier A `tests/gen_wave_vs_wsjtx.rs` (FT8 -68 dB, FT4 -82 dB). **Open:** FT4's subtraction reference
   is still the FT8 form (#734); the CoreS3's `GfskStream` is not changed.
-- **FST4 transmit waveform is `gen_fst4wave`'s** (#726). The first and last symbol were extended and ramped `nsps / 8` (as FT8);
-  upstream does not extend them and ramps a half symbol (`Waveform::Fst4`). **FT8, FT4 and FST4 keep phase and carrier in a `u64` turn
-  accumulator** (no `f64` per sample, which an LX7 cannot afford; beta6 sums in `f64`): an f32 sum drifted (FST4-60: -42 dB over 51 s).
-- Measured against WSJT-X's own generators on a fixed tone list (new tier A `tests/gen_wave_vs_wsjtx.rs`, beta6): FT8 -68 -> -95 dB,
-  FT4 -45 -> -95 dB, FST4-15 -16 dB at the edge symbols -> -88 dB, max 3e-5 to 1.1e-4; JTTY already -99 dB (its TX sums in f64), unchanged. The full-slot subtract pin was
-  re-recorded (the input moved by 2 LSB).
+- **FST4 transmit waveform is `gen_fst4wave`'s** (#726). The first and last symbol were extended and ramped `nsps / 8` (as FT8); upstream
+  does not extend them and ramps a half symbol (`Waveform::Fst4`). **FT8, FT4 and FST4 keep phase and carrier in a `u64` turn accumulator**
+  (no `f64` per sample, which an LX7 cannot afford; beta6 sums in `f64`): an f32 sum drifted (FST4-60: -42 dB over 51 s). This is the
+  batch `synthesize` path; the CoreS3's streaming `GfskStream` (its live transmitter) is not changed.
+- Against WSJT-X's own generators on a fixed tone list (new tier A `tests/gen_wave_vs_wsjtx.rs`, beta6): FT8 -68 -> -95 dB, FT4 -21 -> -95 dB,
+  FST4-15 -16 -> -88 dB (over the whole frame: the extra pulse tail moves the phase throughout), JTTY already -99 dB (pinned, unchanged),
+  max 3e-5 to 1.1e-4. The full-slot subtract pin was re-recorded (the input moved by up to 2 LSB).
 
 ### Docs
 
