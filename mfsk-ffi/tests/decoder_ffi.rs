@@ -133,6 +133,18 @@ fn an_option_the_mode_lacks_is_unsupported() {
     e.nb_percent = 5;
     assert_eq!(try_open(MfskMode::Fst4s60, &e), MfskStatus::Ok);
     assert_eq!(try_open(MfskMode::Ft8, &e), MfskStatus::Unsupported);
+    // JT9's scan is `jt9`'s (#742): no time window, score threshold or candidate budget, where
+    // WSPR and JT65 have them.
+    let mut e = extras();
+    e.t_early_s = 2.0;
+    assert_eq!(try_open(MfskMode::Wspr, &e), MfskStatus::Ok);
+    assert_eq!(try_open(MfskMode::Jt65, &e), MfskStatus::Ok);
+    assert_eq!(try_open(MfskMode::Jt9, &e), MfskStatus::Unsupported);
+    let mut e = extras();
+    e.max_cand = 50;
+    assert_eq!(try_open(MfskMode::Jt65, &e), MfskStatus::Ok);
+    assert_eq!(try_open(MfskMode::Jt9, &e), MfskStatus::Unsupported);
+    assert_eq!(try_open(MfskMode::Jt9, &extras()), MfskStatus::Ok);
     // An out-of-range value is the caller's mistake, not a missing option.
     let mut e = extras();
     e.nb_percent = 99;
