@@ -50,6 +50,13 @@ does. Measurements behind each entry: [`docs/notes/WSJTX_BETA6_PORT.md`](docs/no
   `erf`/`sinf` form against beta6's generators (FT8 -94 dB, FT4 -96 dB). FT8 `synthesize` on x86_64: 704 → 535 µs. Not measured on
   the LX7.
 
+### Tests
+
+- **All 22 of ft8_lib's real FT8 recordings are tier B**, against every line v3.3.0-beta6's `jt9` prints (402; rc1 401): 15 more
+  vendored (`embedded-poc/assets/`, MIT), so the comparison `bench/ft8-compare` made by hand runs on every PR. 402 of 402 found;
+  the six outputs `jt9` lacks are named, with their evidence, and any other fails as a phantom. SNR: mean -0.10 dB, but 8 rows sit
+  4-6.4 dB off, clustered by recording; held out of the SNR check as debt (#747).
+
 ### Docs
 
 - **README shortened, 823 → ~230 lines, and its Japanese twin now mirrors it** (was a 58-line summary). It leads with what an operator

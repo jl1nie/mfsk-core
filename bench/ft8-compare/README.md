@@ -9,7 +9,7 @@ WAV files and compares both with WSJT-X's own `jt9`, stage by stage. What it was
 | set | what | reference | where |
 |---|---|---|---|
 | **22 real recordings** | ft8_lib `test/wav`: `websdr_test1..13.wav` and `191111_*.wav` (the 22 that have a `.txt`), 12 kHz mono 16-bit, 15 s, MIT | `jt9 -8 -d 3 -L 200 -H 3000` (WSJT-X **v3.2.0-rc1**) on the same files: 401 decodes. Not ft8_lib's `.txt` (on those `jt9` itself gets 71 %) | `git clone https://github.com/kgoba/ft8_lib` |
-| `qso3_busy.wav`, `191111_110130.wav`, `191111_110200.wav` | in this repo, `embedded-poc/assets/` | `jt9` (the Tier B test `mfsk-core/tests/ft8_real_recordings_vs_jt9.rs` holds the two 191111 lists) | repo |
+| `qso3_busy.wav` and the 22 ft8_lib recordings | in this repo, `embedded-poc/assets/` (since 0.16) | `jt9`; the 22 are tier B (`mfsk-core/tests/ft8_real_recordings_vs_jt9.rs` against beta6's `jt9`, `tests/fixtures/ft8_lib_jt9_beta6.tsv`), so recall and phantoms on them are checked on every PR; this bench is for the stage-by-stage comparison and rust-ft8 | repo |
 | **busy-band corpus** `ft8_busy_sweep` | 420 files, 10/20/40 signals, 100 single, 200 noise-only; `truth.csv` | the messages sent | `scripts/gen_ft8_busy_wavs.py` (needs `ft8sim` of v3.2.0-rc1) |
 | **dense corpus** `ft8_dense_sweep` | 200 files, five sets (`base`, `snr`, `gap`, `dt`, `real`) whose SNR, spacing and DT are drawn from the 22 recordings, one factor per set (paired: same messages, frequencies and noise); `truth.csv` | the messages sent | `scripts/gen_ft8_dense_wavs.py` |
 

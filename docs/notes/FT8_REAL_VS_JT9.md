@@ -109,6 +109,19 @@ text in another recording, same 940 Hz / DT -0.6), `DK5OK DB4BU R-04` (the QSO `
 `DK5OK DB4BU 73`, 1822 Hz), `EA8PP JA6VQA -16` (OSD at 21 hard errors; `JA6VQA EA8PP R-24` / `73` elsewhere). Kept:
 `SP7NHS YC2FCE -15` (still undecided), `CQ EA5OL IM99`, `UA9SIX GM0LIR R-07`, `CQ CU2DX HM77`.
 
+## In tier B since 0.16 (2026-11-14), against v3.3.0-beta6's `jt9`
+
+All 22 recordings are vendored (`embedded-poc/assets/`) and `mfsk-core/tests/ft8_real_recordings_vs_jt9.rs` checks each against
+every line beta6's `jt9 -8 -d 3 -L 200 -H 3000` prints (`tests/fixtures/ft8_lib_jt9_beta6.tsv`), so this comparison runs on every PR
+instead of by hand at a release. beta6 prints 402: rc1's 401 and `EA8PP JA6VQA -16` in `websdr_test5`, one of the outputs listed
+below as attested, which `jt9` now makes too. The crate finds 402 of 402; its outputs `jt9` lacks are the six still listed below,
+named in the test (any other fails as a phantom).
+
+SNR on the 402: mean -0.10 dB, median -0.10, 90 % within -2.0..+1.6 dB; 20 rows past 3 dB and 8 past the test's 4 dB, held out of
+the SNR check as debt. They cluster by recording: every row of `websdr_test4` reads 3-4 dB low, of `websdr_test7` 3-5 dB high, and the
+two hashed `<...> RY8CAA` rows 5-6 dB high. On the synthetic dense corpus above, the two agree within 1 dB in 3 640 of 3 644, so the
+difference is something real audio has and white noise does not (a per-file baseline is the candidate; not measured; #747).
+
 ## Limits
 
 One band session, 22 files, one reference decoder; the labelled corpora are white noise. The `jt9` trace build and our local trace patch
