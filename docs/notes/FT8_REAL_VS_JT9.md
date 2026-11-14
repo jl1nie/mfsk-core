@@ -117,10 +117,12 @@ instead of by hand at a release. beta6 prints 402: rc1's 401 and `EA8PP JA6VQA -
 below as attested, which `jt9` now makes too. The crate finds 402 of 402; its outputs `jt9` lacks are the six still listed below,
 named in the test (any other fails as a phantom).
 
-SNR on the 402: mean -0.10 dB, median -0.10, 90 % within -2.0..+1.6 dB; 20 rows past 3 dB and 8 past the test's 4 dB, held out of
-the SNR check as debt. They cluster by recording: every row of `websdr_test4` reads 3-4 dB low, of `websdr_test7` 3-5 dB high, and the
-two hashed `<...> RY8CAA` rows 5-6 dB high. On the synthetic dense corpus above, the two agree within 1 dB in 3 640 of 3 644, so the
-difference is something real audio has and white noise does not (a per-file baseline is the candidate; not measured; #747).
+SNR on the 402, which the first version of this test held 8 rows out of: mean -0.10 dB, SD 1.29, 8 rows 4-6.4 dB off, clustered by
+recording (every row of `websdr_test4` 3-4 dB low, of `websdr_test7` 3-5 dB high). The cause (#747): `xsnr2`'s baseline was fitted
+over 0-6000 Hz, where `get_spectrum_baseline.f90` hands `baseline.f90` the decode band (`nfa..nfb`, 0 outside). White noise gives the
+same fit either way, which is why the dense corpus above never showed it; a real recording's passband rolls off inside 0-6000 Hz.
+Fitted over the band: mean +0.04 dB, SD 0.35, 90 % within -0.4..+0.5, the largest `websdr_test7`'s `LZ2KV PE0TS 73` +3.4 and
+`CU2DX SP6DXH -19` +2.2; `qso3_busy.wav`'s 21 within 0.4 dB of beta6's `jt9` (was up to 7.3). No decode changed.
 
 ## Limits
 

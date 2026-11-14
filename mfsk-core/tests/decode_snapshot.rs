@@ -87,6 +87,11 @@
 //! window there, `-f 1119`; `jt9_wsjtx_samples.rs` checks that), and the rows that stay come from `jt9`'s bins:
 //! DT within `jt9`'s 0.1 s print (`G7CNF N4HFA EL89` -0.21 in `deep`, `jt9` -0.2), SNR within 0.5 dB.
 //!
+//! An eighth (#747, 2026-11-14): FT8's spectrum baseline is fitted over the decode band, as `get_spectrum_baseline.f90`
+//! passes `nfa`/`nfb` to `baseline.f90`, not over 0-6000 Hz. The 21 FT8 and the two `iq_*_ft8` fixtures move in `snr`
+//! (up to 7.7 dB; on `qso3_busy.wav` every row is now within 0.4 dB of beta6's `jt9 -8 -d 3`, was up to 7.3) and in the
+//! last bits of `sync_score`; no message appears or goes, and `freq_hz`, `dt_sec`, `hard_errors` and `pass` are unchanged.
+//!
 //! Row format, one per line, sorted. Frame family (FT8/FT4/FST4): text,
 //! then `freq_hz`, `dt_sec`, `snr_db`, `sync_score` as f32 bit patterns in
 //! hex, then `hard_errors` and `pass`. Other families and the IQ path: the

@@ -29,6 +29,11 @@
 //!   from one of six copies of a splattering signal, each subtracted as `ft8b.f90` does (#721).
 //! - `websdr_test5`: `CQ DO6AZ JO50` is the blind-CQ AP pass at nsync 9 (#721).
 //! - `websdr_test2`: `CQ IZ8IQO JM89` (-25 dB, AP) needs `sync8.f90`'s lag grid (#721).
+//!
+//! SNR is held to `jt9`'s within 4 dB on every row. On the 402: mean +0.04 dB, SD 0.35, 90 % within
+//! -0.4..+0.5 dB; the largest are `websdr_test7`'s `LZ2KV PE0TS 73` (+3.4) and `CU2DX SP6DXH -19` (+2.2).
+//! Until #747 the FT8 baseline was fitted over 0-6000 Hz instead of the decode band, which left 8 rows
+//! 4-6.4 dB off, clustered by recording (SD 1.29).
 #![cfg(feature = "fft-rustfft")]
 
 #[allow(dead_code)]
@@ -68,22 +73,6 @@ const ATTESTED: &[(&str, &str, &str)] = &[
     ("websdr_test7", "EA8PP JH0INP PM96", "jt9's text elsewhere"),
 ];
 
-/// Rows whose SNR is more than the 4 dB tolerance from `jt9`'s, held out of the SNR check only (their
-/// message, frequency and DT are still checked). Documented debt, cause not measured: across all 402 the
-/// error is -0.10 dB mean, 90 % within -2.0..+1.6 dB, and the outliers cluster by recording (every row of
-/// `websdr_test4` reads 3-4 dB low, of `websdr_test7` 3-5 dB high), which points at the per-file noise
-/// baseline, not the per-signal estimate (#747). (file, message, this crate's error in dB on 2026-11-14.)
-const SNR_DEBT: &[(&str, &str, f32)] = &[
-    ("191111_110145", "<...> RY8CAA", 6.4),
-    ("191111_110215", "<...> RY8CAA R-10", 5.1),
-    ("websdr_test2", "SP4FCA G4CUS R+13", 4.0),
-    ("websdr_test4", "CQ DM1YS JO30", -4.3),
-    ("websdr_test4", "CQ UY5AX KO70", -4.2),
-    ("websdr_test4", "PE0TS LZ2KV -25", -4.1),
-    ("websdr_test7", "CU2DX SP6DXH -19", 4.2),
-    ("websdr_test7", "LZ2KV PE0TS 73", 5.4),
-];
-
 fn reference(file: &str) -> Vec<GoldenEntry> {
     REFERENCE
         .lines()
@@ -92,12 +81,9 @@ fn reference(file: &str) -> Vec<GoldenEntry> {
             let f: Vec<&str> = l.split('\t').collect();
             (f[0] == file).then(|| {
                 let msg: &'static str = Box::leak(f[4].to_string().into_boxed_str());
-                let entry = GoldenEntry::msg(msg).at(f[1].parse().unwrap(), f[2].parse().unwrap());
-                if SNR_DEBT.iter().any(|(df, dm, _)| *df == file && *dm == msg) {
-                    entry
-                } else {
-                    entry.snr(f[3].parse().unwrap())
-                }
+                GoldenEntry::msg(msg)
+                    .at(f[1].parse().unwrap(), f[2].parse().unwrap())
+                    .snr(f[3].parse().unwrap())
             })
         })
         .collect()
