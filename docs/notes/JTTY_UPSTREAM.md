@@ -907,3 +907,18 @@ A deliberate divergence would be possible (let a duplicate replace the earlier
 frame when its `nsync`/SNR is better), but it trades parity for precision and
 needs a tier-B carve-out for rjtty's output on the vendored vectors. Not done;
 reopen as its own issue if a real recording shows it.
+
+## Alias rejection (#726, v3.3.0-beta6 `is_frame_alias`, 2026-11-14)
+
+Upstream PR #702 (`e8dd6a25c`, `a002e1a8c`, `a694e5cf5`) rejects a candidate that is a misaligned view of a frame already decoded.
+`jtty_mdecode.f90` `decode_and_merge` calls `is_frame_alias(f1, tsync, rx_frame, baud, nframe6/6000)` after the TBCC decode and the SNR,
+before the duplicate check, when `ic_label >= 0` (not for the sticky retry); `remember_alias_reference` records the frame after it is
+subtracted. `rx_frame` is the hard decision of all 59 symbols (the 13 sync tones, then the 46 payload symbols).
+
+The Rust port is `Work::is_frame_alias` / `remember_alias_reference` in `jtty/rx.rs`, checked in `Work::settle` (the sequential part of a
+pass, so a candidate sees the frames earlier ones decoded, as upstream's loop does). The ring of 32 references lives in the `Assembler`:
+upstream clears it only at a recording's first window (`istart == istart0`), not per window, so a false frame in a later window is still
+caught. An alias-rejected candidate counts as failed, so the round that retries failed candidates against the residual retries it.
+
+Measured with upstream's own test (`tests/jtty_alias.rs`, ported from `test_jtty_alias_decode.f90`): the fox message at -3 dB in 24 seeded
+noise trials gave 4 false frames (`IG4QXF TU` twice, `TU FU6HQP CQ`, `C_EKV`) without the check and 0 with it, 24/24 decoded in full.

@@ -5,12 +5,12 @@
 #
 #   scripts/wsprd/build_oracle.sh [WSJT-X-dir] [out-dir]
 #
-# Defaults: ../WSJT-X, target/wsprd-unpack-oracle. WSPRD_TAG defaults to v3.2.0-rc1.
+# Defaults: ../WSJT-X, target/wsprd-unpack-oracle. WSPRD_TAG defaults to v3.3.0-beta6.
 # Requires gcc, git, tar. Output: <out-dir>/wsprd_unpack_oracle (+ exported-commit)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
-TAG="${WSPRD_TAG:-v3.2.0-rc1}"
+TAG="${WSPRD_TAG:-v3.3.0-beta6}"
 WSJTX_DIR="${1:-$REPO_ROOT/../WSJT-X}"
 OUT_DIR="$(realpath -m "${2:-$REPO_ROOT/target/wsprd-unpack-oracle}")"
 git -C "$WSJTX_DIR" rev-parse --verify --quiet "$TAG^{commit}" >/dev/null \
