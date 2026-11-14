@@ -82,7 +82,7 @@ has had to learn. Each one was broken at least once.
 | the `ccir_*` / AWGN corpora (`ft8`, `ft4`, `fst4`, `jt9`, `wspr` simulators) | `2b9d654` | WSJT-X corrected its Watterson fading model in February 2024. A newer tree makes a harsher channel under the same `ccir_*` name (§3.1.1) |
 | `jt65sim`, `q65sim` | the WSJT-X CMake build (`$HOME/wsjtx-build` by default) | they link all of `wsjt_fort` / `wsjt_cxx` |
 | the ITU corpus (`ft8_itu`), the busy-band corpus (`ft8_busy`), `sjtty` | `v3.2.0-rc1` | ITU channel codes and JTTY exist only in 3.x; the busy-band generator parses 3.x `ft8sim` output |
-| the upstream reference `jt9` / `wsprd` | `v3.2.0-rc1` | the decoders this crate ports (#439, #442) |
+| the upstream reference `jt9` / `wsprd` | `v3.2.0-rc1` (the stored `docs/notes/upstream/*_t1.csv`); FST4W's task `v3.3.0-beta1`; point checks of a later port against the beta it ports (#726: `v3.3.0-beta6`, `scripts/build_jt9_upstream.sh ../WSJT-X v3.3.0-beta6`) | the decoders this crate ports (#439, #442) |
 
 Take a tree with `git archive`, which leaves the clone alone:
 

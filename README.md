@@ -60,7 +60,7 @@ differs by more than chance. Speed is one thread on each side, per file
 | FST4 | `jt9 -7 -d 3` | the same; better in 1 of 20 conditions | 4.3–5.0× faster |
 | FST4W | `jt9 -W -d 3` (`v3.3.0-beta1`) | the same (8 conditions) | 3.3–3.6× faster |
 | Q65 | `jt9 -3 -d 1` | the same; better in 9 of 20 conditions | 3.4–3.8× faster |
-| JT9 | `jt9 -9 -d 3` | the same | 5.3× faster |
+| JT9 | `jt9 -9 -d 3` | the same (`jt9`'s own candidate stage since 0.16) | 2.6–4.0× faster |
 | JTTY | `rjtty` | identical: every one of 360 trials agrees | 7–9× faster |
 | WSPR | `wsprd` | the same | 0.8–4.2× (slower near the decode threshold; 10 files) |
 | JT65 | `jt9 -6 -d 3` | **behind** (known; legacy, not chased) | 4–20× faster |
@@ -103,7 +103,7 @@ same parts ([`UVPACKET.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/r
 ```toml
 # Cargo.toml
 [dependencies]
-mfsk-core = { version = "0.15", features = ["ft8", "ft4"] }
+mfsk-core = { version = "0.16", features = ["ft8", "ft4"] }
 ```
 
 Changes land on `main` as they merge; crates.io releases follow every two
@@ -120,7 +120,7 @@ let tx = encode(Mode::Ft8, "CQ JA1ABC PM95").unwrap();
 let frame = tx.synthesize_i16(&TxAudio::new(12_000, /* freq */ 1500.0), /* amp */ 20_000);
 
 let mut audio = vec![0i16; 180_000]; // 15 s @ 12 kHz
-let start = (0.5 * 12_000.0) as usize;
+let start = tx.tx_buffer_start(12_000); // where this mode's buffer goes: 6000 for FT8
 let end = (start + frame.len()).min(audio.len());
 audio[start..end].copy_from_slice(&frame[..end - start]);
 

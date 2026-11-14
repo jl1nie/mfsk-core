@@ -67,7 +67,7 @@
     "task": "Wideband monitoring, 200-3000 Hz, no callsign known. jt9 -9 at depth 3.",
     "upstream_bin": "jt9",
     "upstream_args": ["-9", "-p", "60", "-d", "3", "-L", "200", "-H", "3000"],
-    "crate": "jt9::DecodeRequest::new(audio, 12000) (the library default)",
+    "crate": "jt9::DecodeRequest::new(audio, 12000).params(200-3000 Hz).depth(Jt9Depth::Deep) (tests/jt9_sweep.rs, since #742)",
     "score": {"msg": "CQ JL1NIE PM95", "freq": 1400, "freq_tol": 5, "dt_tol": null},
     "corpus": "jt9_sweep",
     "file_re": "^jt9_(?P<channel>awgn)_(?P<tag>[mp]\\d+)_(?P<trial>\\d+)\\.wav$",

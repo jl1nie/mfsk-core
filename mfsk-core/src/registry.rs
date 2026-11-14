@@ -39,8 +39,8 @@
 //!
 //! ## FST4 sub-modes
 //!
-//! Same story as Q65: all five wired FST4 T/R-period sub-modes
-//! (FST4-15, -30, -60A, -120, -300) share `ProtocolId::Fst4`.
+//! Same story as Q65: all seven wired FST4 T/R-period sub-modes
+//! (FST4-15, -30, -60A, -120, -300, -900, -1800) share `ProtocolId::Fst4`.
 //! FST4-60A is listed first (ahead of FST4-15, even though 15 < 60)
 //! so [`for_protocol_id`]`(ProtocolId::Fst4)` keeps returning the
 //! dominant terrestrial sub-mode as the default — this is one of the

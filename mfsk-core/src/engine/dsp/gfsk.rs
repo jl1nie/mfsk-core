@@ -1,12 +1,17 @@
 //! Gaussian Frequency-Shift-Keying (GFSK) waveform synthesis.
 //!
 //! Protocol-agnostic: given an FSK tone sequence, produces phase-continuous
-//! PCM with Gaussian-shaped frequency transitions. FT8/FT4/FT2/FST4 all use
-//! this shape and differ only in samples-per-symbol, BT product and
-//! modulation index (`hmod`). Tone *spacing* is implicitly
-//! `sample_rate · hmod / samples_per_symbol` — no separate parameter needed.
+//! PCM with Gaussian-shaped frequency transitions. FT8, FT4 and FST4 share
+//! the pulse and differ in samples-per-symbol, BT product, modulation index
+//! (`hmod`) and framing: FT8's form (`gen_ft8wave.f90`: first and last symbol
+//! extended, an `nsps/8` ramp), FT4's (`gen_ft4wave.f90`: a ramp symbol each
+//! side, a whole-symbol ramp; [`synth_f32_lead_tail_into`]) and FST4's
+//! (`gen_fst4wave.f90`: no extension, a half-symbol ramp; [`synth_f32_fst4_into`]).
+//! Tone *spacing* is implicitly `sample_rate · hmod / samples_per_symbol`.
 //!
-//! Ported from WSJT-X `gen_ft8wave.f90` + `gfsk_pulse.f90`.
+//! The pulse is WSJT-X v3.3.0-beta6's polynomial form (`waveform_kernels.f90`,
+//! `gfsk_pulse.f90`'s `erf` replaced by degree-7 tail polynomials), and the
+//! phase runs in a `u64` turn accumulator (`engine/dsp/nco.rs`; no `f64` per sample).
 
 use alloc::vec;
 use alloc::vec::Vec;

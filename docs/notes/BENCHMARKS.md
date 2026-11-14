@@ -1355,7 +1355,9 @@ only form of it worth recording.
   speed or AWGN-floor sensitivity, not this row.
 
 **AWGN sensitivity sweep** (`tests/jt9_sweep.rs`, `jt9sim`-driven,
-20 trials/SNR) — **current, post task #24 fix** (2026-08-08):
+20 trials/SNR) — post task #24 fix (2026-08-08). **Superseded by #742** (2026-11-14): JT9's scan is now `jt9`'s
+`sync9` stage and the sweep decodes at `Deep` over 200-3000 Hz, -26.58 dB at the 50 % crossing
+([`WSJTX_BETA6_PORT.md`](WSJTX_BETA6_PORT.md)); this table and the notes after it record the old scan:
 
 | SNR | Recall |
 |---:|---:|

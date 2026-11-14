@@ -6,7 +6,8 @@ description: Audit what changed in WSJT-X (WSJTX/wsjtx, the development branch r
 # Upstream audit
 
 Procedure of record: `docs/notes/RELEASE_PROCEDURE.md`, section "Following WSJT-X upstream". Previous
-audits: #435 (v3.2.0-rc1), #642 (rc1 -> v3.3.0-beta1).
+audits: #435 (v3.2.0-rc1), #642 (rc1 -> v3.3.0-beta1), #690 (beta1 -> beta2), #694 (beta2 -> beta4), #726 (beta4 -> beta6; what
+it ported and measured: `docs/notes/WSJTX_BETA6_PORT.md`).
 
 ## 1. Run the script
 

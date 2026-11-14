@@ -1,88 +1,63 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 — every transmit waveform is WSJT-X's own generator's, and one value, `tx_buffer_start`, says where to place it in every mode (breaking for FT4 hosts); JT9 picks its candidates as `jt9` does and JT9/JT65 report DT from WSJT-X's 1.0 s; FT4 subtracts `gen_ft4wave`'s frame; WSJT-X v3.3.0-beta4 → beta6 ported (#726)
+
+WSJT-X v3.3.0-beta4 → beta6, ported (#726): every transmit waveform now follows WSJT-X's own generator, and JT9 decodes as `jt9`
+does. Measurements behind each entry: [`docs/notes/WSJTX_BETA6_PORT.md`](docs/notes/WSJTX_BETA6_PORT.md).
+
+### Changed — what a host must change (this is why 0.16 is a minor)
+
+- **Place every transmission at `tx_buffer_start`** (#743): the slot sample the synthesised buffer's first sample goes to, so the
+  frame lands at DT = 0 on a WSJT-X receiver. FT4 5424, FT8 6000, the 1 s modes 12 000 (`Encoded::tx_buffer_start(rate)`,
+  `ModeMeta::tx_buffer_start_samples_12k`, appended to C `MfskModeInfo`, Swift and Kotlin `txBufferStartSamples12k`).
+  `tx_start_offset_s` is the DT reference only. **An FT4 host that placed by it now sends 48 ms late**: FT4's frame is 105 symbols,
+  60 480 samples, a ramp symbol before the tones (`gen_ft4wave`). WSJT-X itself starts FT4 at 0.300 s, ~150 ms earlier (marked).
+- **JT9 and JT65 `tx_start_offset_s` is 1.0 s, not 0.0** (#742), where WSJT-X starts them (`Modulator.cpp:163`); `Decoder`'s DT was 1.0 s
+  above `jt9`'s, and a host placing by it keyed up 1 s early.
+- **Types:** `Waveform` is `#[non_exhaustive]` with `Ft4` and `Fst4`; `GfskParams` gains `frame_ramp: bool` (a struct literal needs it);
+  `Jt9Extras::search` supplies only the band. `mfsk_synth_lead_len` and the other lead helpers were added and removed within this cycle.
+
+### Fixed — transmit
+
+- **FT4, FST4, FT8 match WSJT-X's generators** (#729, #736): FT4 is `gen_ft4wave`'s 105-symbol frame, FST4 `gen_fst4wave`'s (no
+  extended first and last symbol, a half-symbol ramp), and the phase is a `u64` turn accumulator (no `f64` per sample, which the
+  LX7 cannot afford). Against beta6's own generators on a fixed tone list: FT8 -68 → -95 dB, FT4 -21 → -95 dB, FST4-15 -16 → -88 dB
+  (new tier A `tests/gen_wave_vs_wsjtx.rs`). The CoreS3's live `GfskStream` is unchanged.
+- **WSPR, JT9, JT65, Q65 match `Modulator::modulate`** (#737): `sin` of a phase advanced first, the same accumulator, per-symbol
+  frequency in `f64`. Was `cos` before the advance in `f32`: -35 dB on a 110 s WSPR frame. Within 2e-4 of an `f64` reference.
+
+### Fixed — receive
+
+- **JT9 picks its candidates as `jt9` does** (#742): `sync9`'s 0.732 Hz bins walked upwards, the first that passes `ccflim`/`red2lim`
+  decoded (`jt9::sync9`), not this crate's own search in score order cut at 32. On `130418_1742.wav` the same rows as beta6's `jt9`
+  at `-d 1`/`-d 3`, 1050-1550 and 200-4000 Hz, with and without an Rx window (DT within 0.1 s, SNR 0.5 dB); two DTs were 0.2 s off.
+  The crate's own `peakdt9` gate is gone. Tier C now decodes as its `jt9 -d 3` side: -26.58 dB (baseline -26.64), `jt9` only 3 of 300.
+- **FT4 subtracts `gen_ft4wave`'s frame** (#739, #734), as `subtractft4.f90` does: the residue of a clean signal goes from -20 dB to
+  -29 dB. Three marginal messages leave `ft4_eq_local` (Rust-only equaliser), now guarded by a recall floor of 12 of `jt9`'s 14.
+- **Q65 decodes a noiseless frame** (#740, #735; **marked divergence**): the `s3lim` clip base is floored at the range `int16` audio
+  carries. On float input with no noise the 40th percentile was f32 rounding and the clip flattened the tones' sidelobes; WSJT-X's
+  `int16` input cannot reach that. The floor never engages on the vendored recordings.
+- **JTTY refuses a misaligned view of a decoded frame** (#728; upstream PR #702, `is_frame_alias`): upstream's own case went from 4
+  false frames in 24 trials to 0, with 24/24 still decoded in full.
+- **C: a JT9 decoder refuses `t_early_s`, `t_late_s`, `score_threshold` and `max_cand`** (#744, `MFSK_STATUS_UNSUPPORTED`), as
+  every option a mode lacks is: its scan reads none of them since #742, and they were accepted and ignored.
+- **WSPR refuses an out-of-range type-2 suffix and type 63** (#727; upstream `ffa884606`), as beta6's `wsprd` does: `unpackpfx` no
+  longer wraps. 1 488 rows of the 26 046-row `unpk_` fixture, rebuilt from beta6, change.
 
 ### Performance
 
-- **GFSK/CPFSK batch synthesis without `exp`, a division per pulse point or libm `sin` per sample** (#726). The 3-symbol Gaussian pulse (`bt` 1
-  and 2) uses WSJT-X v3.3.0-beta6's degree-7 tail polynomials (`waveform_kernels.f90`, coefficients cited), is built half and mirrored (it is
-  even), and the NCO's `sin` is beta6's degree-9 polynomial on a folded quadrant. Against beta6's generators: FT8 -94 dB, FT4 -96 dB, FST4-15
-  -88 dB (within about 1 dB of the `erf`/`sinf` form: FT8 1.1 dB worse, FT4 0.7 dB better); pulse within 3e-6 of the `erf` form. The
-  envelope ramps still call libm `cos`, and the CoreS3's live transmitter (`GfskStream`) gets only the polynomial pulse table. FT8 `synthesize`
-  on an x86_64 host: 704 -> 535 us (-24 %, with a fast libm); **not measured on the LX7**: the CoreS3 `tx-synth bench` log times the batch
-  path, which is what this changes.
-
-### Fixed
-
-- **C: a JT9 decoder refuses `t_early_s`, `t_late_s`, `score_threshold` and `max_cand`** (`MFSK_STATUS_UNSUPPORTED`), as every
-  option a mode lacks is: JT9's scan is `jt9`'s since #742 and reads none of them, and they were accepted and ignored.
-- **JT9 picks its candidates as `jt9` does** (#726). Its scan was this crate's own search, tried in score order and cut to
-  `max(max_candidates, 32)`; `jt9` walks `sync9`'s 0.732 Hz bins upwards and decodes at the first that passes `ccflim`/`red2lim`
-  (`jt9_decode.f90:59-284`), and `peakdt9`'s DT depends on that bin (two rows were 0.2 s off). Ported (`jt9::sync9`): on
-  `130418_1742.wav` the same rows as beta6's `jt9` at `-d 1`/`-d 3`, 1050-1550 and 200-4000 Hz, with and without an Rx window
-  (DT within its 0.1 s print, SNR 0.5 dB). The crate's `peakdt9` gate is gone. **API:** `Jt9Extras::search` reads only the band.
-  Tier C: the sweep now decodes as its upstream side runs (`-d 3`; `Fast` is `-d 1`, -26.30 dB): -26.58 dB (baseline -26.64),
-  `jt9` only 3 of 300, crate only 0.
-- **JT9 and JT65 report DT on WSJT-X's scale** (#726). Their `TX_START_OFFSET_S` was 0.0; WSJT-X starts both 1.0 s into the minute
-  (`Modulator.cpp:163`, `jt9sim.f90:124`, `jt65sim.f90:217`) and reports DT from there (`jt65_decode.f90:425`), so every DT from `Decoder`
-  was 1.0 s higher than `jt9`'s on the same file (JT65 golden: +1.02 vs 0.0) and the search window sat 1 s early. `ModeMeta::tx_start_offset_s`
-  is now 1.0 for both, so a host placing a JT9/JT65 transmission by it no longer keys up 1 s early. Same messages on the vendored recordings
-  through `Decoder`; the re-centred window picks other lags, so numbers move (JT65 golden SNR -18.9 -> -18.3 dB on four carriers, -18.6 -> -20.1 on
-  1500 Hz, `jt9` -19; JT9 `JA1KAU` DT 1.12, `jt9` 1.2). `tests/jt_dt_vs_jt9.rs` compares with `jt9`.
-- **Q65 decodes a noiseless frame (#735). Marked divergence from WSJT-X.** `condition_symbol_spectra` clips the symbol energies at 20x their 40th
-  percentile (`q65_loops.f90`'s `s3lim`). On float input with no noise that percentile is f32 rounding, 160 dB below the peak, so the clip saturated the
-  tones' sidelobes too (30-67 of 192 bins a symbol tied) and BP failed: an aligned noiseless Q65-15A frame with its start cut was lost with noise at 1e-9
-  and decoded at 1e-7 (found while making the CPFSK phase exact, #726). WSJT-X cannot meet it (`int16` audio has 128 dB of range at Q65-15; `jt9` decodes the
-  `int16` form of this slot); `base` is now floored at that range, `peak / (3 * 32767^2 * nsps)`. The floor never engaged on the vendored recordings (margin >= 114 dB) or the noisy
-  synthetic tests; it can engage on a noiseless int16 file (the quantisation error of a tone is not white; about -12 dBFS and louder), with the same decode. 4 of 12 new inputs fail without
-  it (noise 0 and 1e-9, cuts 3750 and 6000); the `dt_window` noise added for it is gone.
-- **FT4's subtraction reference is `gen_ft4wave`'s frame** (#734, follows #729). It was `gen_ft8wave`'s form (103 symbols, an `nsps/8` ramp),
-  which left the two ramp symbols of a transmitted signal behind (-20.9 dB through the constant-amplitude LS subtraction, about -20 dB through
-  the decoder's LPF one; now nothing, and -29 dB); `subtractft4.f90` builds `cref` with `gen_ft4wave` over `(103+2)*NSPS` from
-  `nstart=dt*12000+1-NSPS`. **API:** `GfskParams` (a public struct built by literal) gains `frame_ramp: bool`, so a downstream literal needs the field:
-  a minor release. The FT4 snapshot fixtures moved (header of `decode_snapshot.rs`): no message appears, and three marginal ones go from
-  `ft4_eq_local` (Rust-only equaliser; still decoded by `ft4_default` and four other configurations), now guarded by
-  `ft4_wsjtx_sample_eq_local_recall_floor` (12 of `jt9`'s 14).
-
-- **WSPR, JT9, JT65 and Q65 transmit waveforms are `Modulator::modulate`'s** (#726). The loop took `cos` of an `f32` phase before advancing
-  it, with `f0 + tone * spacing` in `f32`; WSJT-X advances a `double` phase first and takes `sin`. Against that, on a 110 s WSPR frame:
-  -35 dB (an `f32` sum drifts 0.04 rad), and a different phase. Now a `u64` turn accumulator (`engine/dsp/nco.rs`, shared with
-  the GFSK modes; no `f64` per sample) with the per-symbol frequency formed in `f64` (from the `f32` `f0` and spacing, widened: JT9's `12000/6912` is not exact in `f32`, 1e-4 rad over a frame): within 2e-4 of an `f64` reference of the Modulator's loop
-  (`cpfsk::tests`). `engine::dsp::subtract` rebuilds the same waveform through it. The JT65 averaging test tries up to 8 noise draws: the window it relied on moved. (The exact-zero Q65 slot that this exposed is fixed, #735.)
-- **FT4 transmit waveform is `gen_ft4wave`'s** (#726). It was synthesised like `gen_ft8wave`: 103 symbols, an `nsps / 8` ramp, the phase
-  starting at the first tone. WSJT-X frames the tones with a ramp symbol each side (105 symbols, 60 480 samples) and ramps a whole symbol.
-  On a fixed tone list against WSJT-X's own generator, tones aligned: -21 dB over the frame before (-45 dB inside it, edges excluded), -103 dB
-  (beta4) / -82 dB (beta6) now. **API (next release is a minor):** `synthesize::<Ft4>` / `synth_len` return 60 480 samples; the tones start
-  576 samples in, so **a host that placed FT4 at `tx_start_offset_s` now sends 48 ms late**: place every mode at the new
-  `tx_buffer_start` (`Encoded`, `ModeMeta::tx_buffer_start_samples_12k`, appended to C `MfskModeInfo`, Swift, Kotlin):
-  FT4 5424, FT8 6000, 1 s modes 12 000, for DT = 0 (WSJT-X sends FT4 ~150 ms earlier). `Waveform` is `#[non_exhaustive]`. New tier A `tests/gen_wave_vs_wsjtx.rs` (FT8 -68 dB, FT4 -82 dB). FT4's subtraction reference follows (#734); the CoreS3's `GfskStream` is not changed.
-- **JTTY: a candidate that is a misaligned view of a frame already decoded is refused** (#726, upstream PR #702, v3.3.0-beta6
-  `is_frame_alias`). A strong signal left repeatable false frames (`IG4QXF TU`): a sync candidate a whole number of symbols inside a
-  decoded frame matched 7 of 13 sync tones by chance and still gave a TBCC codeword. It is dropped when, within 2.5 tone spacings and
-  at a near-whole-symbol offset, >= 80 % of >= 9 overlapping received tones equal that frame's, shifted alike. Measured on upstream's
-  own case (`tests/jtty_alias.rs`, fox at -3 dB, 24 seeded trials): 4 false frames before, 0 after, 24/24 decoded in full, and a
-  second station 30 Hz away at 18.5 symbols still decodes. Tier B (`jtty_rx` vectors) unchanged.
-- **WSPR: an out-of-range type-2 suffix and the reserved type 63 are refused, as `wsprd` of v3.3.0-beta6 does** (#726, upstream
-  `ffa884606`). `unpackpfx` kept `nc` in a `char`, so a suffix field past 60255 wrapped into a valid suffix; the port reproduced
-  that. Measured on the 26 046-row `unpk_` fixture, rebuilt from beta6 (`wsprd_unpack_beta6.tsv`): 1 488 rows change, none left
-  unmatched; the full tier A+B gate is green. Detail in `scripts/wsprd/`.
-- **FST4 transmit waveform is `gen_fst4wave`'s** (#726). The first and last symbol were extended and ramped `nsps / 8` (as FT8); upstream
-  does not extend them and ramps a half symbol (`Waveform::Fst4`). **FT8, FT4 and FST4 keep phase and carrier in a `u64` turn accumulator**
-  (no `f64` per sample, which an LX7 cannot afford; beta6 sums in `f64`): an f32 sum drifted (FST4-60: -42 dB over 51 s). This is the
-  batch `synthesize` path; the CoreS3's streaming `GfskStream` (its live transmitter) is not changed.
-- Against WSJT-X's own generators on a fixed tone list (new tier A `tests/gen_wave_vs_wsjtx.rs`, beta6): FT8 -68 -> -95 dB, FT4 -21 -> -95 dB,
-  FST4-15 -16 -> -88 dB (over the whole frame: the extra pulse tail moves the phase throughout), JTTY already -99 dB (pinned, unchanged),
-  max 3e-5 to 1.1e-4. The full-slot subtract pin was re-recorded (the input moved by up to 2 LSB).
+- **GFSK pulse and NCO `sin` are beta6's polynomials** (#738): no `exp`, division or libm `sin` per sample; within about 1 dB of the
+  `erf`/`sinf` form against beta6's generators (FT8 -94 dB, FT4 -96 dB). FT8 `synthesize` on x86_64: 704 → 535 µs. Not measured on
+  the LX7.
 
 ### Docs
 
-- **README shortened, 823 -> ~230 lines, and its Japanese twin now mirrors it** (was a 58-line summary). It leads with what an operator
-  can run (the skimmer, the CoreS3 receiver, the M5StickS3) and states each fact once. Corrected on the way: FST4W was missing from
-  the protocol and feature tables; FST4 has seven periods, 15-1800 s, not five; the WSJT-X speed column now reads
-  `UPSTREAM_EVALUATION.md`'s 2026-10 ratios (FT8 4.8-5.0x, was 2.0-2.3x; WSPR's crossing cell is slower than `wsprd`); the Swift
-  binding is built and tested by CI (the README said never since 0.13); the design diagram's `core` box is `engine`. Added the
-  ft8_lib result (401 of `jt9`'s 401). Design text moved to `DESIGN_RATIONALE.md` §7; contributing and FFI detail is left to
-  `CONTRIBUTING.md` and `BINDINGS.md`. The Quick Start doctest is unchanged.
+- **README shortened, 823 → ~230 lines, and its Japanese twin now mirrors it** (was a 58-line summary). It leads with what an operator
+  can run and states each fact once. Corrected on the way: FST4W was missing from the protocol and feature tables; FST4 has seven
+  periods; the WSJT-X speed column reads `UPSTREAM_EVALUATION.md`'s 2026-10 ratios; the Swift binding is built and tested by CI; the
+  design diagram's `core` box is `engine`. Design text moved to `DESIGN_RATIONALE.md` §7.
+- **The beta6 port is recorded in `docs/notes/WSJTX_BETA6_PORT.md`**, and the reference docs follow it: TX placement in `LIBRARY`,
+  `BINDINGS` and `EMBEDDED` (FT4's citations at beta6's lines), JT9's scan and `SearchTuning` in `LIBRARY` and `CANDIDATES.md`.
 
 ## 0.15.1 — FT8 follows `jt9` on real recordings: 401 of `jt9`'s 401 decodes on ft8_lib's 22 recordings (was 383), reported and subtracted where WSJT-X does (`xdt`), `sync8.f90`'s lag grid and candidate dedupe, blind-CQ AP on every candidate, `i3=4` 11-character calls, `ft8b`'s last bit-metric group (#721)
 
@@ -199,469 +174,11 @@ A drop-in patch for 0.15.0: no breaking API change (it adds `engine::LlrTail`, d
   apply the settings" (up to 20 s) and "measuring the sample rate" (35 s), shown in the GUI's server line and printed by the CLI;
   the ~56 s between Connected and Decoding were silent.
 
-## 0.14.0 — the API audited and rounded out: one transmit call over every mode (`encoder`, and `mfsk_encode` in the C ABI), WSJT-X's whole-message 77-bit packer, WSPR types 2/3 and JT9/JT65 free text and compound calls sent and received; every packer and unpacker bit-exact with WSJT-X 3.2.0-rc1 (`wsprd` for WSPR text); `Decoder<P>` and `AnyDecoder` symmetric, a `prelude` and a tier map, `Debug`/`Error` on every type (breaking); the skimmer's rtl_tcp client calibrates through pauses
-
-Entries are grouped by what a reader has to do about them:
-the API first, then what changes in results, then everything else. Measurements are kept to the one or two numbers that
-justify a change; the rest is on the issue or in `docs/notes/`.
-
-### Breaking changes at a glance
-
-- **`ModulationParams`**: `NFFT_PER_SYMBOL_FACTOR`, `NSTEP_PER_SYMBOL` and `NDOWN` move to the new `SyncFrontEnd`; `SYMBOL_DT`,
-  `N_SYMBOLS` and `LdpcParams::M` are defaulted; `TONE_SPACING_HZ` is written `tone_spacing_hz(GFSK_HMOD, NSPS)` (#419).
-- **Removed**: `osd_decode`, `osd_decode_deep(4)`, `osd_decode_npre1` (`_masked`, `_npre2`) and `osd_decode_npre_generic`, for
-  `osd174_91` / `osd_npre` (#417); `jt9::baseband` (#425). `is_plausible_callsign` stays and now behaves as `is_valid_callsign` (#612).
-- **`registry::Mode` discriminants moved**: the FST4 and FST4W modes were inserted before WSPR, so `Mode::Wspr as u8` is 13, not 7, and
-  `Q65A300` 25, not 19. Nothing in this repository casts a `Mode` to an integer; the C ABI has its own
-  `MfskMode` numbers (`MFSK_MODE_WSPR = 7` is unchanged). Name a mode with its variant, `Mode::ALL` or `meta().name`, not a cast.
-- **Types**: 41 public types are `#[non_exhaustive]`: 40 in #573 and `jtty::MessageUpdate` in #651; `RowDetail::{sync_score, sync_cv, hard_errors}` are `Option`s (#594).
-- **C ABI**: appended fields only, ABI stays 3, but behaviour moves: rows are `out[0].size` apart and keep that `size` (#607, #635), a
-  retry after a short buffer is answered without decoding again (#633), `float` at other rates keeps its level (#634), and
-  `mfsk_iq_push` decodes FT8 early by default (#601). `MFSK_CAP_BUDGET` is published for four more modes (#593).
-- **JTTY times are `f64`**: `FrameDecode::tsync_s`, `MessageUpdate::start_s`, `assemble::FRAME_PERIOD_S`, `Assembler::{prune, continuations}` (#645).
-- **Kotlin / Swift**: `syncScore`, `syncCv` / `syncCV` and `hardErrors` are nullable (#594).
-- **API clean-up (0.14)**: `ft8::{message, ldpc, resample, hash_table}` are gone (`msg::wsjt77`, `fec::ldpc`, `engine::dsp::resample`,
-  `msg::hash_table`); `ft8::llr::GenericLlrSet` is removed; `uvpacket::Mode` is `UvMode`; `msk144::decode::Depth` is `decoder::Depth`;
-  `jtty::testsig::Station` is `Transmission`; `wspr::instrument` and `fec::conv::fano::instrument` need the new `instrument` feature.
-- **`AnyDecoder` follows `Decoder<P>`**: `AnySlotResult` is `SlotResult<()>` (`rows[i].decoded` / `.detail`, no `details`);
-  `decode_with` takes `OnRow<'_, ()>`; `wcalls()` borrows; `set_wcalls` returns `WcallsError`.
-- **Fewer messages decode (unpack77)**: a call WSJT-X's `callok` refuses (`AB1`, `FN4`, a leading `Q`, a blank inside) is no longer a decode;
-  telemetry prints 18 hex digits; an out-of-range `CQ` token prints `<...>`, not `<?>`.
-- **JT9 / JT65 and encoder types**: `Jt72Message::Unsupported` is removed, `Jt72Message::{Compound, FreeText}` are new (a `match` on it changes);
-  `EncodeError` gained `Wspr` and `Jt72` (it is `#[non_exhaustive]`, so a `_` arm already covers them); a WSPR power outside the set is rounded, not refused.
-- **Migration**: `LIBRARY.md` §1.3 (Rust: what changes in results, in code, what was removed, the old → new paths) and `BINDINGS.md` §3.1 (C, Kotlin,
-  Swift), each with its `.ja.md`.
-
-### Public API
-
-- **`mfsk_core::encoder`: one transmit call over `Mode`, as `AnyDecoder` is for receive (A1).** A Rust application sent by a different route
-  per family (`message_to_tones` + `synthesize`, `wspr::synthesize_type1`, `jt9`/`jt65::synthesize_standard`, `q65::synthesize_standard_for`,
-  `fst4w::encode`); the C ABI had `mfsk_encode_*` per mode and Rust had nothing at that level. `encode(mode, text)` /
-  `encode_with` give `Encoded { tones, text, hashed_calls }` (`text` as a receiver prints it, `hashed_calls` for `learn_callsign`), then
-  `synthesize` / `synthesize_i16` / `synth_len`; `TxAudio`, `EncodeOptions` (Q65 copied-last-Tx), `EncodeError`. Every `Mode`; no FFT
-  backend needed. WSPR types 2/3 and JT9/JT65 free text and compound calls are sent too (below); no mode produces `EncodeError::Unsupported` now.
-  Tier A: every mode round-trips through `AnyDecoder`; tones and waveforms equal the per-mode routes; FST4W gives `Fst4wMessage::pack_text`'s
-  tones and refusals on 15 texts. `engine::tx` stays the protocol builder's route. Design: `docs/notes/API_0_14_DESIGN.md` §7, §14.
-- **C ABI `mfsk_encode` / `mfsk_encode_info`: one encoder call over the mode, with Kotlin `Mfsk.encode` / `encodeInfo` and Swift
-  `Mode.encode` / `encodeInfo`.** The C ABI had an `mfsk_encode_*` per mode; now `mfsk_encode(mode, text, flags, sample_rate, freq_hz, out, cap,
-  &n)` gives f32 PCM (`mfsk_encode_ft8`'s buffer contract) and `mfsk_encode_info` the tones, the text a receiver prints and the hashed calls
-  (to `mfsk_decoder_add_callsign`), strings as `mfsk_decoder_unpack77`'s. Flag `MFSK_ENCODE_Q65_COPIED_LAST_TX`. Additive: two functions and a
-  constant in `mfsk.h`, ABI stays 3. `mfsk-ffi` tests 6 (FT8 PCM equals `mfsk_encode_ft8`; info equals `encoder::encode` for FT8, FT4, FST4,
-  Q65, WSPR) and the C++ smoke driver pass; Kotlin and Swift are not built on the author's host (no JNI headers, `kotlinc` or Xcode), checked by
-  their CI jobs. `BINDINGS.md` §2.6, §3.1, §4, §5; design §15.1.
-- **`msg::wspr::pack_message` (types 1, 2, 3) and `msg::jt72::pack_message`: the encoder sends WSPR types 2/3 and JT9/JT65 free text and compound
-  calls.** Ports of `wqencode` (with `packcall`, `packgrid`, `packpfx`, `pack50`, `hash`) and `packmsg` / `packtext`; `Jt72Message` gains `Compound`
-  and `FreeText` (below). WSPR power is clamped to 0..60 and rounded to the WSPR set as upstream does (38 dBm goes out as 37), not refused; the
-  alternation of type 2 and type 3 is the application's schedule. Against rc1's own routines built with gfortran: WSPR 2 226 rows plus all 32 400
-  four-character grids offline, JT 7 651 rows (`tests/fixtures/{wspr_pack,jt72}_rc1.tsv`). New `EncodeError::Wspr`, `EncodeError::Jt72`.
-  `LIBRARY.md` §1.3; design §15.2, §15.3.
-- **`msg::wsjt77::pack77_message`: WSJT-X's whole-message 77-bit packer (A2).** A port of `pack77_encode_core` (rc1 `packjt77.f90:527-627`)
-  with its status codes (`Pack77Error`, `Pack77Options`, `Packed77`): the candidates in upstream's order (0.1 DXpedition, 0.3/0.4 Field Day,
-  0.5 telemetry, 0.6, 1/2, 3 RTTY Roundup, 4, 5 EU VHF), each accepted only if it unpacks to the same text, then free text. Not ported: the
-  `$DX` macro. Checked against rc1's own packer, run over its `messages.txt` and 1 203 cases of ours: `tests/fixtures/pack77_rc1.tsv`
-  (2 163 rows, every candidate: status, `i3.n3`, bits, text, hashed calls) all equal, and 35 000 random rows once, outside the repo.
-  `docs/notes/API_0_14_DESIGN.md` §8.
-- **`Decoder<P>` and `AnyDecoder` are symmetric (A3).** `AnySlotResult` is `SlotResult<()>` and `decode_with` takes the same `OnRow`
-  (breaking: the two parallel vectors and the `(&Decoded, &RowDetail)` callback are gone); `Decoder::decode_i16`, `Decoder::set_ap_hint`
-  (FT8, FT4, FST4, Q65, through `HasApHint`) and `AnyDecoder::extras()` (`AnyExtrasRef`) are new; `wcalls()` borrows and `set_wcalls`
-  returns `WcallsError`, so a too-long list is no longer reported as "unsupported" (the C ABI now answers `InvalidArg`, as its doc said;
-  header unchanged). `TooManyCalls` gained `Display` / `Error`. Migration: `LIBRARY.md` §1.3; design §9.
-- **API clean-up for 0.14 (C1-C3, L3, L4).** The four `ft8` migration façades (`message`, `ldpc`, `resample`, `hash_table`) are deleted, with
-  their users moved to the real paths; `ft8::llr::GenericLlrSet` is gone; three names that collided with application-layer names are
-  renamed (`uvpacket::UvMode`, `jtty::testsig::Transmission`, and `msk144` takes `decoder::Depth`, same levels and C values); the 22
-  process-global counters of `wspr::instrument` / `fec::conv::fano::instrument` exist only with the new `instrument` feature (not in `full`;
-  the CI row for embedded WSPR turns it on); doc lines naming `ft8-core`, `mfsk-fec`, `mfsk-msg`, `mfsk-engine` point at the modules. The
-  `embedded-poc` sample apps follow separately. Old → new table: `LIBRARY.md` §1.3; design §3-§5.
-- **`mfsk_core::prelude` and the tier map (L1, L2).** `use mfsk_core::prelude::*;` brings `Decoder`, `AnyDecoder`, `DecodeParams`,
-  `SlotInput`, `Row`, `encode`, `Encoded`, `TxAudio`, `IqReceiver`, `Mode`, `Decoded`, `ApHint` and the rest an application names, each line under its
-  module's feature gate; the protocol ZSTs stay at the root. The crate doc and `LIBRARY.md` §4 (+ `.ja.md`) sort the modules into
-  application / protocol building / building blocks (the surface stays wide on purpose), and §4 writes down the builder naming rule
-  (bare on a parameter struct, `with_` on a type with behaviour). Design §1, §2.
-- **Every public type is `Debug`, every error type is `Display` + `core::error::Error`.** 78 types had no `Debug` (`Decoder<P>`,
-  `AnyDecoder`, `SlotInput`, `IqReceiver` among them); a type that holds sample or spectrum buffers prints their lengths, not the
-  samples (`Audio` too, which printed every sample). `Q65DecodeError` and the three `uvpacket` errors gain `Display`/`Error`; `IqError`,
-  `Unsupported` and `jtty::pack::PackError` are `Error` without `std`.
-- **`IqReceiver` can correct a source whose real rate is not its nominal one (#686).** `iq::plannable_rate(real_hz)` gives the integer rate to build the `IqStream` with (within 500 ppm of the real one, which the chain takes: `1 035 949` and `998 444` were `UnsupportedRate`) and the offset that is left; `IqReceiver::set_rate_offset_ppm` / `IqToAudio::set_rate_offset_ppm` (also `PfbChannelizer`) put every channel's audio on a true 12 kHz grid, with a last stage on the 12 kHz baseband (a Kaiser-windowed sinc cut at 6 kHz, phase interpolated linearly, no group delay, 0.016 % of a core a channel at 768 kS/s), the NCO and the PFB sub-bands following the real rate, and `set_time` / `utc_of` reading sample counts at the real rate. It may change while running without losing a slot; up to 50 000 ppm (5 %). `IqReceiver::step_time` sets the clock at once (not used by the skimmer: its real-RSP1 trial of a faster tracker decoded fewer messages, see `docs/notes/RTLTCP_TIMEBASE.md`). `IqReceiver::track_rate(Some(RateTrackConfig::default()))` learns the offset from the readings of `set_time` (a least-squares line through the anchors, three standard errors from zero, 400 ppm at most per fit, a fit a minute at the earliest). With no offset set the arithmetic is the old one. Before: an RSP1 that delivered 994 kS/s for 1 024 000 asked stepped the clock by a second every ~90 s (`SampleClock` slews 400 ppm and steps at 1 s) and warped FT8 by 180-370 ms a slot; a tracker given only the clock learns 1 500 ppm to 1 499.3 with no step. C ABI: `mfsk_iq_plannable_rate`, `mfsk_iq_set_rate_offset_ppm`, `mfsk_iq_rate_offset_ppm`, `mfsk_iq_track_rate` (additive; the ABI revision stays 3; not in Kotlin / Swift yet).
-- **MSK144 decodes as audio arrives (#497).** `msk144::decode::Stream` takes 12 kHz `i16` in chunks of any size and reports each
-  decode once its 0.6 s window is complete, as WSJT-X's `mskrtd` does; `new_period()` resets the dupe check (`mskrtd.f90:88`), the
-  noise floor carries over. `decode_slot` is now a `Stream` fed the whole slot, so its output is unchanged; any chunk size gives
-  the same decodes (`tests/msk144_stream.rs`). The C ABI and bindings follow separately.
-- **FST4W, and FST4-900 / FST4-1800 (#649).** WSJT-X's WSPR-style beacon on FST4's modulation: `Fst4w120` / `300` / `900` / `1800`
-  (feature `fst4w`), LDPC(240,74) + CRC-24 over a 50-bit type-0.6 message, `Decoder<P>` with `wcalls()` / `set_wcalls()` for the Keff-50
-  known-call list, `Decoded::hash22` for an unresolved `<...>` row, `Mode::Fst4W*`, `pack77_wspr`. `Fst4s900` / `Fst4s1800` join FST4
-  (largest slot transform now 21 591 360 points). C ABI: `MfskMode` 26-31, `hash22` on both rows, `mfsk_fst4w_pack`,
-  `mfsk_decoder_get_wcalls` / `set_wcalls`; Kotlin and Swift follow (written without a JVM or a Mac: CI builds them first). Exact against
-  upstream: 1 208 FEC inputs, 1 201 `genfst4` messages, `jt9 -W` / `-7` rows, and WSJT-X's own FST4W-1800 sample (`DL0HOT JO60 30`).
-  Upstream bug found: `genfst4.f90:40-43` eats characters after two leading blanks (not reproduced). Detail: `LIBRARY.md` §3.3.
-  Tier C (`fst4w_sweep`, task `fst4w/t1`, 1 760 files): the same as `jt9 -W` in all 8 conditions (20 upstream-only, 16 crate-only,
-  crossings within ±0.17 dB, no extras either side), and 0.30× of upstream's time near the crossing (53 vs 176 ms; first measured 1.77×, #670: OSD pattern loop).
-
-- **`IqReceiver::add_audio_channel`, `take_audio_from` and `utc_of_audio`, for a receiver with no slot; JTTY's
-  `MessageUpdate::calls` (#650).** An audio channel is placed as a slotted one but cuts nothing: it keeps its continuous
-  12 kHz audio, which `take_audio_from` hands out up to the first break, with the audio index of its first sample, so a
-  retune, a gap or a clock re-anchoring is seen and JTTY's `Stream` can be finished and reset there. `take_audio` joins the
-  runs as before. `MessageUpdate` gains `calls` (the call atoms' callsigns, in order, each once) and is now
-  `#[non_exhaustive]`. For the skimmer's JTTY channels; `tests/iq_audio_channel.rs` runs JTTY through IQ to its calls.
-- **`#[non_exhaustive]` on the public types that are expected to grow (#573).** One break, taken once, so that the growth
-  itself stops being one: a new protocol is patch-level by this crate's convention, but it adds a `ProtocolId` variant, so each
-  had technically been breaking, as is any field added to an output row, `ProtocolMeta` or a mode's `Extras`. 40 types gain it
-  (53 now carry it): output rows and native results, registry metadata, the search knobs, `Station` / `QsoContext` / `Contest`, the
-  option enums. A caller pays a `_` arm on a `match` and `Default` plus field assignment where it wrote a struct literal;
-  `Station::new`, `QsoContext::new` and `Sniper::new` are new. `ApMode`, `Depth`, `QsoProgress` and the `engine` / `fec`
-  primitives stay exhaustive. No behaviour changes. List and migration: `LIBRARY.md` §1.3 (and `.ja.md`).
-- **The coarse-sync geometry belongs to the modes that use it, and derived constants are derived (#419).** `NFFT_PER_SYMBOL_FACTOR`,
-  `NSTEP_PER_SYMBOL` and `NDOWN` move from `ModulationParams` to a new `SyncFrontEnd: Protocol`, implemented by the 7 types that
-  decode through the shared front end (FT8, FT4, FST4 ×5); the other 17 carried values nothing read, and JT9's contradicted its
-  own search. A mode without it cannot reach `engine::sync` or the generic pipeline: a compile error, not a placeholder.
-  `SYMBOL_DT`, `N_SYMBOLS` and `LdpcParams::M` default to their identities; `TONE_SPACING_HZ` stays required (Q65's sub-modes
-  B…E are `2^(letter−1)` wider) but is written with `tone_spacing_hz`, so a forgotten value fails to compile. FT4's hand-typed
-  `20.833` is the derived `20.833334`; decode output is unchanged. `tests/protocol_invariants.rs` pins all 24 types.
-- **`RowDetail` says what the mode reports (#594).** `sync_score`, `sync_cv` and `hard_errors` are `Option`s: WSPR, JT9, JT65 and Q65
-  gave `0.0` / `0` on every row, and FT8's a7 and a8 list decodes a placeholder sync score, so a measured zero could not be told
-  from a number the mode does not have. They are `None` there and `Some` for FT8, FT4 and FST4 searched decodes; the doc says on
-  which scale. The C row keeps its layout and gains `flags` bits 2-4 (`MFSK_DECODE_FLAG_HAS_*`). `Decoded::new` exists, since
-  a `#[non_exhaustive]` `Decoded` could not otherwise be built outside the crate.
-- **A returned row names the delivery it was, and every mode's row has an identity key (#592).** `RowDetail::delivery` is the
-  position of the delivery a returned row came from (compared exactly: no frequency rounded to the Hz, no key to build), `None` for
-  a row the callback never saw. `RowDetail::info` is filled for WSPR (50 bits), JT9 and JT65 (72) and Q65 (77), not only FT8, FT4
-  and FST4, so two JT65 `K1ABC W9XYZ EN37` rows are no longer one by text. `Q65Result` gains `bits77`; `Jt72Message::bits72()`;
-  `AnyDecoder::delivery_is_exact()` says which `decode_with` contract a decoder runs (`STREAMING.md` §3a / §3b).
-- **`SlotInput::budget` is honoured by every mode (#593), and FT8 `SicEarly` stops when it does (#587).** Only FT8, FT4 and FST4 polled
-  it; WSPR, JT9, JT65 and Q65 ran whole and returned an all-zero `BudgetReport`. Each now polls once per candidate and sets
-  `exhausted`; a candidate already running finishes, the coarse search is not cut, Q65's averaged decode (a whole period) is not
-  cut. `SicEarly` polled nothing between its checkpoints, so a 300 ms budget ran 641 ms; it now runs 304 ms (`BudgetReport` gains
-  `rows_subtracted`). The four `DecodeRequest`s gain `.budget(check)` and `.decode_reported()`. `tests/decoder_budget.rs`.
-- **Early decode for live use: `Decoder::decode_prefix` / `decode_prefix_with` (#572).** Call it as audio arrives with the period
-  so far and `SlotInput::period`. FT8 returns checkpoint A's rows at 141 696 samples (~11.8 s, `Stage::Early`), subtracts at 162 432,
-  and at the whole period returns the same rows in the same order as `decode`; other modes return nothing until then (tests also under
-  `fixed-point`). `SicEarly` runs as resumable steps (`ft8::decode::Staged`) with no change to its rows. C
-  `mfsk_decoder_decode_prefix_i16` / `_f32` and `MfskDecode::stage`; Kotlin and Swift `decodePrefix`. Design: `EARLY_DECODE_DESIGN.md` §12.
-- **`IqReceiver` delivers prefixes (#600).** `set_prefix_points(id, points)` (off by default) cuts a channel's slot at exactly
-  those 12 kHz counts, then whole, through the same `push_*` (`CompletedSlot::is_whole()`); the points come from the channel's
-  decoder, `Decoder::prefix_points()` (`[141_696, 162_432]` for FT8 under `SicEarly`, empty otherwise). Through IQ `qso3_busy`
-  gives 15 rows at 11.8 s and the same 21 at the end as `decode` (`tests/iq_prefix.rs`). Design: `IQ_PREFIX_DESIGN.md`.
-
-### Decoding
-
-- **`pack77`, `pack77_type1`, `pack77_type4`, `pack28`, `pack77_free_text` give rc1's bits.** They were written before `pack77_message` and
-  differed from it: a directed CQ (`CQ DX`, `CQ POTA`, `CQ 123`) was left-justified, not `adjustr`ed (4 of the fixture's rows, `pack28_core`
-  `packjt77.f90:882-1001`); the 12 bits of a type-4 `CQ` were 0, not the hash of the call (`:2377-2404`); `CQ` + report, `CQ 12`, a `Q` call and a standard call as type 4 were
-  accepted, `+50`, `<hash>` calls and lower case refused; the empty text was refused. Now thin wrappers over `pack77_message`'s code (`tests/pack77_forms.rs`,
-  the 2 163-row fixture; before, 177 divergences in 18 classes). The C ABI (`mfsk_encode_ft8` etc.) and apps change on air for those inputs only; plain
-  CQ / report / RR73 messages are bit for bit as before. The A7 CQ stand-in `QU1RK` keeps its bits. `LIBRARY.md` §1.3.
-- **JT9 and JT65 print free text and compound calls as `jt9` does; WSPR text matches `wsprd`.** `Jt72Message::Unsupported` rows are gone:
-  JT9 no longer drops non-standard messages (`jt9fano.f90:87-88` filters only `000AAA`), JT65 blanks `000AAA` and the `0L6MWK` birdie
-  (`decode65b.f90:27-28`) and no longer emits `<unsupported …>`. WSPR follows `wsprd_utils.c` `unpk_`: a Type 3 call unresolved is `<...>`
-  (was `<#hhhhh>`), `<CALL>` once heard; `PFX/CALL` as `wsprd` prints it; `unpackcall` exact, so some calls that were dropped now decode. Checked
-  row by row against rc1's own routines (7 651 JT rows, 26 046 WSPR rows); the JT65 / JT9 goldens (4/5, 7/7, extra 0) and the WSPR golden
-  (9/9, extra 0, texts and freq/dt/snr identical) are unchanged: the references contain no such messages. One divergence: `ntype == 63` is
-  `None`, not an empty message. `LIBRARY.md` §1.3; design §15.3.
-- **`unpack77` matches rc1 on `callok`, hash placeholders and telemetry.** `unpack28` follows `unpack28_core` (`packjt77.f90:1013-1096`): a
-  standard call `callok` refuses (`AB1`, `FN4`, a leading `Q`) or a call / `CQ` word with a blank inside fails to unpack, so `unpack77`
-  returns `None` where rc1 has `ok = .false.` (FST4W transmit, through `pack77_wspr`, refuses such a call too); the 28-bit fields
-  532444 and up print `<...>`, not `<?>`; telemetry prints all 18 hex digits (`3z6.6`, `:1640`), not without leading zeros. JTTY keeps the
-  unchecked text. Vectors are rc1's own `unpack77`; the 2 163-row `pack77_message` fixture matches with its two local patches removed, and no
-  golden expectation moved. `LIBRARY.md` §1.3.
-- **JT65 deep search (`hint65`) is ported (#648).** `DecodeParams::deep_search` (`ndepth & 32`) was carried and ignored; it now matches
-  a candidate Chase fails on against a bank of known calls (`Jt65Extras::known_calls`, WSJT-X's `CALL3.TXT` that beta1 made a
-  caller-supplied list) plus the DX station's reports, from v3.3.0-beta1's `hint65.f90`. On the `jt65sim` corpus -25 dB goes from 0/20 to
-  20/20; 0 phantoms on 300 files and on 200 noise periods at 1 000 calls (1 at 10 000). Standard messages only, single periods only;
-  `docs/notes/BENCHMARKS.md`. The C ABI does not carry the call list yet.
-- **OSD is `osd174_91.f90` / `osd240_101.f90` line for line, and 8× faster than upstream (#417).** FT8, FT4 and FST4 share one
-  (`fec::ldpc::osd_npre`), replacing a (174,91)-pinned port and a generic one that matched upstream in neither: both picked the basis
-  as "first `k` independent columns" rather than the `id..k+20` column swap, and the pinned one mis-scored candidates when the pivots
-  left `0..k`. Against WSJT-X's own Fortran (gfortran, release flags) it agrees on all 18 860 recorded inputs
-  (`tests/osd_upstream_fixture.rs`, regenerated by `scripts/osd-upstream/run.sh`). A call takes 24 µs against upstream's 198;
-  `qso3_busy` at `Depth::Deep` decodes in 504 ms instead of 570, the FST4-60 golden in 597 instead of 951.
-- **The plausibility verdict no longer checks callsign prefixes (#612; absorbs #611's `A5A` fix, thanks BG7JAF).** FT8 and FT4 refused
-  a callsign whose one-letter prefix was not F G I K M N R W or whose letter+digit prefix was not in an 82-entry ITU table. That
-  refused 13 of the 100 303 callsigns spotted on PSK Reporter in FT4/FT8 since 2024-06-20 (all special-event: `J42A`, `L22D`,
-  `U1BD`, `U5WAR`, …), and `A5A` (Bhutan) outright, and the table lacked 57 of the 138 letter+digit prefixes `cty.dat` lists. With it
-  off nothing else measured moved (tier C for FT8 and FT4, the busy-band corpus, `qso3_busy`, the FT4 golden, 3 000 FT4 noise slots);
-  the grammar check, which does the work, stays. Audit and numbers on #612.
-- **JT65, WSPR and JT9 take a carrier's sub-bin offset out through one `SymbolFft::mixed` (#424).** JT65 corrected with per-sample
-  `cos`/`sin` of a wrapped f32 phase, WSPR with `step · n` on the absolute sample index (~0.1 rad by the end of a slot), and JT9's
-  fixed-carrier path (`SniperRequest`) not at all, losing up to ~3.9 dB for a carrier half a bin off. All three now mix each symbol
-  window with the crate's `Mixer`. JT65 and WSPR move by one part in a million (tier C: every crossing +0.00 dB); JT9's sniper path
-  gains the correction. Q65 is left as it is: `q65_symspec` itself works on nearest-bin spectra, so correcting it would diverge from WSJT-X.
-- **`Decoder<Wspr>` and the MSK144 decoder no longer panic on `wasm32-unknown-unknown` (#583).** Their stage timers called
-  `std::time::Instant::now()` whenever `std` was on, and on that target std has no clock: `time not implemented on this platform`,
-  on any input (every browser build of WSPR or MSK144 since 0.10.1 at least). The timers go through one `Tick` (`src/clock.rs`) that
-  reads zero without a clock; the values only feed benchmark counters, so no decode changes.
-- **FT8's symbol scaling and `nsync` gate follow `ft8b.f90` (#423).** `cs = csymb / 1e3` is a true division again (a scratch gfortran
-  oracle: `z/1e3` matches componentwise division on 2M of 2M samples, `* (1/1000)` differs on 81%), and the `nsync <= 10 && xsnr < -25`
-  gate reads the Costas count of the candidate's refined symbol spectra (`ft8b.f90:164-177`) instead of recounting on the coarse
-  spectrogram after decoding. On the goldens and the FT8 sweep (T1, 1 040 trials) no group moves; the gate flips for one candidate
-  in the whole tier-A/B suite.
-- **An FT8 `decode_prefix` sequence pins the sniper with the rest of its settings (#628).** Turning the sniper on after checkpoint A
-  made the final call run one sniper decode instead of finishing the staged sequence, so early rows already returned were missing
-  from the "complete" set (21 rows down to 2 on `qso3_busy`). Whether the period runs the sniper, and on which frequency, is now
-  fixed by its first call like the strategy and search; a change applies from the next period. AP, QSO context and the message
-  filter are still read at each call.
-- **Q65 follows WSJT-X v3.3.0-beta1 where its results move (#642).** The symbol-spectra horizon `jz` now covers every complete
-  window, `(period*12000-nsps)/istep+1` (60A: 743 columns, was ~693), and the `max_drift` divisor is the 85-symbol length rather
-  than `jz`, so the two change together. The contest caller list evicts the least recently heard rather than the first inserted,
-  expires before recording, and lists the DX station as the 51st beside 50 callers (`1 + 10 * 51` = 511 codewords, was 411). The
-  tier-C Q65 sweep is unchanged to 0.00 dB in all 20 groups: it does not run q3, drift or the caller list, so it shows no
-  regression and nothing more; `q65_max_drift` and `q65_q3` still pass.
-- **JTTY packs a two-letter section after a class token as an atom, as WSJT-X v3.3.0-beta1 does (#642).** `10A CT` and `1F DX`
-  are now one frame; through rc1 upstream's lookup rejected a word shorter than three characters, so they went out as TEXT5
-  (two frames), and this crate reproduced that. A transmitted message changes on the wire for these inputs; a receiver decoded
-  both. `pack_cases.tsv` is regenerated from a beta1 build: 11 of 3 525 lines change, all this, and `jtty_pack` passes.
-- **JTTY reports an SNR a user can read, as WSJT-X v3.3.0-beta1 does (#642).** `FrameDecode::snr_db` is now
-  `db((pt − pn) / pn) − db(2500 / baud)` floored at −17 dB (`SNR_FLOOR_DB`), an SNR in 2 500 Hz; through rc1 it was `db(pt / pn)`,
-  a tone-bandwidth ratio that upstream showed as `round(snr_db − 20)`. `MessageUpdate::snr_db` is the first frame's, never
-  reassigned, appended to `MfskJttyUpdate` (ABI stays 3) and to the Kotlin and Swift updates (`snrDb`). Against a v3.3.0-beta1 `rjtty` on
-  `sjtty` files, true −10 / 0 / 10 / 20 / 30 dB read −9 / 0 / 7 / 10 / 11 there and −9.4 / −0.2 / 7.5 / 10.5 / 11.0 here: a strong signal
-  reads low, upstream's own limit. The sync gate still uses the old ratio, as upstream does.
-- **Degenerate inputs follow WSJT-X v3.3.0-beta1 (#642).** Q65's q3 `better` is 0, not `inf`, when the list has no runner-up, so a
-  one-codeword list is no longer accepted (rc1's unguarded divide passed `better >= 1.10`); silence and an empty list decode nothing.
-  FST4's sync search stops at `last_start`, the last start with a whole frame behind it, and skips a candidate when none fits
-  (`isbest<0`); rc1 scored the blocks past the end as 0 and let a partial score win. The FST4 tier-C sweep is unchanged in all 20
-  groups (crossings +0.00 dB, unexpected decodes +0): its full-slot files never reach `last_start`, so this is a no-regression result, and
-  the mechanism is pinned by a unit test.
-- **JTTY can send a message open, and says where each frame's text starts (#643).** WSJT-X v3.3.0-beta1's `pack_jtty(..., frame_starts,
-  is_final)`: `pack::pack_with_starts` returns the 1-indexed source column of each atom, `tx::payloads_with` / `tones_with` and
-  `pack::tones_with` take `is_final` (false: no end-of-message flag on the last frame, so a message typed in pieces can be
-  closed later), and the C ABI gains `mfsk_jtty_encode_tones_ex` (`mfsk_jtty_encode_tones` is `is_final` = 1). Checked against a
-  v3.3.0-beta1 `jtty_pack_oracle` on 4 025 cases (500 of them `is_final` = 0), frames and starts identical. Kotlin and Swift do not
-  expose it yet.
-- **A JTTY update says why it was emitted (#644).** `MessageUpdate::kind` is `UpdateKind::{Growing, Complete, Expired, ReceptionEnded}`,
-  WSJT-X v3.3.0-beta1's `UPDATE_*` with the same values; `Assembler::end` (what a stream's `finish` calls) reports open messages as
-  `ReceptionEnded`, where a message given up on is `Expired` and both used to be `complete = false`. Appended to `MfskJttyUpdate`
-  (`kind`, with `MFSK_JTTY_UPDATE_*` in `mfsk.h`; ABI stays 3) and to the Kotlin (`kind`) and Swift (`kind`) updates, which are not
-  built here.
-- **JTTY keeps absolute time in `f64`, as WSJT-X's `real64` (#645).** `FrameDecode::tsync_s`, `MessageUpdate::start_s`,
-  `assemble::FRAME_PERIOD_S` and the `Assembler`'s `prune` / `continuations` are `f64`; `Stream` derives window times in `f64`. An `f32` second is 8 ms
-  wide at 24 hours and 0.125 s after about 15 days, against 0.05 to 0.1 s continuation tolerances, so a stream left running
-  could stop joining frames. Per-column and per-sample loops stay `f32` (the ESP32-S3 has single-precision hardware only).
-  C ABI: `MfskJttyUpdate::start_time_s` (`f64`) appended after `kind`; `start_s` stays `f32`. Kotlin and Swift `startSeconds` are
-  `Double`. JTTY tier-C sweep and the `rjtty` frame-for-frame tests are unchanged. Breaking for Rust callers that read these as `f32`.
-- **The CoreS3 JTTY app and demo show the message's SNR (#646).** `MessageUpdate::snr_db` goes to the row (it was `NAN`, drawn `+0`, and
-  `0` in the demo) and to `ALL.TXT`, whose JTTY line now carries the S/N column (`all_txt::message_line` takes `snr_db`; the DT column
-  stays blank, a message has no slot). Host-tested in `hosttest/mfsk-app-shared`; `cargo check` of the crate with the `esp` toolchain
-  passes. Flashed (`jtty-demo`, the busy-band scene, 2026-10-10): the four messages that complete read -10 / -5 / -4 / -4 dB against true
-  -9.6 / -5.3 / -2.8 / -4.7 dB; the value is upstream's simple estimate, so a strong signal reads low (a true +30 dB reads about +11).
-- **Four packing bugs found by comparing Q65's caller list with WSJT-X v3.3.0-beta1 (#642).** (1) `pack77_free_text` padded on the right;
-  `packtext77` right-justifies (`adjustr`), so free text had other bits than WSJT-X's for the same words (read back the same, which hid it;
-  FT8/FT4/Q65 free-text transmit and any exact-codeword comparison). (2) `pack28` dropped the sixth character of a one-letter-prefix call:
-  `W1ABCD` and `K1ABCD` packed as `W1ABC` / `K1ABC`, now not standard. (3) `pack77` took `CQ`, `DE`, `QRZ` as the second call. (4) The
-  full-AP list skipped a caller whose message would not pack and left out the DX station when the own call was nonstandard
-  (`PJ4/K1ABC`); upstream packs it as free text cut to 13 characters (`*** bad message ***` as codewords of -1 when those are not
-  free-text characters) and asks only whether the DX call is standard. `pack77_q65_list_message` is that packer; a negative symbol
-  scores as never matching in `check_codeword_llh`. `tests/q65_callers_oracle.rs` covers all of it against a beta1 build.
-- **The BP uses WSJT-X's `platanh` (#658).** Every WSJT-X belief-propagation decoder calls `lib/platanh.f90`, a piecewise-linear `atanh`
-  (one definition, duplicated unchanged in `bpdecode144.f90`; `atanh` is only in comments). This crate's generic BP called `atanh`
-  clamped at ±4.6. Same corpora, one binary switched by an environment variable: FT8 -2 net decodes of 592, FT4 +4 of 555, FST4 -1 of
-  1881, FT8 busy 0 of 4441 (one more unexpected decode), MSK144 identical; no 50 % crossing moved by 0.5 dB (largest 0.36 dB,
-  FST4-300 CCIR-poor); the six suites ran in 139 s against 167 s. FT8 again at 100 trials a cell: 2561 vs 2559 decodes (12 gained, 14 lost, p = 0.85), crossings within 0.04 dB. Messages and their order are unchanged in all 53 decode snapshots;
-  `hard_errors` moves by up to 11 and `pass` in 88 rows, so the 22 snapshots where one of them changed were rewritten (the other 31 are untouched).
-  `tests/decode_snapshot.rs`'s note that a difference is never a reason to rewrite a fixture was about the 0.13 redesign.
-
-### Internals
-
-- **DSP duplicates become one (#425).** `engine::dsp::window::cosine_sum` replaces the two Nuttall-4 loops (symmetric in
-  `engine::sync`, periodic in `ft8::baseline`), bit-identical to both. `engine::dsp::downsample::repack_centered` is the FFT-shift
-  re-pack that `wspr::baseband` and `jt9::softsym::downsam9` each wrote. `Mixer` is a const generic over `LEAD` and `RENORM`;
-  `Mixer::tweak1` is `tweak1.f90`'s configuration, bit-identical to `msk144::sync`'s loop, and the default instantiation, which the
-  CoreS3's FT4 DDC runs, compiles to what it was. `cpfsk::for_each_phase` is the transmitter's phase accumulator, now also walked by
-  `subtract`'s non-GFSK rebuild (last bit of `cos`/`sin`; transmit output bit-identical). Each is pinned against the code it replaced.
-  `jt9::baseband` is removed (breaking): no callers, and its doc claimed to mirror `downsam9.f90`, which it does not. `uvpacket::rx` mixes
-  with `Mixer` instead of `sin_cos(step · n as f32)`, whose carrier sat 0.016 rad off over the last 4 000 samples of a 60 s buffer.
-  Left alone on purpose, with the reasons in `window.rs` and `Mixer`'s docs: the oscillators and windows on the CoreS3's decode path, `twkfreq_poly`.
-- **FT8's triage shifts the refined carrier with the crate's mixer (#423).** `triage_candidate` rotated `cd0` by per-sample `cos`/`sin`;
-  it calls `freq_shift_cd0_into`, the transform FT4 has run since. tier A+B unchanged, tier C for FT8 (every crossing +0.00 dB) and the
-  busy-band corpus identical. The rest of #423 is dispositioned on the issue: the two SIC drivers stay apart, and two items that look like
-  refactors are fidelity changes.
-
-### C ABI and bindings
-
-- **Release binaries for Windows, Android and iOS (#368).** A tag attached one `mfsk-ffi` build, linux-x86_64, though `ci.yml` already built
-  the MinGW DLL, the Android arm64 `.so` and the iOS libraries on every PR and threw them away after checking them. The new
-  `ffi-binaries.yml` (called by `release.yml`) keeps them: `windows-x86_64-gnu` (DLL, import library, static library), `android-arm64-v8a`
-  (jniLibs tree, `mobile` features, checked 16 KB aligned and rayon-free), and `ios.xcframework.zip` with its SHA-256 for a SwiftPM
-  `.binaryTarget`. It adds `windows-x86_64-msvc`: a DLL with the C runtime linked in (`+crt-static`; the default build imports
-  `VCRUNTIME140.dll`, which a PC without the VC++ Redistributable lacks) and its import library. The C++ driver is compiled with `cl` and run
-  on Windows against that DLL and against the MinGW package's, so a DLL that does not load there fails in CI, not for a user. The driver
-  takes the golden recordings' paths from the environment as well as from `build.sh`'s macros, and `build_msvc.bat` builds it. The workflow
-  also runs by hand and on a PR that edits it, so the release path is tried before a tag. Still missing: the other Android ABIs, macOS.
-
-- **MSK144 receiver handle (#497).** `mfsk_msk144_open` / `push_i16` / `push_f32` / `poll` / `pending` / `new_period` / `reset` /
-  `close` over `msk144::decode::Stream`, rows in `MfskMsk144Decode` (size-versioned, `t_s` a `double`); MSK144 now publishes
-  `MFSK_CAP_STREAM_RECEIVER`, and `mfsk-ffi` compiles the MSK144 decoder in (`protocols`). Kotlin `MfskMsk144Receiver`, Swift
-  `Msk144Receiver`; the C++ driver, Kotlin and Swift each decode the golden recording's two pings in chunks. `BINDINGS.md` §2.8.3.
-- **MSK144 transmit (#497).** `MFSK_CAP_ENCODE` was set for MSK144 with no entry point behind it. `msk144::tx::message_tones` ports
-  `genmsk_128_90.f90` and `synthesize` plays the tones as WSJT-X's modulator does (6 samples a tone, 1000/2000 Hz, the frame
-  repeated for the period less 0.5 s, its end fade); `mfsk_encode_msk144`, Kotlin `Mfsk.synthesizeMsk144`, Swift `MSK144.encode`.
-  Each binding's test sends a message and decodes it back through the receiver handle.
-- **An array of `MfskDecode` is stepped by the caller's stride, not the library's (#607).** The decode wrote row `i` at the library's own
-  `sizeof(MfskDecode)`, so a program built against an older, shorter header got row 1 onward in the wrong place and wrote past its
-  buffer. The stride is now `out[0].size`, applied to every row, with `min(size, sizeof)` bytes written each; a `size` that cannot be a
-  struct size is refused with nothing written. `mfsk_q65_history_record` reads by the same rule. `tests/row_stride.rs` (checked by
-  reverting the fix); `BINDINGS.md` §2.4 (and `.ja`).
-- **Early rows through the push handles, and Kotlin and Swift over them (#601).** `mfsk_iq_push` decodes an FT8 channel early by default:
-  checkpoint A's rows reach the callback and `mfsk_iq_poll` at ~11.8 s with `MfskIqDecode::stage` = `MFSK_STAGE_EARLY`, and the whole slot
-  queues the rest without repeating them; `mfsk_iq_set_early(rx, ch, false)` restores whole slots. The stream is opt-in
-  (`mfsk_decoder_prefix_points`, `mfsk_stream_set_prefix_points`, `mfsk_decoder_decode_stream`, `mfsk_stream_slot_is_whole`).
-  Kotlin and Swift likewise; Kotlin's lent channel decoder now takes `onDecode` and `setBudget`. `BINDINGS.md` §2.5, §2.8.2 (and `.ja`).
-- **The C ABI and the Kotlin and Swift bindings catch up with #592, #593 and #594.** `MFSK_CAP_BUDGET` is published for WSPR, JT9, JT65 and
-  Q65, so `mfsk_decoder_set_budget` no longer refuses them (`registry_caps.rs` ties the bit to "every mode with a `Decoder`").
-  `MfskBudgetReport` gains `rows_subtracted`, `mfsk_decoder_delivery_is_exact` is new, and `MfskIqDecode` appends `MfskDecode`'s detail
-  (key, flags, sync) and `key_bits` / `key` / `delivery`. All appended to size-versioned structs; ABI stays 3. Kotlin and Swift:
-  `syncScore` / `syncCv` / `hardErrors` are nullable, rows gain `key`, `keyBits` and `delivery`. Kotlin's JVM test and the Swift
-  suite (four new tests) pass in CI. `CompletedSlot::new` lets a consumer's tests build a slot. Docs: `BINDINGS.md`, `STREAMING.md`.
-- **A short output buffer no longer loses the call's result (#633).** `mfsk_decoder_decode_stream` took the stream's ready slot before it
-  checked the buffer, so the retry the ABI asks for found no slot (`UNSUPPORTED`): Swift's `decode(CaptureStream)` returned `nil` and
-  the Kotlin shim threw. The other `decode_*` calls re-decoded on retry, which fired the callback twice and stepped a Q65 average twice.
-  A refused call now keeps its rows (and a stream's period and time), and the retry is answered from them.
-- **Float audio at 44.1 / 48 kHz goes the same way as at 12 kHz (#634).** `mfsk_decoder_decode_f32` and `_prefix_f32` peak-normalised each
-  buffer to 16 bits when resampling, so a prefix sequence's level followed each prefix's peak instead of being pinned by the first, and
-  the float-engine modes (WSPR, JT9, JT65, Q65) were quantised. They now resample keeping the level and hand over `float`, so the
-  decoder sets the gain once per period. No decode changed on a synthetic FT8 signal or `qso3_busy.wav` at 48 kHz (21 rows, with
-  and without a loud click after B); this is consistency, not a measured recall gain.
-- **Rows decoded into a newer caller's array go straight to `mfsk_q65_history_record` (#635).** A decode rewrote every row's `size` to the
-  bytes it wrote, so a caller whose `MfskDecode` is longer than the library's saw `size` shrink to the library's `sizeof`, and the history
-  (which steps by `rows[0].size`) read row 1 from inside row 0's tail. `size` now comes back as the caller's stride. A single struct
-  (`MfskModeInfo`, `MfskParams`) still reports the bytes written. Appended-field callers who read the written length from a row
-  should use the header's `sizeof` instead.
-
-### Skimmer
-
-- rtl_tcp (#686, `docs/notes/RTLTCP_EVAL_PLAN.md` section 6): `RateMeter` takes a pause out of its time axis (a 1.4 s reset
-  in the 30 s window read 1.7-2.0 % short), `await_rate` waits 20 s of stream when the stream was never at another rate
-  (rsp_tcp's Init), and `IqReceiver` applies a learned rate offset on a boundary of every active channel's period
-  (60 s / 120 s modes no longer get it mid-slot). Not yet run on an RSP1.
-- rtl_tcp rate calibration now separates the requested ADC clock used for RF mixing from payload throughput
-  used for audio timing. Normal servers need no patch; the previous ADC-clock model remains selectable.
-  Two fixed-IQ comparisons improved FT8 rows from 0 to 10 and 1 to 28; long-pause reanchors remain.
-  Methods and limitations: `docs/notes/IQ_RSP1_PR688_2026-10-15.md`.
-
-- **The skimmer can read an `rtl_tcp` server, for a device SpyServer does not serve (#685; first target an SDRplay RSP through `rsp_tcp`).** New `skimmer_core::rtltcp` (greeting `RTL0`, `rsp_tcp`'s `RSP0` capabilities struct, 5-byte commands) and `session_rtl`: one fixed rate, 8-bit or 16-bit IQ (`Cu8` / `Cs16`, chosen by what the server announces; `Auto`, `8` or `16` checks it and refuses a mismatch with the way out), and a retune that waits 600 ms, writes the gain again and drops the old tuning's samples. `Config::protocol` / `rtl_format`; CLI `--protocol rtl_tcp --rtl-format auto|8|16`; GUI *Protocol* and *rtl_tcp IQ* per server (older settings read as SpyServer). The step/hold logic of `session` is now `pick_step`, shared; `stream` takes any `Link`. Tested against `fake::FakeRtlServer` (`tests/fake_rtltcp.rs`). On a real RSP1 it decodes FT8 (JA stations on 7041 kHz, 4-9 per slot). `rsp_tcp` reads no commands until its `Init` is over (10-15 s) and streams meanwhile at its start-up rate: the client waits for the byte rate (`rtltcp::await_rate`) before taking the stream (six `re-anchor: -1.0 s` in the first minute before). The rate it delivers was 994 kS/s for 1 024 000 asked (-2.9 %): the client measures it (`--rtl-calibrate SECS`, 30 by default), gives the receiver the nearest rate it takes and the rest as a rate offset (`IqReceiver::set_rate_offset_ppm` / `track_rate`, #686), and the clock was stepped once in 6 minutes instead of every ~90 s. That RSP1 on a bare USB hub also failed (`RSP failure`) within 1-7 minutes, with or without a client sending anything: give it its own powered port; 8-bit has ~48 dB of range (measured no-signal floor 1.8 LSB). Released in skimmer 1.0.1.
-- **The skimmer GUI frames the band being heard in red (rotation).** In the waterfall's thumbnail row, the thumbnails of the channels in the band the server's rotation is on now get a red frame; the focus keeps its blue outline. Nothing is framed when the server does not rotate or is stopped. GUI only (`WaterfallPanel.svelte`); not in a tagged release yet.
-- **The skimmer 1.0.0 sends to PSK Reporter itself (#655).** PSK Reporter's author, after the test-listener period, said to keep
-  sending in production. `pskreporter::APP_ENDPOINT` is now `Endpoint::Production`, for the CLI and the GUI; the tripwire test,
-  the README, `MANUAL_SKIMMER` (EN/JA), the CLI usage and the release text say so. The GUI's *Test only* wording and the header's
-  `(test, not recorded)` drop out by themselves. Checked live on the production-pointed 0.9.0 build: spots from JL1NIE appeared on pskreporter.info.
-  Tag `skimmer-v1.0.0` (the four version files and `package.json` agree).
-- **The skimmer's window says where PSK Reporter spots go.** The switch has no destination to choose (`APP_ENDPOINT`, the test listener until
-  PSK Reporter's author approves), but the window did not say what it was, so ticking it looked like reporting to the real service. A new
-  command, `psk_destination`, lets the label read *Test only* with the listener's address and the header `PSK Reporter (test, not recorded)`;
-  both drop the wording by themselves when `APP_ENDPOINT` becomes production. A unit test pins `APP_ENDPOINT` to the test listener, and its
-  failure message is the checklist for flipping it (README, `MANUAL_SKIMMER` section 10, the release text, this file). In 0.9.1; the 0.9.0 window does not say it.
-- **The skimmer's first public release is 0.9.0, a beta (#655).** The version goes from the 1.0.0 set in preparation to 0.9.0: 0.9.x is the beta,
-  1.0.0 the first release with PSK Reporter in production (its author has not yet said yes, and the destination stays the test listener). A
-  reader of the old installers (v0.13.x, which lacked JTTY, PSK Reporter, early FT8 rows and decode lanes) sees how much has changed; Windows'
-  installer allows the lower number (`allow_downgrades`, Tauri's default). The release text says what the beta is and is not, and `MANUAL_SKIMMER.md`
-  (`.ja.md`) is the user manual. The decode table's *Clear* tooltip named `ALL.TXT`, which only the command line writes; it names the database.
-- **PSK Reporter's IPFIX packets, byte for byte (#655, stage 1 of 4).** `skimmer_core::pskreporter::build_packets` builds the receiver
-  record, the spots and the two templates exactly as WSJT-X v3.3.0-beta1's `PSKReporterIPFIX.cpp` does (UDP 952-byte and TCP limits, the
-  receiver record in every datagram, templates in the first only, a sequence that counts spots, UTF-8 cut at its limits, a five-byte
-  frequency, a wrapping SNR). `scripts/pskreporter/ipfix_oracle.cpp` links that file against Qt5Core; `tests/pskreporter_ipfix.rs` requires
-  the same bytes on 58 datagrams of 32 builds. Nothing sends yet: the sender, the five-minute batching the protocol page asks for, the
-  dedupe and the opt-in setting are the next stages, and nothing goes to PSK Reporter until its author has been asked about skimmers.
-- **The skimmer CLI can send spots to PSK Reporter (#655, stage 2 of 4; `--psk-reporter`, off by default).** `PskReporter` batches on a
-  thread of its own and sends on one UDP socket, as the protocol page asks: a datagram at most every five minutes plus a random addition,
-  a callsign once per band per five minutes, templates in the first three datagrams and hourly, `informationSource` 1. `spot_from_decode`
-  and `spot_from_jtty` are WSJT-X's rules (no WSPR, no low-confidence, no own call, a locator or a CQ). It goes to PSK Reporter's **test
-  listener** (`pskreporter.info:14739`, nothing recorded) unless `--psk-production`, which waits for PSK Reporter's author (#655);
-  `--psk-to HOST:PORT` is a listener of one's own. Checked on a live SpyServer against a local listener: 36 FT8 rows offered, 8 duplicates,
-  28 sent in 3 datagrams from one port, with the receiver record and the templates.
-- **The skimmer GUI has the PSK Reporter switch (#655, stage 3 of 4).** Per server, under Settings > Server: report under the server's My call
-  at its Grid (the antenna's locator), with a free-text antenna; a server missing either stops Connect with the reason. The destination is
-  the test listener (`pskEndpoint: "test"`); production is listed greyed out until PSK Reporter's author has been asked. The header shows
-  `PSK Reporter: N sent` (red on an error) with the counts in its tooltip. Settings from before read as off.
-- **The PSK Reporter sender packs 1200-byte datagrams and sends a full one early (#655).** PSK Reporter's author answered: more often than every
-  five minutes is fine once a datagram is full (1200 bytes or more), larger datagrams are fine, `mfsk-skimmer <version>` is the software name, and one
-  callsign per antenna location with that antenna's locator (already so, per server in the GUI). The sender's datagram limit goes from 952 to 1200 bytes
-  (`FULL_UDP_PAYLOAD_BYTES`; `build_packets` and the WSJT-X byte-for-byte tests keep 952) and a spot that would overfill the queue sends it first.
-  The destination is one constant, `pskreporter::APP_ENDPOINT`, for the CLI and the GUI: the test listener until the author says yes to
-  production. The GUI's "Send to" choice and the CLI's `--psk-production` are gone (`pskEndpoint` in an old settings file is ignored); `--psk-to` stays.
-- **The skimmer is released on its own (`skimmer-vX.Y.Z` tags, version 0.9.0 on).** `skimmer-release.yml` checks the tag against the skimmer's
-  version (four files), builds the installers and makes a release not marked latest, without crates.io; the library's `release.yml` no longer
-  attaches them. An app fix no longer waits for the library's biweekly cut. PSK Reporter now sees `mfsk-skimmer 0.9.0`: 0.9.x is the beta, 1.0.0 the first release with PSK Reporter in production.
-- **PSK Reporter spot rules are WSJT-X's, checked against WSJT-X (#655, stage 4 of 4).** `scripts/pskreporter/spot_oracle.cpp` runs upstream's
-  `tokens_re` / `deCallAndGrid`, `Radio::is_standard_callsign`, `decoded_grid_pattern` and the real Fortran `stdmsg_`; the answers for 1 537
-  words and 68 messages are vendored and `tests/pskreporter_spot_rules.rs` requires them (143 real decodes off the air agreed too). The
-  check found that the skimmer's own heuristic missed `K1ABC W9XYZ R EN37`, took messages upstream calls free text, and that the JTTY
-  sender rule refused `/P` and `/R` calls and took `RR73` for a locator; PSK Reporter now uses upstream's rules, and so does the JTTY
-  one (`JttyMessage::sender`, which the station list reads too). A slot that began before the radio was last retuned is not reported.
-- **skimmer: JTTY (#650).** JTTY has no slot (frames start at any moment and a message grows while it is received), so a JTTY
-  channel is not decoded a slot at a time: the receiver keeps its continuous audio (`IqReceiver::add_audio_channel`), a thread
-  per channel runs upstream's receiver over it at a slow AGC (`jtty::rx::Stream`; Rx frequency and tolerance are the channel's
-  `rx` and `tol`, 1500 ± 50 Hz as upstream, plus the fixed side channels), and a break in the audio (a retune, a gap, the clock
-  re-anchored) ends the reception, so a half-heard message is reported cut off and never joined to the next. `Event::Jtty`
-  reports a message as it grows and when it is over. The CLI prints it and writes ALL.TXT in WSJT-X's format when it is over;
-  the database stores it as a `decodes` row of mode `JTTY` with the sender and locator by WSJT-X's spotting rule, so Analysis,
-  the map and the station list take it; the window has a JTTY tab where a message is updated in place; presets carry upstream's
-  JTTY frequencies; a JTTY channel has a waterfall like the others, drawn from the audio its thread reads. As upstream: no full-band search, and no drift search. Tested through IQ,
-  both channelizers, and across a gap (`jtty::tests`, `store::tests`). A stand-in SpyServer (`skimmer_core::fake`,
-  `cargo run -p skimmer-core --release --example fake_spyserver`) speaks the protocol and plays a 48 s script of two QSOs and a CQ
-  caller at 1500, 1350 and 1650 Hz, for trying the CLI or the window without a radio; `tests/fake_spyserver.rs` runs the whole
-  skimmer against it over a socket.
-- **Connect no longer waits 10 s on a dead NTP server (#640).** The first clock measurement ran five queries at 2 s each against the
-  first address only, so a pool member that did not answer held Connect for 10.6 s before falling back to the PC clock
-  (`pool.ntp.org`, 2026-10-09, while `ntp.nict.jp` answered in 38 ms). A query now waits 1 s (a later reply is over the 1 s
-  round-trip limit and discarded anyway), and an address that has not answered is passed over for the next of the ones the name
-  resolves to, up to three: the same pool now measures in 1.9 s, and nobody answering costs 3 s. An address that has answered keeps
-  being asked, and a name that resolves to one address gets one retry, so a single lost packet does not end the measurement.
-- **The skimmer GUI makes an unset grid visible (#640).** With no home grid the map's *Great-circle* button is disabled and a notice
-  says why, where a small grey hint used to say it beside a map drawn in Mercator anyway; and the settings' example values
-  (placeholders) are light italic, not the browser's dark grey that read as a value already entered.
-- **Every slot is decoded, and the next slot does not wait for the last (default time budget off, four decoder threads per channel).**
-  A channel had one decoder thread with a queue of four, so a decode that outlasted its slot held up the next and a long one dropped
-  slots. Each channel now has `Config::decode_lanes` threads (`--lanes`, GUI *Decode threads*; 4) and a slot goes to the one with the
-  least waiting. The per-slot time budget (`Config::slot_budget`, `--slot-budget`) is off by default. A lane has its own decoder, so a
-  callsign one lane learned does not resolve a `<...>` in another; a channel with averaging uses its first lane only.
-- **Rows go out as the decoder finds them, not when the slot is done, with their detail.** The worker calls `decode_with` and hands each
-  row on at once: on `qso3_busy.wav` 13-14 of 21 rows are found by 0.36 s and the last at 1.45 s of a 1.8 s decode (the same through a real
-  `IqReceiver`). `Decode` carries the row's key, sync score, FEC-corrected errors, `hash_resolved` and Q65's copied-last-Tx, and the
-  database gains `msg_key`, `sync`, `hard_errors`, `resolved` (older files are upgraded). A streamed row is resolved against the callsign
-  table as it stood when the period began, so the worker says a row again (`update`) when the returned one reads better; the GUI replaces
-  it in place (✓). A parallel strategy's repeat is dropped by `delivery` (#592); `Config::slot_budget` stops a slot's decode and counts it in
-  `Status::budget_cut_slots` (#593). Not run against a live SpyServer or through the GUI for these.
-- **FT8 rows from ~11.8 s into the slot, as WSJT-X shows them (#600).** Each channel tells the receiver its decoder's `prefix_points()` and a
-  lane decodes every delivery of a period with `decode_prefix_with`: checkpoint A's rows go out at the first prefix marked early
-  (`DecodeDetail::early`, the GUI's ⏱, `--detail`), the rest at the end, where an early row is said again only if it reads better. A period's
-  deliveries stay on the lane its first went to. On by default (`Config::early_decode`, `--no-early`, GUI *Early decode*); FT8 at `Fast` depth
-  and every other mode decode the whole slot as before. Tried in the window against a SpyServer on 40 m (2026-10-08): most strong stations arrive early.
-- **With early decode, `slot_budget` is a period's, not each call's (#626, #627).** FT8's A, B and final calls of one period each got
-  a fresh full allowance, so a period could spend three times its share, and each call that ran out added one to
-  `Status::budget_cut_slots`. The calls now share the allowance (each gets what the earlier ones left; waiting for audio between
-  them is not counted), and a cut period counts once. A's rows stay in the complete set even when B and the end have nothing left
-  (checked on `qso3_busy`: 15 of 15).
-
-### CI, tests and docs
-
-- **The skimmer's JTTY waterfall test no longer depends on the cycle phase.** `a_jtty_channel_has_a_waterfall_and_still_decodes` asked for ten
-  rows by the time a message completed, but the stand-in server is paced by the wall clock and its script by the UTC cycle, so that took 2 to
-  14 s depending on where the stream began and the assertion failed one start in eight (7 rows seen; measured by starting at chosen phases).
-  The properties are now `jtty::tests` in virtual time, 0.5 s for all sixteen: the waterfall's copy is the audio the thread read, keeping it
-  changes no decode, and rows drawn from it are lit where the message was and dark elsewhere (checked by breaking `feed` three ways). The
-  end-to-end test keeps only the loop's wiring, 1.9 s.
-- **Q65's caller list is checked against WSJT-X v3.3.0-beta1 itself (#642).** `scripts/jttysim/q65_callers_oracle.f90` links upstream's
-  `q65_callers` and `q65_set_list2`; `tests/q65_callers_oracle.rs` replays a 300-operation script (records, expiry, removal, lists) and
-  requires the same caller list after every step and the same codewords in every list, including DX as the 51st beside 50 callers. It
-  fails on the pre-beta1 code (first difference: the first-inserted caller is evicted instead of the least recently heard).
-  `build_jt9_upstream.sh` builds v3.3.0-beta1, and with `JT9_ORACLE_MAX_DRIFT=1` a `jt9` whose Q65 `max_drift` comes from the
-  environment (stage 5 is otherwise unreachable from the command line). With the Rx tolerance matched (`jt9 -F 20` and
-  `.ftol(20.0)`), 160 drifting Q65-60A files give the same hit on 159: Max Drift stage 5 agrees with upstream up to 48 Hz/min.
-- **CI: a `wasm` job decodes one slot of every mode on `wasm32-unknown-unknown`, in Node (#585).** The #583 panic shipped for five releases
-  because nothing ran that target. `wasm-smoke/` (outside the workspace) fails naming the modes that panic; against the tree before #584 it
-  fails for WSPR and MSK144 and for no other of the 21. Not a timing or SIMD check: that is `bench/wasm`.
-- **`decode_snapshot` and the full-slot subtract pin compare within a tolerance, not bit for bit (#579).** The f32 last bits belong to the
-  machine: on Apple M5 50 of 53 snapshot fixtures differ in the last bits (`snr_db` up to 0.038 dB) with the same messages in the same order,
-  and the subtract pin written for #567 (a hash of 180 000 samples) differed in 27-36 samples between rustfft kernels. Messages, order and `pass` stay exact; the float
-  columns have limits 2.5-5 times the measured gaps (`MFSK_SNAPSHOT_STRICT=1` asks for bits again), and the subtract pin is the output itself
-  (`embedded-poc/assets/ft8_subtract_full_slot.bin`, 2 per sample, 100 samples). A guard test shows a changed message still fails.
-  Data and `scripts/libm_probe.rs`: `docs/notes/snapshot_platform/`.
-- **docs: `LIBRARY.md` §2.3 (and `.ja.md`) is "Early decode and the compute budget".** Why both follow from "a period's state lives in the
-  `Decoder`" and "the library reads no clock"; upstream's 41/47/50 checkpoints and what `SicEarly` keeps of them; `decode` against
-  `decode_prefix`; why FT4 has none; the budget (the candidate as unit, what is deliberately not cut, which `BudgetReport` fields each mode
-  fills; how it follows the checkpoints, #589). §2.1 and §2.4 say `RowDetail`'s `Option`s and `delivery`.
-
 Older releases are archived out of this file to keep it skimmable. The rule:
 this file holds the unreleased section and the two latest minor series, and
 each new minor's release PR moves the oldest series out.
+0.14.0 in
+[`docs/historical/CHANGELOG-0.14.md`](docs/historical/CHANGELOG-0.14.md),
 0.13.0 – 0.13.1 in
 [`docs/historical/CHANGELOG-0.13.md`](docs/historical/CHANGELOG-0.13.md),
 0.12.0 in

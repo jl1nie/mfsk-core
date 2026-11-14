@@ -219,8 +219,12 @@ Facts that cost an hour each time they were re-derived (2026-10-10, #642):
   (refactor/plumbing); only A and B are ported. The script finds the files,
   it cannot classify them — read the diff it points at.
 
-Record the audit in an Issue (#435 for rc1, #642 for rc1→beta1) with the
-A/B/C table and what was **not** read. When the port PRs for a version have
+Record the audit in an Issue (#435 for rc1, #642 for rc1→beta1, #726 for
+beta4→beta6) with the A/B/C table and what was **not** read. When the ports
+measured something, keep the measurements in a note beside the CHANGELOG
+entries that summarise them (`docs/notes/WSJTX_BETA6_PORT.md` for #726), and
+check a port against a `jt9` built from the tag it ports
+(`scripts/build_jt9_upstream.sh ../WSJT-X <tag>`), not the rc1 baseline build. When the port PRs for a version have
 merged, bump `DEFAULT_BASE` in the script and say so in the Issue. A changed
 upstream file the script lists as uncited is either not ported or a missing
 citation; add the citation if it is ported (`q65_callers.F90` was).
