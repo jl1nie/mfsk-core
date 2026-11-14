@@ -183,13 +183,14 @@ mod tests {
     fn subtract_with_exact_timing_near_zero() {
         let msg = [1u8; 77];
         let itone = crate::engine::tx::message_to_tones::<crate::ft4::Ft4>(&msg);
-        // FT4 frame: 103 active symbols × 576 samples = 59_328.
+        // FT4 frame: 103 tone symbols plus a ramp symbol each side, × 576 samples.
         // Target buffer: 7.5 s × 12 kHz = 90_000.
         let samples =
             crate::engine::tx::synthesize_i16::<crate::ft4::Ft4>(&itone, 12_000, 1500.0, 20_000);
 
         let mut audio = vec![0i16; 90_000];
-        let offset = 6_000usize; // 0.5 s start offset
+        // 0.5 s tone start; the frame's first symbol is a ramp symbol.
+        let offset = 6_000usize - 576;
         let len = samples.len().min(90_000 - offset);
         audio[offset..offset + len].copy_from_slice(&samples[..len]);
 
@@ -218,7 +219,7 @@ mod tests {
             crate::engine::tx::synthesize_i16::<crate::ft4::Ft4>(&itone, 12_000, 1500.0, 15_000);
 
         let mut audio = vec![0i16; 90_000];
-        let offset = 6_000usize;
+        let offset = 6_000usize - 576;
         let len = samples.len().min(90_000 - offset);
         audio[offset..offset + len].copy_from_slice(&samples[..len]);
 

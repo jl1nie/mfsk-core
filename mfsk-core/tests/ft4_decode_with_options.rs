@@ -39,7 +39,8 @@ fn synth_slot(msg77: &[u8; 77], freq_hz: f32, peak_i16: i16) -> Vec<i16> {
         &itone, 12_000, freq_hz, peak_i16,
     );
     let mut audio = vec![0i16; SLOT_SAMPLES];
-    let pad = (<Ft4 as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as usize;
+    let pad = (<Ft4 as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as usize
+        - mfsk_core::engine::tx::synth_lead_samples::<mfsk_core::ft4::Ft4>(12_000);
     let len = pcm.len().min(audio.len() - pad);
     audio[pad..pad + len].copy_from_slice(&pcm[..len]);
     audio

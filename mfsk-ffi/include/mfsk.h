@@ -1836,7 +1836,9 @@ enum MfskStatus mfsk_encode_ft8(const char *call1,
                                 uintptr_t *out_len);
 
 /**
- * Synthesise a standard FT4 message at `freq_hz`. 12 kHz f32 PCM.
+ * Synthesise a standard FT4 message at `freq_hz`. 12 kHz f32 PCM, 60 480 samples: the 103 tone
+ * symbols between a ramp symbol each side, as `gen_ft4wave` frames them, so the tones start
+ * [`mfsk_synth_lead_len`] (576) samples in. Place the buffer that many samples before the 0.5 s tone start.
  *
  * # Safety
  *
@@ -2212,6 +2214,16 @@ uintptr_t mfsk_symbol_count(uint32_t mode);
  */
 MFSK_API
 uintptr_t mfsk_synth_output_len(uint32_t mode);
+
+/**
+ * Samples at the start of a full frame that precede its first tone symbol, at 12 kHz: 576 for FT4
+ * (`gen_ft4wave` frames the 103 tone symbols with a ramp symbol each side), 0 for every other mode,
+ * and 0 if the mode has no tone stage. A host that places a frame by [`MfskModeInfo::tx_start_offset_s`]
+ * puts the *tones* there, so the buffer starts this many samples earlier. Already inside
+ * [`mfsk_synth_output_len`].
+ */
+MFSK_API
+uintptr_t mfsk_synth_lead_len(uint32_t mode);
 
 /**
  * Pack a standard exchange: `call1 call2 report` (WSJT type 1/2).

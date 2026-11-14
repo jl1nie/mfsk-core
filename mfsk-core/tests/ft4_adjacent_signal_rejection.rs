@@ -96,7 +96,8 @@ fn add_signal(mix: &mut [f32], msg: &[u8; 77], freq_hz: f32, amp: f32) {
     let itone = mfsk_core::engine::tx::message_to_tones::<mfsk_core::ft4::Ft4>(msg);
     let pcm =
         mfsk_core::engine::tx::synthesize::<mfsk_core::ft4::Ft4>(&itone, 12_000, freq_hz, amp);
-    let start = (START_S * FS) as usize;
+    let start = (START_S * FS) as usize
+        - mfsk_core::engine::tx::synth_lead_samples::<mfsk_core::ft4::Ft4>(12_000); // tones start at START_S
     for (i, &s) in pcm.iter().enumerate() {
         if start + i < mix.len() {
             mix[start + i] += s;

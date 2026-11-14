@@ -43,7 +43,13 @@ fn slot(mode: Mode) -> Vec<i16> {
         _ => unreachable!(),
     };
     let mut out = vec![0; len];
-    out[6_000..6_000 + frame.len()].copy_from_slice(&frame);
+    // FT4's frame has a ramp symbol before its tones, which start at 0.5 s.
+    let start = 6_000
+        - match mode {
+            Mode::Ft4 => mfsk_core::engine::tx::synth_lead_samples::<mfsk_core::ft4::Ft4>(12_000),
+            _ => 0,
+        };
+    out[start..start + frame.len()].copy_from_slice(&frame);
     out
 }
 

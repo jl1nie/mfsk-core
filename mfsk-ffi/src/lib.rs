@@ -486,7 +486,9 @@ pub unsafe extern "C" fn mfsk_encode_ft8(
     unsafe { emit_pcm(&pcm, out, cap, out_len, "encode") }
 }
 
-/// Synthesise a standard FT4 message at `freq_hz`. 12 kHz f32 PCM.
+/// Synthesise a standard FT4 message at `freq_hz`. 12 kHz f32 PCM, 60 480 samples: the 103 tone
+/// symbols between a ramp symbol each side, as `gen_ft4wave` frames them, so the tones start
+/// [`mfsk_synth_lead_len`] (576) samples in. Place the buffer that many samples before the 0.5 s tone start.
 ///
 /// # Safety
 ///
@@ -1732,6 +1734,19 @@ pub extern "C" fn mfsk_synth_output_len(mode: u32) -> usize {
         return 0;
     };
     with_tone_mode!(mode, P => mfsk_core::engine::tx::synth_len::<P>(12_000), else 0)
+}
+
+/// Samples at the start of a full frame that precede its first tone symbol, at 12 kHz: 576 for FT4
+/// (`gen_ft4wave` frames the 103 tone symbols with a ramp symbol each side), 0 for every other mode,
+/// and 0 if the mode has no tone stage. A host that places a frame by [`MfskModeInfo::tx_start_offset_s`]
+/// puts the *tones* there, so the buffer starts this many samples earlier. Already inside
+/// [`mfsk_synth_output_len`].
+#[unsafe(no_mangle)]
+pub extern "C" fn mfsk_synth_lead_len(mode: u32) -> usize {
+    let Some(mode) = mode_of(mode) else {
+        return 0;
+    };
+    with_tone_mode!(mode, P => mfsk_core::engine::tx::synth_lead_samples::<P>(12_000), else 0)
 }
 
 /// Copy a packed 77-bit message into caller memory.

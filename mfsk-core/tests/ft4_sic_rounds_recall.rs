@@ -59,9 +59,12 @@ fn mix_i16(audio: &mut [i16], msg77: &[u8; 77], freq_hz: f32, amp: i16, pad: usi
     assert_eq!(itone.len(), NN);
     let pcm =
         mfsk_core::engine::tx::synthesize_i16::<mfsk_core::ft4::Ft4>(&itone, 12_000, freq_hz, amp);
-    assert_eq!(pcm.len(), NN * NSPS);
+    assert_eq!(pcm.len(), (NN + 2) * NSPS);
     for (i, &s) in pcm.iter().enumerate() {
-        let idx = pad + i;
+        // `pad` is where the tones start; the frame's first symbol is the ramp.
+        let Some(idx) = (pad + i).checked_sub(NSPS) else {
+            continue;
+        };
         if idx >= audio.len() {
             break;
         }

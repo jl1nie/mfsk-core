@@ -31,7 +31,9 @@ fn message_and_carrier(mode: Mode) -> (&'static str, f32) {
 fn period_of(mode: Mode, frame: &[f32], seed: u32) -> Vec<i16> {
     let meta = mode.meta();
     let slot = meta.slot_samples_12k as usize;
-    let start = (meta.tx_start_offset_s * FS as f32).round() as usize;
+    // the tones start at the offset; FT4's frame has a ramp symbol before them
+    let start =
+        (meta.tx_start_offset_s * FS as f32).round() as usize - meta.tx_lead_samples_12k as usize;
     let mut x = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
     (0..slot)
         .map(|i| {
@@ -53,6 +55,12 @@ fn every_mode_encodes_to_what_the_decoder_reads() {
         assert_eq!(tx.mode(), mode);
         let audio = tx.synthesize(&TxAudio::new(FS, f0));
         assert_eq!(audio.len(), tx.synth_len(FS), "{}", mode.name());
+        assert_eq!(
+            tx.synth_lead(FS),
+            mode.meta().tx_lead_samples_12k as usize,
+            "{}",
+            mode.name()
+        );
         let period = period_of(mode, &audio, 5);
         let mut dec = AnyDecoder::with_defaults(mode);
         let res = dec.decode_i16(&period, Some(0));

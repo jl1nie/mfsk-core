@@ -86,7 +86,9 @@ const STREAM_RENORM_PERIOD: u32 = 4096;
 /// `gen_ft8wave.f90` uses to keep the pulse train continuous at the
 /// ends, and the half-cosine envelope over `cfg.ramp_samples` are all
 /// reproduced; `stream_matches_the_reference_synthesiser` pins the
-/// output against [`synth_f32`] sample for sample.
+/// output against [`synth_f32`] sample for sample. That is the `gen_ft8wave` form: FT4's frame
+/// ([`synth_f32_lead_tail_into`]) and FST4's are not streamed, and no embedded transmitter
+/// of theirs exists yet.
 ///
 /// **No `sin` per sample.** The phase increment varies, so the fixed
 /// step `super::ddc`'s mixer uses does not apply directly — but it
@@ -361,6 +363,85 @@ pub fn synth_f32_into(out: &mut [f32], tones: &[u8], f0_hz: f32, amplitude: f32,
             let env = (1.0 + (twopi * i as f32 / (2.0 * nramp as f32)).cos()) / 2.0;
             out[k1 + i] *= env;
         }
+    }
+}
+
+/// Output length of [`synth_f32_lead_tail_into`]: the tones plus one ramp
+/// symbol on each side.
+pub const fn synth_lead_tail_len(nsym: usize, nsps: usize) -> usize {
+    (nsym + 2) * nsps
+}
+
+/// FT4's GFSK waveform, as `lib/ft4/gen_ft4wave.f90` builds it: `nsym`
+/// tone symbols framed by one ramp symbol on each side, `(nsym + 2) *
+/// nsps` samples in all, with `cfg.bt`'s Gaussian pulse and no extended
+/// first and last symbol (unlike [`synth_f32_into`], `gen_ft8wave`'s form).
+///
+/// - the frequency pulse of tone symbol `j` (0-based) starts at sample
+///   `j * nsps`, so the tone itself is centred in `[(j + 1) * nsps,
+///   (j + 2) * nsps)`;
+/// - the phase integrates from sample 0, so the lead symbol's share of
+///   the first pulse is part of it (`gen_ft8wave` starts after it);
+/// - the raised-cosine ramp is the whole lead symbol up and the whole tail
+///   symbol down (`1 - cos(2 pi i / (2 nsps)) / 2`), not an `nsps / 8` one.
+///
+/// # Panics
+///
+/// If `out.len() != synth_lead_tail_len(tones.len(), cfg.samples_per_symbol)`
+/// or `tones` is empty.
+pub fn synth_f32_lead_tail_into(
+    out: &mut [f32],
+    tones: &[u8],
+    f0_hz: f32,
+    amplitude: f32,
+    cfg: &GfskCfg,
+) {
+    let nsps = cfg.samples_per_symbol;
+    let nsym = tones.len();
+    assert!(nsym > 0, "synth_f32_lead_tail_into: empty tone sequence");
+    let total = synth_lead_tail_len(nsym, nsps);
+    assert_eq!(
+        out.len(),
+        total,
+        "synth_f32_lead_tail_into: out.len() must equal synth_lead_tail_len()"
+    );
+    let twopi = 2.0 * PI;
+    let dt = 1.0 / cfg.sample_rate;
+
+    let pulse_len = 3 * nsps;
+    // `do i=1,3*nsps; tt=(i-1.5*nsps)/real(nsps)` (`gen_ft4wave.f90`).
+    let pulse: Vec<f32> = (0..pulse_len)
+        .map(|i| {
+            let tt = ((i + 1) as f32 - 1.5 * nsps as f32) / nsps as f32;
+            gfsk_pulse(cfg.bt, tt)
+        })
+        .collect();
+
+    let mut dphi = vec![0.0f32; total];
+    let dphi_peak = twopi * cfg.hmod / nsps as f32;
+    for (j, &tone) in tones.iter().enumerate() {
+        let ib = j * nsps;
+        for (d, &p) in dphi[ib..ib + pulse_len].iter_mut().zip(pulse.iter()) {
+            *d += dphi_peak * p * tone as f32;
+        }
+    }
+    for d in dphi.iter_mut() {
+        *d += twopi * f0_hz * dt;
+    }
+
+    let mut phi = 0.0f32;
+    for (o, &d) in out.iter_mut().zip(dphi.iter()) {
+        *o = amplitude * phi.sin();
+        phi += d;
+        if phi > twopi {
+            phi -= twopi;
+        }
+    }
+
+    for i in 0..nsps {
+        let x = twopi * i as f32 / (2.0 * nsps as f32);
+        out[i] *= (1.0 - x.cos()) / 2.0;
+        out[(nsym + 1) * nsps + i] *= (1.0 + x.cos()) / 2.0;
     }
 }
 

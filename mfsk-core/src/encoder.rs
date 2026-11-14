@@ -302,6 +302,14 @@ impl Encoded {
     pub fn synth_len(&self, sample_rate: u32) -> usize {
         synth_len(self.mode, sample_rate)
     }
+
+    /// Samples at the start of the audio that precede the first tone symbol, at `sample_rate`: a ramp
+    /// symbol for FT4 (`gen_ft4wave`), 0 for every other mode. Part of
+    /// [`synth_len`](Self::synth_len). A caller that places the audio by the mode's start offset
+    /// (`ModeMeta::tx_start_offset_s`, where the first *tone* starts) starts it this many samples earlier.
+    pub fn synth_lead(&self, sample_rate: u32) -> usize {
+        synth_lead(self.mode, sample_rate)
+    }
 }
 
 // ── routes ──────────────────────────────────────────────────────────────
@@ -503,6 +511,13 @@ macro_rules! encoder_modes {
             let _ = fs;
             match mode {
                 $( #[cfg(feature = $feat)] Mode::$var => crate::engine::tx::synth_len::<$ty>(fs), )*
+            }
+        }
+
+        fn synth_lead(mode: Mode, fs: u32) -> usize {
+            let _ = fs;
+            match mode {
+                $( #[cfg(feature = $feat)] Mode::$var => crate::engine::tx::synth_lead_samples::<$ty>(fs), )*
             }
         }
     };

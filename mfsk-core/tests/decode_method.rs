@@ -34,7 +34,7 @@ fn ft4_slot(snr_db: f32, seed: u64) -> Vec<i16> {
     let amp = 6_000i16;
     let frame = synthesize_i16::<Ft4>(&tones, 12_000, 1_500.0, amp);
     let mut audio = vec![0f32; 90_000];
-    let start = 6_000;
+    let start = 6_000 - mfsk_core::engine::tx::synth_lead_samples::<mfsk_core::ft4::Ft4>(12_000); // tones start at 0.5 s
     audio[start..start + frame.len()]
         .iter_mut()
         .zip(&frame)

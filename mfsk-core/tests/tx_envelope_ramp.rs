@@ -60,8 +60,8 @@ fn assert_ramped(name: &str, audio: &[f32], nsps: usize) {
     // The ramp must be *short*: the body of the transmission has to
     // still reach full amplitude, or we have attenuated the signal
     // rather than shaped its edges. Checked a full symbol in from each
-    // end, which is well past any ramp this crate applies (capped at
-    // nsps/8).
+    // end, which is well past any ramp this crate applies (nsps/8, or the
+    // ramp symbol FT4's frame carries each side: `audio` starts and ends there).
     let body_peak = audio[nsps..audio.len() - nsps]
         .iter()
         .fold(0.0f32, |a, &b| a.max(b.abs()));

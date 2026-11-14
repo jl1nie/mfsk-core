@@ -55,11 +55,13 @@ fn build_slot(msg77: &[u8; 77], freq_hz: f32, peak_i16: i16) -> Vec<i16> {
     let pcm = mfsk_core::engine::tx::synthesize_i16::<mfsk_core::ft4::Ft4>(
         &itone, 12_000, freq_hz, peak_i16,
     );
-    assert_eq!(pcm.len(), NN * NSPS);
+    assert_eq!(pcm.len(), (NN + 2) * NSPS);
 
     // Place at the nominal 0.5 s frame-start offset inside a 7.5 s slot.
     let mut audio = vec![0i16; SLOT_SAMPLES];
-    let pad = (<Ft4 as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as usize; // 6000
+    // The frame starts with a ramp symbol; the tones start at TX_START_OFFSET_S.
+    let pad = (<Ft4 as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as usize
+        - mfsk_core::engine::tx::synth_lead_samples::<mfsk_core::ft4::Ft4>(12_000);
     let len = pcm.len().min(audio.len() - pad);
     audio[pad..pad + len].copy_from_slice(&pcm[..len]);
     audio

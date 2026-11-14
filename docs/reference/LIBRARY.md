@@ -2616,14 +2616,17 @@ const WSPR_SYNC_VECTOR: [u8; 162] = [0u8; 162];
 
 A protocol that transmits FSK also implements
 `engine::tx::FskWaveform`, one constant saying which of WSJT-X's two
-transmit families it belongs to (#391):
+transmit families it belongs to, and which of the GFSK shapes (#391):
 
 ```rust,ignore
 impl FskWaveform for Wspr {
     const WAVEFORM: Waveform = Waveform::Cpfsk;          // WSPR, JT9, JT65, Q65
 }
 impl FskWaveform for Ft8 {
-    const WAVEFORM: Waveform = Waveform::Gfsk(FT8_GFSK); // FT8, FT4, FST4
+    const WAVEFORM: Waveform = Waveform::Gfsk(FT8_GFSK); // FT8, FST4 (`Waveform::Fst4` since #726)
+}
+impl FskWaveform for Ft4 {
+    const WAVEFORM: Waveform = Waveform::Ft4(FT4_GFSK);  // a ramp symbol each side
 }
 ```
 
@@ -2637,6 +2640,17 @@ of `gen_ft8wave.f90` and friends. A test checks each `Gfsk` config
 against its protocol's own `NSPS`, `GFSK_BT` and `GFSK_HMOD`, so the two
 cannot drift apart. A protocol whose transmit chain is not FSK — the
 `uvpacket` example is π/4-DQPSK — just doesn't implement it.
+
+The audio is `N_SYMBOLS` symbols plus, for `Waveform::Ft4`, a ramp symbol each side (`synth_len`).
+Only FT4 has a nonzero `N_RAMP`: `gen_ft4wave.f90` frames its 103 tone symbols with a ramp symbol
+on each side (105 symbols, 60 480 samples at 12 kHz), and the raised-cosine ramp
+is a whole symbol long. The tones therefore start `synth_lead_samples::<P>(rate)`
+(576 for FT4, 0 elsewhere; `Encoded::synth_lead`, `ModeMeta::tx_lead_samples_12k`, C
+`mfsk_synth_lead_len`, Swift `synthesisedLeadLength`) into the buffer: place the buffer that many
+samples before `TX_START_OFFSET_S` (`ft4sim.f90:91`). Up to 0.15 FT4 audio was the
+103-symbol, `nsps / 8`-ramp form `gen_ft8wave` has, -45 dB from `gen_ft4wave`;
+`tests/gen_wave_vs_wsjtx.rs` now holds FT8 and FT4 to WSJT-X v3.3.0-beta6's own
+generators.
 
 ### Monomorphisation is why this is free
 
