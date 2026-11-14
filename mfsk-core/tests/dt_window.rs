@@ -381,8 +381,9 @@ fn q65_120d_default_window_reaches_reference_late_edge() {
 /// down), is decoded. `condition_symbol_spectra`'s `s3lim` clip is 20x the 40th percentile of the symbol
 /// energies; with no noise that percentile is f32 rounding, the clip saturates the tones' sidelobes and BP
 /// fails. WSJT-X cannot meet this (its audio is `int16`, 128 dB of range); float input can, so `base` is floored
-/// at that range. Noise 0, 1e-9 and 1e-7 against a 0.3 signal, cuts 3000-6000 samples: 12 inputs, all of which
-/// failed or flipped on the last bits of the transmitter before the floor.
+/// at that range. Noise 0, 1e-9 and 1e-7 against a 0.3 signal, cuts 3000-6000 samples: 12 inputs. Without the
+/// floor 4 fail (noise 0 and 1e-9 at cuts 3750 and 6000); the other 8 decode and are here so that near-noiseless
+/// input keeps decoding. Exactly one message must come out (no extra).
 #[test]
 fn q65_decodes_a_cut_frame_in_a_noiseless_slot() {
     use mfsk_core::__internal::q65::decode_request::DecodeRequest;
@@ -405,17 +406,17 @@ fn q65_decodes_a_cut_frame_in_a_noiseless_slot() {
             for (a, b) in slot[..n].iter_mut().zip(&signal[drop..drop + n]) {
                 *a += *b;
             }
-            let hit = DecodeRequest::<Q65a15>::new(
+            let decodes = DecodeRequest::<Q65a15>::new(
                 &slot,
                 FS,
                 (0.5 * FS as f32) as usize,
                 q65_default_search_params(),
             )
-            .decode()
-            .iter()
-            .any(|d| d.message.contains("JA1ABC"));
-            if !hit {
-                failures.push(format!("noise {noise:e}, cut {drop}"));
+            .decode();
+            let ok = decodes.len() == 1 && decodes[0].message == "CQ JA1ABC PM95";
+            if !ok {
+                let got: Vec<_> = decodes.iter().map(|d| d.message.clone()).collect();
+                failures.push(format!("noise {noise:e}, cut {drop}: {got:?}"));
             }
         }
     }

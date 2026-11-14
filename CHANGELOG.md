@@ -8,8 +8,9 @@
   percentile (`q65_loops.f90`'s `s3lim`). On float input with no noise that percentile is f32 rounding, 160 dB below the peak, so the clip saturated the
   tones' sidelobes too (30-67 of 192 bins a symbol tied) and BP failed: an aligned noiseless Q65-15A frame with its start cut was lost with noise at 1e-9
   and decoded at 1e-7 (found while making the CPFSK phase exact, #726). WSJT-X cannot meet it (`int16` audio has 128 dB of range at Q65-15; `jt9` decodes the
-  `int16` form of this slot); `base` is now floored at that range, `peak / (3 * 32767^2 * nsps)`, which `int16`-derived input never reaches. 12 inputs
-  (noise 0/1e-9/1e-7 x four cuts) decode; the `dt_window` noise added for it is gone.
+  `int16` form of this slot); `base` is now floored at that range, `peak / (3 * 32767^2 * nsps)`. The floor never engaged on the vendored recordings (margin >= 114 dB) or the noisy
+  synthetic tests; it can engage on a noiseless int16 file (the quantisation error of a tone is not white; about -12 dBFS and louder), with the same decode. 4 of 12 new inputs fail without
+  it (noise 0 and 1e-9, cuts 3750 and 6000); the `dt_window` noise added for it is gone.
 - **WSPR, JT9, JT65 and Q65 transmit waveforms are `Modulator::modulate`'s** (#726). The loop took `cos` of an `f32` phase before advancing
   it, with `f0 + tone * spacing` in `f32`; WSJT-X advances a `double` phase first and takes `sin`. Against that, on a 110 s WSPR frame:
   -35 dB (an `f32` sum drifts 0.04 rad), and a different phase. Now a `u64` turn accumulator (`engine/dsp/nco.rs`, shared with
