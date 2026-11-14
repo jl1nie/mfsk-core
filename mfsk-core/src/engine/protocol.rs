@@ -326,9 +326,11 @@ pub trait FrameLayout: Copy + Default + 'static {
     /// GFSK ramp-up / ramp-down symbols that are a shaping artifact.
     const N_SYMBOLS: u32 = Self::N_DATA + Self::N_SYNC;
 
-    /// Extra symbol slots on each side of the frame reserved for amplitude
-    /// ramp (FT4 has 1 each side = 2; FT8 has 0 — ramp absorbed into the
-    /// first/last data symbol envelope). Applied at the transmitter.
+    /// Ramp symbols around the frame, both sides together (FT4: 2, one each side, as
+    /// `gen_ft4wave` builds; FT8 and every other mode: 0, the ramp inside the first and last
+    /// symbol). The transmitter's lead is `N_RAMP / 2` symbols
+    /// ([`synth_lead_samples`](crate::engine::tx::synth_lead_samples)); it must be 2 exactly when
+    /// the waveform is `Waveform::Ft4`, which is what synthesises those symbols.
     const N_RAMP: u32;
 
     /// Sync-symbol layout. Most WSJT protocols use `SyncMode::Block` with

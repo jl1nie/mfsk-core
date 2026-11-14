@@ -246,15 +246,14 @@ pub fn synth_len<P: FskWaveform>(sample_rate: u32) -> usize {
         + 2 * synth_lead_samples::<P>(sample_rate)
 }
 
-/// Samples `synthesize` puts before the first tone symbol, and after the last: one ramp
-/// symbol for [`Waveform::Ft4`], whose `gen_ft4wave` frames the 103 tone
-/// symbols with a ramp symbol each side, none for every other form. To place the buffer, use
-/// [`tx_buffer_start`], which already subtracts this.
+/// Samples `synthesize` puts before the first tone symbol, and after the last:
+/// [`FrameLayout::N_RAMP`]` / 2` symbols, the one definition of the lead (the registry's
+/// `tx_buffer_start_samples_12k` reads the same constant). Only FT4 has any: `gen_ft4wave` frames the
+/// 103 tone symbols with a ramp symbol each side, which [`Waveform::Ft4`] synthesises, so FT4's
+/// `N_RAMP` is 2 and every other waveform's 0 (`tests/protocol_invariants.rs` holds every protocol
+/// to that). To place the buffer, use [`tx_buffer_start`], which already subtracts this.
 pub fn synth_lead_samples<P: FskWaveform>(sample_rate: u32) -> usize {
-    match P::WAVEFORM {
-        Waveform::Ft4(_) => samples_per_symbol::<P>(sample_rate),
-        _ => 0,
-    }
+    (P::N_RAMP / 2) as usize * samples_per_symbol::<P>(sample_rate)
 }
 
 /// Where the buffer from [`synthesize`] goes: its first sample is this many samples (at
