@@ -21,10 +21,12 @@ const SAMPLE_PATH: &str = concat!(
     "/../embedded-poc/assets/130418_1742.wav"
 );
 
-// The recording `130418_1742.wav` starts ~0.91 s before the 17:42:00 slot
-// boundary.  WSJT-X reports dt relative to the slot; we measure start_sample
-// from the beginning of the WAV, so add WAV_PRE_ROLL_SEC to each WSJT-X dt.
-const WAV_PRE_ROLL_SEC: f32 = 0.91;
+// WSJT-X reports JT9 DT from 1.0 s into the minute, where it starts the audio
+// (`Modulator.cpp:163`, `jt9sim.f90:124`; `Jt9::TX_START_OFFSET_S` since #726). This file
+// measures `start_sample` from the beginning of the WAV, so it adds that 1.0 s to each `jt9` DT.
+// (This was 0.91 with a comment that the WAV "starts ~0.91 s before the slot boundary"; it is the
+// 1.0 s reference. `tests/jt_dt_vs_jt9.rs` checks `Decoder`'s DT against `jt9`'s directly.)
+const WAV_PRE_ROLL_SEC: f32 = 1.0;
 
 const FREQ_TOL_HZ: f32 = 4.0;
 const DT_TOL_SEC: f32 = 0.5; // ≈ 1 symbol; covers ⅛-sym lag grid + slot-offset uncertainty
@@ -50,43 +52,43 @@ static JT9_FULL_REFERENCE: &[GoldenEntry] = &[
     GoldenEntry {
         msg: "CQ GM7GAX IO75",
         freq_hz: Some(1119.0),
-        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.0), // 0.91
+        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.0),
         snr_db: Some(-25.0),
     },
     GoldenEntry {
         msg: "TF3G N7MQ CN84",
         freq_hz: Some(1186.0),
-        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.0), // 0.91
+        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.0),
         snr_db: Some(-18.0),
     },
     GoldenEntry {
         msg: "K1JT KF4RWA 73",
         freq_hz: Some(1224.0),
-        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.1), // 1.01
+        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.1),
         snr_db: Some(-19.0),
     },
     GoldenEntry {
         msg: "CQ M0WAY IO82",
         freq_hz: Some(1290.0),
-        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.1), // 1.01
+        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.1),
         snr_db: Some(-22.0),
     },
     GoldenEntry {
         msg: "K1JT N5KDV EM41",
         freq_hz: Some(1346.0),
-        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.1), // 1.01
+        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.1),
         snr_db: Some(-1.0),
     },
     GoldenEntry {
         msg: "G7CNF N4HFA EL89",
         freq_hz: Some(1461.0),
-        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.0), // 0.91
+        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.0),
         snr_db: Some(-15.0),
     },
     GoldenEntry {
         msg: "JA1KAU PD0JAC -23",
         freq_hz: Some(1505.0),
-        dt_sec: Some(WAV_PRE_ROLL_SEC + 1.2), // 2.11
+        dt_sec: Some(WAV_PRE_ROLL_SEC + 1.2),
         snr_db: Some(-5.0),
     },
 ];

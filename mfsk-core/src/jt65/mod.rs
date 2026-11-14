@@ -536,7 +536,11 @@ impl FrameLayout for Jt65 {
     /// 46.8-second frame, scheduled in 60-second slots with a few
     /// seconds of leading silence — matches WSJT-X's JT65 slot.
     const T_SLOT_S: f32 = 60.0;
-    const TX_START_OFFSET_S: f32 = 0.0;
+    /// DT = 0 is 1.0 s into the slot: WSJT-X starts JT65 audio there (`Modulator.cpp:163`
+    /// `delay_ms=1000`, `jt65sim.f90:217` "Start audio at t = xdt + 1.0 s") and its decoder
+    /// reports `dtx-1.0` (`jt65_decode.f90:425`). This was 0.0 until #726: on the `jt65sim`
+    /// golden file real `jt9 -6` reports DT 0.0 where this crate reported +1.02.
+    const TX_START_OFFSET_S: f32 = 1.0;
 }
 
 impl Protocol for Jt65 {

@@ -260,9 +260,12 @@ impl FrameLayout for Jt9 {
     const N_RAMP: u32 = 0;
     const SYNC_MODE: SyncMode = SyncMode::Block(&JT9_SYNC_BLOCKS);
     const T_SLOT_S: f32 = 60.0;
-    /// JT9 transmissions start at the top of the minute (0 s into the
-    /// slot). `tx_start` is 0 rather than WSPR's 1 s.
-    const TX_START_OFFSET_S: f32 = 0.0;
+    /// DT = 0 is 1.0 s into the slot, as for WSPR: WSJT-X starts JT9 audio there
+    /// (`Modulator.cpp:163` `delay_ms=1000`, `jt9sim.f90:124` `k=12000`), and real
+    /// `jt9 -9` reports DT 0.0 for a frame placed there. This was 0.0 until #726, so every
+    /// JT9 DT this crate reported through `Decoder` was 1.0 s more than `jt9`'s (measured on
+    /// `130418_1742.wav`: `jt9` 0.0/0.1/-0.2, this crate +0.90..+1.04).
+    const TX_START_OFFSET_S: f32 = 1.0;
 }
 
 impl Protocol for Jt9 {
