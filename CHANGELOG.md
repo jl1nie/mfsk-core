@@ -14,6 +14,12 @@
 
 ### Fixed
 
+- **FT4's subtraction reference is `gen_ft4wave`'s frame** (#734, follows #729). It was `gen_ft8wave`'s form (103 symbols, an `nsps/8` ramp),
+  which left the two ramp symbols of a transmitted signal behind (-20.9 dB residual, now nothing); `subtractft4.f90` builds `cref` with
+  `gen_ft4wave` over `(103+2)*NSPS` from `nstart=dt*12000+1-NSPS`. `SubtractCfg` takes it as `GfskParams::lead_symbols`. On the golden
+  recording: `AC6BW KR9A R 559 WI` reads -15.02 dB (was -14.13, `jt9` -15); the FT4 snapshot fixtures moved (header of `decode_snapshot.rs`),
+  and three weak messages go from `ft4_eq_local` only (still decoded by every other configuration).
+
 - **WSPR, JT9, JT65 and Q65 transmit waveforms are `Modulator::modulate`'s** (#726). The loop took `cos` of an `f32` phase before advancing
   it, with `f0 + tone * spacing` in `f32`; WSJT-X advances a `double` phase first and takes `sin`. Against that, on a 110 s WSPR frame:
   -35 dB (an `f32` sum drifts 0.04 rad), and a different phase. Now a `u64` turn accumulator (`engine/dsp/nco.rs`, shared with

@@ -539,6 +539,65 @@ pub fn synth_f32_lead_tail_into(
     }
 }
 
+/// [`synth_f32_lead_tail_into`]'s form as a `cos` / `sin` pair, for the subtraction reference
+/// (`subtractft4.f90` builds `cref` with `gen_ft4wave`, `icmplx = 1`, over `(103 + 2) * nsps`
+/// samples): the same phase, the same whole-symbol ramps on both.
+///
+/// # Panics
+///
+/// If either output is not [`synth_lead_tail_len`]`(tones.len(), cfg.samples_per_symbol)` long, or
+/// `tones` is empty.
+pub fn synth_complex_f32_lead_tail_into(
+    out_cos: &mut [f32],
+    out_sin: &mut [f32],
+    tones: &[u8],
+    f0_hz: f32,
+    amplitude: f32,
+    cfg: &GfskCfg,
+) {
+    let nsps = cfg.samples_per_symbol;
+    let nsym = tones.len();
+    assert!(
+        nsym > 0,
+        "synth_complex_f32_lead_tail_into: empty tone sequence"
+    );
+    let total = synth_lead_tail_len(nsym, nsps);
+    assert_eq!(
+        out_cos.len(),
+        total,
+        "synth_complex_f32_lead_tail_into: out_cos length"
+    );
+    assert_eq!(
+        out_sin.len(),
+        total,
+        "synth_complex_f32_lead_tail_into: out_sin length"
+    );
+    let twopi = 2.0 * PI;
+    let pulse = pulse_table(cfg.bt, nsps);
+    let mut dphi = vec![0.0f32; total];
+    let dphi_peak = twopi * cfg.hmod / nsps as f32;
+    for (j, &tone) in tones.iter().enumerate() {
+        let ib = j * nsps;
+        for (d, &p) in dphi[ib..ib + 3 * nsps].iter_mut().zip(pulse.iter()) {
+            *d += dphi_peak * p * tone as f32;
+        }
+    }
+    let mut nco = Nco::new(f0_hz, cfg.sample_rate);
+    for k in 0..total {
+        out_cos[k] = amplitude * nco.phase().cos();
+        out_sin[k] = amplitude * nco.sin();
+        nco.step(dphi[k]);
+    }
+    for i in 0..nsps {
+        let x = twopi * i as f32 / (2.0 * nsps as f32);
+        let (up, down) = ((1.0 - x.cos()) / 2.0, (1.0 + x.cos()) / 2.0);
+        out_cos[i] *= up;
+        out_sin[i] *= up;
+        out_cos[(nsym + 1) * nsps + i] *= down;
+        out_sin[(nsym + 1) * nsps + i] *= down;
+    }
+}
+
 /// FST4's GFSK waveform, as `lib/fst4/gen_fst4wave.f90` builds it: `tones.len() * nsps`
 /// samples, `cfg.bt`'s Gaussian pulse, and **no** extension of the first and last
 /// tone symbol (unlike [`synth_f32_into`], `gen_ft8wave`'s form): the first
