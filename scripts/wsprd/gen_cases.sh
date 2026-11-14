@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Golden cases for msg::wspr::unpack and the WSPR decoder's message text: a deterministic list of
-# 50-bit payloads, each run through WSJT-X's own `unpk_` (lib/wsprd/wsprd_utils.c, v3.2.0-rc1;
+# 50-bit payloads, each run through WSJT-X's own `unpk_` (lib/wsprd/wsprd_utils.c, v3.3.0-beta6;
 # scripts/wsprd/wsprd_unpack_oracle.c, built by scripts/wsprd/build_oracle.sh).
 #
 #   scripts/wsprd/gen_cases.sh [oracle-dir] [out-file]
 #
 #   oracle-dir  target/wsprd-unpack-oracle
-#   out-file    mfsk-core/tests/fixtures/wsprd_unpack_rc1.tsv
+#   out-file    mfsk-core/tests/fixtures/wsprd_unpack_beta6.tsv
 #
 # Needs mfsk-core/tests/fixtures/wspr_pack_rc1.tsv (scripts/wspr/): its `ok` rows are payloads.
 # Columns: 50 bits, seed call (the hash table holds it; `-` = empty table), rc (unpk_'s return,
@@ -15,7 +15,7 @@
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ORDIR="${1:-$REPO_ROOT/target/wsprd-unpack-oracle}"
-OUT="${2:-$REPO_ROOT/mfsk-core/tests/fixtures/wsprd_unpack_rc1.tsv}"
+OUT="${2:-$REPO_ROOT/mfsk-core/tests/fixtures/wsprd_unpack_beta6.tsv}"
 PACK="$REPO_ROOT/mfsk-core/tests/fixtures/wspr_pack_rc1.tsv"
 [ -x "$ORDIR/wsprd_unpack_oracle" ] || { echo "no oracle in $ORDIR - run scripts/wsprd/build_oracle.sh first" >&2; exit 1; }
 COMMIT="$(cat "$ORDIR/exported-commit")"
@@ -164,9 +164,9 @@ res = subprocess.run([f"{ordir}/wsprd_unpack_oracle"], input=inp, capture_output
 lines = res.stdout.split("\n")[:-1]
 assert len(lines) == len(cases), (len(lines), len(cases))
 with open(out, "w") as fh:
-    fh.write(f"# msg::wspr::unpack / wspr decode text against WSJT-X's own `unpk_` (lib/wsprd/wsprd_utils.c) of v3.2.0-rc1 ({commit}).\n")
+    fh.write(f"# msg::wspr::unpack / wspr decode text against WSJT-X's own `unpk_` (lib/wsprd/wsprd_utils.c) of v3.3.0-beta6 ({commit}).\n")
     fh.write("# Made by scripts/wsprd/gen_cases.sh from scripts/wsprd/wsprd_unpack_oracle.c, built with scripts/wsprd/build_oracle.sh;\n")
-    fh.write("# regenerating it with the same oracle reproduces it byte for byte (lib/wsprd/ is identical in v3.3.0-beta2).\n")
+    fh.write("# regenerating it with the same oracle reproduces it byte for byte.\n")
     nprint = sum(1 for l in lines if l.startswith("0\t"))
     fh.write(f"# {len(cases)} cases: printed {nprint}, not printed {len(cases) - nprint}.\n")
     fh.write("# Columns: 50 bits, seed call (in wsprd's hash table; - = empty), rc (unpk_'s return = wsprd's noprint), text (the message field wsprd prints; - when rc is 1).\n")

@@ -10,6 +10,10 @@
   at a near-whole-symbol offset, >= 80 % of >= 9 overlapping received tones equal that frame's, shifted alike. Measured on upstream's
   own case (`tests/jtty_alias.rs`, fox at -3 dB, 24 seeded trials): 4 false frames before, 0 after, 24/24 decoded in full, and a
   second station 30 Hz away at 18.5 symbols still decodes. Tier B (`jtty_rx` vectors) unchanged.
+- **WSPR: an out-of-range type-2 suffix and the reserved type 63 are refused, as `wsprd` of v3.3.0-beta6 does** (#726, upstream
+  `ffa884606`). `unpackpfx` kept `nc` in a `char`, so a suffix field past 60255 wrapped into a valid suffix; the port reproduced
+  that. Measured on the 26 046-row `unpk_` fixture, rebuilt from beta6 (`wsprd_unpack_beta6.tsv`): 1 488 rows change, none left
+  unmatched; the full tier A+B gate is green. Detail in `scripts/wsprd/`.
 
 ### Docs
 
