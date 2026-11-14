@@ -133,6 +133,13 @@ extension Mode {
     /// baked for 60A is silently wrong for the other four.
     public var synthesisedFrameLength: Int { Int(mfsk_synth_output_len(rawValue)) }
 
+    /// Samples at the start of a synthesised frame before its first tone
+    /// symbol: 576 for FT4, whose waveform carries a ramp symbol each side
+    /// (`gen_ft4wave`), 0 for every other mode. Already inside
+    /// ``synthesisedFrameLength``; a caller placing a frame by
+    /// ``ModeInfo/txStartOffsetSeconds`` starts the buffer this much earlier.
+    public var synthesisedLeadLength: Int { Int(mfsk_synth_lead_len(rawValue)) }
+
     /// Stage 3: channel symbols as 16-bit PCM at 12 kHz.
     public func synthesiseFrame(tones: [UInt8], frequencyHz: Float, amplitude: Int16 = 8000) throws -> [Int16] {
         var out = [Int16](repeating: 0, count: synthesisedFrameLength)
@@ -179,7 +186,8 @@ extension Mode {
                                         frequencyHz: frequencyHz,
                                         amplitude: amplitude)
         var slot = [Int16](repeating: 0, count: Int(info.slotSamples12k))
-        let start = Int(info.txStartOffsetSeconds * 12_000)
+        // The tones start at the offset; FT4's frame has a ramp symbol before them.
+        let start = Int(info.txStartOffsetSeconds * 12_000) - synthesisedLeadLength
         for (i, sample) in frame.enumerated() where start + i < slot.count {
             slot[start + i] = sample
         }

@@ -84,7 +84,8 @@ fn the_pipeline_round_trips() {
     for (mode, slot_s) in [(MfskMode::Ft8, 15.0f32), (MfskMode::Ft4, 7.5)] {
         let frame = synth_i16(mode, &msg, 1500.0);
         let mut slot = vec![0i16; (slot_s * FS as f32) as usize];
-        let start = (0.5 * FS as f32) as usize;
+        // the tones start at 0.5 s; FT4's frame has a ramp symbol before them
+        let start = (0.5 * FS as f32) as usize - mfsk_synth_lead_len(mode as u32);
         for (i, s) in frame.iter().enumerate() {
             if let Some(d) = slot.get_mut(start + i) {
                 *d = d.saturating_add(*s);

@@ -181,10 +181,15 @@ pub fn info_to_tones<P: Protocol>(info: &[u8]) -> Vec<u8> {
 /// `gen_fst4wave.f90`); WSPR, JT9, JT65 and Q65 are plain continuous-phase
 /// FSK generated in the modulator.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum Waveform {
     /// Gaussian-shaped FSK with this configuration, defined at its own
     /// `sample_rate` (12 kHz for every WSJT mode).
     Gfsk(GfskCfg),
+    /// FT4's form of the same: the tones are framed by a ramp symbol on each side and the
+    /// raised-cosine ramp is a whole symbol long (`gen_ft4wave.f90`, see
+    /// [`synth_f32_lead_tail_into`](super::dsp::gfsk::synth_f32_lead_tail_into)).
+    Ft4(GfskCfg),
     /// Plain continuous-phase FSK at `ModulationParams::TONE_SPACING_HZ`
     /// and `SYMBOL_DT`, with [`super::dsp::envelope`]'s ramp.
     Cpfsk,
@@ -220,7 +225,9 @@ fn gfsk_at<P: FskWaveform>(cfg: &GfskCfg, sample_rate: u32) -> GfskCfg {
 /// Samples per symbol `P` transmits at `sample_rate`.
 fn samples_per_symbol<P: FskWaveform>(sample_rate: u32) -> usize {
     match P::WAVEFORM {
-        Waveform::Gfsk(cfg) => gfsk_at::<P>(&cfg, sample_rate).samples_per_symbol,
+        Waveform::Gfsk(cfg) | Waveform::Ft4(cfg) => {
+            gfsk_at::<P>(&cfg, sample_rate).samples_per_symbol
+        }
         Waveform::Cpfsk => cpfsk::nsps(sample_rate, P::SYMBOL_DT),
     }
 }
@@ -229,18 +236,21 @@ fn samples_per_symbol<P: FskWaveform>(sample_rate: u32) -> usize {
 /// frame of `P` at `sample_rate` — what to size a buffer to before the
 /// tones exist, which the `_into` forms and a C caller both need.
 pub fn synth_len<P: FskWaveform>(sample_rate: u32) -> usize {
-    (P::N_SYMBOLS + P::N_RAMP) as usize * samples_per_symbol::<P>(sample_rate)
+    P::N_SYMBOLS as usize * samples_per_symbol::<P>(sample_rate)
+        + 2 * synth_lead_samples::<P>(sample_rate)
 }
 
-/// Samples `synthesize` puts before the first tone symbol: one ramp symbol
-/// ([`FrameLayout::N_RAMP`] is the count of both sides, so half of it).
-/// Zero for every mode but FT4, whose `gen_ft4wave` frames the 103 tone
-/// symbols with a ramp symbol each side. A caller that places the
+/// Samples `synthesize` puts before the first tone symbol, and after the last: one ramp
+/// symbol for [`Waveform::Ft4`], whose `gen_ft4wave` frames the 103 tone
+/// symbols with a ramp symbol each side, none for every other form. A caller that places the
 /// transmission by [`FrameLayout::TX_START_OFFSET_S`] puts the *tone*
 /// start there, i.e. the buffer starts this many samples earlier
 /// (`ft4sim.f90:91`, `k=nint((xdt+0.5)/dt)-NSPS`).
 pub fn synth_lead_samples<P: FskWaveform>(sample_rate: u32) -> usize {
-    (P::N_RAMP / 2) as usize * samples_per_symbol::<P>(sample_rate)
+    match P::WAVEFORM {
+        Waveform::Ft4(_) => samples_per_symbol::<P>(sample_rate),
+        _ => 0,
+    }
 }
 
 /// Synthesise one frame of `P`'s tones at `f0_hz` into `out`. No
@@ -264,7 +274,7 @@ pub fn synthesize_into<P: FskWaveform>(
 ) {
     check_tones::<P>(tones);
     match P::WAVEFORM {
-        Waveform::Gfsk(cfg) if P::N_RAMP == 2 => super::dsp::gfsk::synth_f32_lead_tail_into(
+        Waveform::Ft4(cfg) => super::dsp::gfsk::synth_f32_lead_tail_into(
             out,
             tones,
             f0_hz,
@@ -361,7 +371,7 @@ mod waveform_tests {
     /// must not drift apart. This is what catches an FST4 sub-mode wired
     /// to another sub-mode's `FST4_*_GFSK`.
     fn gfsk_matches_trait<P: FskWaveform>() {
-        let Waveform::Gfsk(cfg) = P::WAVEFORM else {
+        let (Waveform::Gfsk(cfg) | Waveform::Ft4(cfg)) = P::WAVEFORM else {
             panic!("expected a GFSK protocol");
         };
         assert_eq!(cfg.sample_rate, 12_000.0);

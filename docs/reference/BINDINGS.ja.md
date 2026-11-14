@@ -423,6 +423,10 @@ WSPR 型（`i3=0, n3=6`）でない 77 ビットのメッセージは、そこ�
 シンボルあたりサンプル数が 30 倍違う（720 → 21 504）ので、60A から取った定数は
 他のモードで静かに誤りになる（FST4-900 / -1800 と FST4W の各周期は 66 560 と 134 400 まで行く）。
 
+`mfsk_synth_lead_len(mode)` は、そのうち最初のトーンシンボルの前にあるサンプル数: FT4 は 576
+（`gen_ft4wave` の波形は前後にランプシンボルを 1 つずつ持つ）、他のモードは 0。トーンはそこから
+始まるので、`tx_start_offset_s` でフレームを置くホストは、その分だけ手前からバッファを始める。
+
 7つの `mfsk_encode_*` ヘルパは、よくある
 `call1 / call2 / report` メッセージ用のワンコール近道である:
 
@@ -916,14 +920,14 @@ uint32_t   mfsk_runtime_thread_count(void);
 
 ### 2.12 シンボル索引
 
-エクスポートされる関数は 125 個:
+エクスポートされる関数は 126 個:
 
 | 群 | シンボル |
 |---|---|
 | decoder (24) | `mfsk_params_init` `mfsk_extras_init` `mfsk_decoder_open` `mfsk_decoder_close` `mfsk_decoder_last_error` `mfsk_decoder_set_params` `mfsk_decoder_set_extras` `mfsk_decoder_set_q65_callers` `mfsk_decoder_clear` `mfsk_decoder_add_callsign` `mfsk_decoder_set_on_decode` `mfsk_decoder_set_budget` `mfsk_decoder_last_budget` `mfsk_decoder_delivery_is_exact` `mfsk_decoder_decode_i16` `mfsk_decoder_decode_f32` `mfsk_decoder_decode_prefix_i16` `mfsk_decoder_decode_prefix_f32` `mfsk_decoder_copy_info` `mfsk_decoder_decode_stream` `mfsk_decoder_prefix_points` `mfsk_decoder_unpack77` `mfsk_decoder_get_wcalls` `mfsk_decoder_set_wcalls` |
 | streaming (12) | `mfsk_stream_open` `mfsk_stream_close` `mfsk_stream_push_i16` `mfsk_stream_push_f32` `mfsk_stream_position` `mfsk_stream_set_time` `mfsk_stream_slot_ready` `mfsk_stream_slot_is_whole` `mfsk_stream_set_prefix_points` `mfsk_stream_dropped` `mfsk_stream_take_slot_i16` `mfsk_stream_clear` |
 | introspection (9) | `mfsk_mode_count` `mfsk_mode_at` `mfsk_mode_name` `mfsk_mode_from_name` `mfsk_mode_info` `mfsk_mode_caps` `mfsk_mode_fields_read` `mfsk_abi_version` `mfsk_version` |
-| 送信 (16) | `mfsk_encode` `mfsk_encode_info` `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_encode_msk144` `mfsk_symbol_count` `mfsk_synth_output_len` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` |
+| 送信 (17) | `mfsk_encode` `mfsk_encode_info` `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_encode_msk144` `mfsk_symbol_count` `mfsk_synth_output_len` `mfsk_synth_lead_len` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` |
 | Q65 リスト (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_len` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_len` `mfsk_q65_callers_get` |
 | メッセージ (6) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_free_text` `mfsk_pack77_type4` `mfsk_unpack77` `mfsk_fst4w_pack` |
 | JTTY (15) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_encode_tones_ex` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |

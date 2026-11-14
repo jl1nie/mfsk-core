@@ -4,13 +4,14 @@
 
 ### Fixed
 
-- **FT4 transmit waveform is `gen_ft4wave`'s** (#726 follow-up). It was synthesised like `gen_ft8wave`: 103 symbols, an `nsps / 8`
-  ramp, and the phase starting at the first tone. WSJT-X frames the tones with a ramp symbol each side (105 symbols, 60 480 samples)
-  and ramps a whole symbol. Measured on a fixed tone list against WSJT-X's own generator: -45 dB before, -103 dB (beta4) / -82 dB
-  (beta6) now. `synthesize::<Ft4>` and `synth_len` return 60 480 samples; the tones start `synth_lead_samples::<Ft4>(rate)` (576)
-  into the buffer, so a caller places it that much before `TX_START_OFFSET_S` (`ft4sim.f90:91`). Behaviour change of the public API:
-  next release is a minor. New tier A `tests/gen_wave_vs_wsjtx.rs` holds FT8 (-68 dB; beta6 approximates, we keep `erf`/`sin`) and FT4
-  to beta6's generators. FST4 and JTTY not measured yet; embedded-poc not built.
+- **FT4 transmit waveform is `gen_ft4wave`'s** (#726). It was synthesised like `gen_ft8wave`: 103 symbols, an `nsps / 8` ramp, the phase
+  starting at the first tone. WSJT-X frames the tones with a ramp symbol each side (105 symbols, 60 480 samples) and ramps a whole symbol.
+  On a fixed tone list against WSJT-X's own generator, tones aligned: -21 dB over the frame before (-45 dB inside it, edges excluded), -103 dB
+  (beta4) / -82 dB (beta6) now. **API (next release is a minor):** `synthesize::<Ft4>` / `synth_len` return 60 480 samples; the tones start
+  `synth_lead_samples::<Ft4>(rate)` (576) in (`Encoded::synth_lead`, `ModeMeta::tx_lead_samples_12k`, C `mfsk_synth_lead_len`, Swift
+  `synthesisedLeadLength`), so a caller places the buffer that much before `TX_START_OFFSET_S` (`ft4sim.f90:91`); `Waveform` is
+  `#[non_exhaustive]` with a new `Ft4` variant. New tier A `tests/gen_wave_vs_wsjtx.rs` (FT8 -68 dB, FT4 -82 dB). **Open:** FT4's subtraction reference
+  is still the FT8 form (#734); the CoreS3's `GfskStream` is not changed.
 
 ### Docs
 

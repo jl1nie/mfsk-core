@@ -2461,14 +2461,17 @@ const WSPR_SYNC_VECTOR: [u8; 162] = [0u8; 162];
 ### 送信：`FskWaveform`
 
 FSK で送信するプロトコルは `engine::tx::FskWaveform` も実装する。
-WSJT-X の2つの送信方式のどちらに属するかを示す定数が1つあるだけ（#391）:
+WSJT-X の2つの送信方式のどちらに属するか、GFSK ならどの形かを示す定数が1つあるだけ（#391）:
 
 ```rust,ignore
 impl FskWaveform for Wspr {
     const WAVEFORM: Waveform = Waveform::Cpfsk;          // WSPR, JT9, JT65, Q65
 }
 impl FskWaveform for Ft8 {
-    const WAVEFORM: Waveform = Waveform::Gfsk(FT8_GFSK); // FT8, FT4, FST4
+    const WAVEFORM: Waveform = Waveform::Gfsk(FT8_GFSK); // FT8、FST4（#726 から `Waveform::Fst4`）
+}
+impl FskWaveform for Ft4 {
+    const WAVEFORM: Waveform = Waveform::Ft4(FT4_GFSK);  // 前後にランプシンボル 1 つずつ
 }
 ```
 
@@ -2483,11 +2486,12 @@ impl FskWaveform for Ft8 {
 ないプロトコル（例として置いている `uvpacket` は π/4-DQPSK）は単に
 実装しない。
 
-音声の長さは `(N_SYMBOLS + N_RAMP)` シンボル（`synth_len`）。`N_RAMP` が 0 でない
-のは FT4 だけで、`gen_ft4wave.f90` は 103 個のトーンシンボルの前後に 1 シンボルずつ
+音声の長さは `N_SYMBOLS` シンボルに、`Waveform::Ft4` なら前後のランプシンボルを足したもの
+（`synth_len`）。`N_RAMP` が 0 でないのは FT4 だけで、`gen_ft4wave.f90` は 103 個のトーンシンボルの前後に 1 シンボルずつ
 ランプシンボルを置く（105 シンボル、12 kHz で 60 480 サンプル）。レイズドコサイン
 ランプも丸 1 シンボル分の長さになる。したがってトーンはバッファの
-`synth_lead_samples::<P>(rate)` サンプル目（FT4 は 576、他は 0）から始まる。
+`synth_lead_samples::<P>(rate)` サンプル目（FT4 は 576、他は 0。`Encoded::synth_lead`、
+`ModeMeta::tx_lead_samples_12k`、C の `mfsk_synth_lead_len`、Swift の `synthesisedLeadLength`）から始まる。
 `TX_START_OFFSET_S` からそのサンプル数だけ手前にバッファを置くこと
 （`ft4sim.f90:91`）。0.15 までの FT4 は、`gen_ft8wave` と同じ 103 シンボル・
 `nsps / 8` ランプの形で、`gen_ft4wave` から -45 dB ずれていた。

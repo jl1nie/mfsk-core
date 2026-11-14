@@ -221,7 +221,8 @@ pub fn synth_slot_i16(
     let info = unsafe { info.assume_init() };
     let frame = synth_frame_i16(mode, call1, call2, report, freq_hz);
     let mut slot = vec![0i16; info.slot_samples_12k as usize];
-    let start = (info.tx_start_offset_s * FS as f32) as usize;
+    // the tones start at the offset; FT4's frame has a ramp symbol before them
+    let start = (info.tx_start_offset_s * FS as f32) as usize - mfsk_synth_lead_len(mode as u32);
     for (i, s) in frame.iter().enumerate() {
         if let Some(d) = slot.get_mut(start + i) {
             *d = d.saturating_add(*s);

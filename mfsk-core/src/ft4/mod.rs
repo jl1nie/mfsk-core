@@ -15,19 +15,19 @@
 //! # #[cfg(all(feature = "ft4", any(feature = "fft-rustfft", feature = "fft-extern")))] {
 //! use mfsk_core::Mode;
 //! use mfsk_core::decoder::{Decoder, SlotInput, default_params};
-//! use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
+//! use mfsk_core::engine::tx::{message_to_tones, synth_lead_samples, synthesize_i16};
 //! use mfsk_core::ft4::Ft4;
 //! use mfsk_core::msg::wsjt77::pack77;
 //!
 //! // 1. Pack a standard message and synthesise 12 kHz i16 PCM.
-//! //    The synth produces just the transmitted frame; pad to the full
-//! //    7.5 s slot with the signal starting at 0.5 s.
+//! //    The frame has a ramp symbol before its tones (`gen_ft4wave`); pad it
+//! //    into the 7.5 s slot so the tones start at 0.5 s.
 //! let msg77 = pack77("CQ", "JA1ABC", "PM95").expect("pack");
 //! let tones = message_to_tones::<Ft4>(&msg77);
 //! let frame = synthesize_i16::<Ft4>(&tones, 12_000, /* freq */ 1500.0, /* amp */ 20_000);
 //!
 //! let mut audio = vec![0i16; 90_000]; // 7.5 s @ 12 kHz
-//! let start = (0.5 * 12_000.0) as usize;
+//! let start = (0.5 * 12_000.0) as usize - synth_lead_samples::<Ft4>(12_000);
 //! for (i, &s) in frame.iter().enumerate() {
 //!     if start + i < audio.len() { audio[start + i] = s; }
 //! }
@@ -109,7 +109,7 @@ impl crate::engine::SyncFrontEnd for Ft4 {
 
 impl crate::engine::tx::FskWaveform for Ft4 {
     const WAVEFORM: crate::engine::tx::Waveform =
-        crate::engine::tx::Waveform::Gfsk(encode::FT4_GFSK);
+        crate::engine::tx::Waveform::Ft4(encode::FT4_GFSK);
 }
 
 impl FrameLayout for Ft4 {

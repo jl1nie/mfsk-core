@@ -86,7 +86,9 @@ const STREAM_RENORM_PERIOD: u32 = 4096;
 /// `gen_ft8wave.f90` uses to keep the pulse train continuous at the
 /// ends, and the half-cosine envelope over `cfg.ramp_samples` are all
 /// reproduced; `stream_matches_the_reference_synthesiser` pins the
-/// output against [`synth_f32`] sample for sample.
+/// output against [`synth_f32`] sample for sample. That is the `gen_ft8wave` form: FT4's frame
+/// ([`synth_f32_lead_tail_into`]) and FST4's are not streamed, and no embedded transmitter
+/// of theirs exists yet.
 ///
 /// **No `sin` per sample.** The phase increment varies, so the fixed
 /// step `super::ddc`'s mixer uses does not apply directly — but it
