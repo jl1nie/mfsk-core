@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.16.1 — FT4 is sent where WSJT-X sends it: `tx_buffer_start` is `Modulator.cpp`'s `delay_ms` (3600 samples, 0.300 s), not the DT = 0 placement (#749)
 
 ### Changed — transmit
 
