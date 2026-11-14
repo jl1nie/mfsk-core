@@ -12,6 +12,10 @@
   `synthesisedLeadLength`), so a caller places the buffer that much before `TX_START_OFFSET_S` (`ft4sim.f90:91`); `Waveform` is
   `#[non_exhaustive]` with a new `Ft4` variant. New tier A `tests/gen_wave_vs_wsjtx.rs` (FT8 -68 dB, FT4 -82 dB). **Open:** FT4's subtraction reference
   is still the FT8 form (#734); the CoreS3's `GfskStream` is not changed.
+- **WSPR: an out-of-range type-2 suffix and the reserved type 63 are refused, as `wsprd` of v3.3.0-beta6 does** (#726, upstream
+  `ffa884606`). `unpackpfx` kept `nc` in a `char`, so a suffix field past 60255 wrapped into a valid suffix; the port reproduced
+  that. Measured on the 26 046-row `unpk_` fixture, rebuilt from beta6 (`wsprd_unpack_beta6.tsv`): 1 488 rows change, none left
+  unmatched; the full tier A+B gate is green. Detail in `scripts/wsprd/`.
 
 ### Docs
 

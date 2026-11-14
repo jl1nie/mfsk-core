@@ -141,15 +141,15 @@ fn pack_message_matches_wqencode() {
     );
 }
 
-/// The `wsprd` oracle's answer (`tests/fixtures/wsprd_unpack_rc1.tsv`, see `tests/wsprd_unpack.rs`)
+/// The `wsprd` oracle's answer (`tests/fixtures/wsprd_unpack_beta6.tsv`, see `tests/wsprd_unpack.rs`)
 /// for a payload with an empty hash table: `Some(text)`, or `None` when `wsprd` prints nothing.
 fn wsprd_prints(bits: &str) -> Option<String> {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/wsprd_unpack_rc1.tsv"
+        "/tests/fixtures/wsprd_unpack_beta6.tsv"
     );
     let text =
-        std::fs::read_to_string(path).expect("tests/fixtures/wsprd_unpack_rc1.tsv is vendored");
+        std::fs::read_to_string(path).expect("tests/fixtures/wsprd_unpack_beta6.tsv is vendored");
     let line = text
         .lines()
         .filter(|l| !l.starts_with('#'))
@@ -213,7 +213,10 @@ fn accepted_rows_unpack_to_what_wqdecode_prints() {
     );
     // The rows of the fixture that are these two documented differences (counted, so a new kind
     // of difference cannot hide in an allowance).
-    assert_eq!((swaziland, blank_prefix), (4, 12));
+    // (`PJ4/K1 37` was a 12th `blank_prefix` row until v3.3.0-beta6: its payload carries an `nprefix`
+    // past 60255, which `wsprd` used to wrap into the suffix `/15` and now refuses, so it is
+    // `unreadable` and `unpack` agrees.)
+    assert_eq!((swaziland, blank_prefix), (4, 11));
     assert!(unreadable > 0);
 }
 
