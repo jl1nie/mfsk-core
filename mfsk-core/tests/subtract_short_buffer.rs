@@ -47,7 +47,7 @@ const FT8_CFG: SubtractCfg = SubtractCfg {
         bt: 2.0,
         hmod: 1.0,
         ramp_samples: 1920 / 8,
-        lead_symbols: 0,
+        frame_ramp: false,
     }),
 };
 
@@ -62,7 +62,7 @@ const FT4_CFG: SubtractCfg = SubtractCfg {
         hmod: 1.0,
         ramp_samples: 576 / 8,
         // as `ft4::decode::FT4_SUBTRACT`: a ramp symbol each side of the 103 tone symbols
-        lead_symbols: 1,
+        frame_ramp: true,
     }),
 };
 
@@ -91,7 +91,8 @@ fn no_panic(f: impl FnOnce() + std::panic::UnwindSafe) -> bool {
 fn short_buffers_do_not_panic() {
     let ft8 = ft8_tones();
     let ft4: Vec<u8> = (0..103).map(|k| (k % 4) as u8).collect();
-    let ft4_frame = 103 * 576;
+    // FT4's reference is (103 + 2) symbols: a ramp symbol each side of the 103 tone symbols
+    let ft4_frame = 105 * 576;
 
     // Lengths around the frame and well below it; 130 284 is #567's own.
     let ft8_lens = [

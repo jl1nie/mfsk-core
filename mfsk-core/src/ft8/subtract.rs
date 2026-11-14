@@ -28,7 +28,7 @@ const FT8_CFG: SubtractCfg = SubtractCfg {
         bt: 2.0,
         hmod: 1.0,
         ramp_samples: 1920 / 8,
-        lead_symbols: 0,
+        frame_ramp: false,
     }),
 };
 

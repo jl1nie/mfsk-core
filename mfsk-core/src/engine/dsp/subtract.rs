@@ -45,17 +45,17 @@ pub struct GfskParams {
     pub hmod: f32,
     /// Cosine ramp length at start/end (samples). FT8 uses `nsps / 8`.
     pub ramp_samples: usize,
-    /// Ramp symbols the transmitted frame carries before its first tone symbol and after its last: 1 for
-    /// FT4 (`gen_ft4wave`; `subtractft4.f90` builds `cref` over `(103 + 2) * nsps` samples from
-    /// `nstart = dt * 12000 + 1 - nsps`), 0 for the others. With 1, the reference is
-    /// `synth_complex_f32_lead_tail_into`'s and `ramp_samples` is not read.
-    pub lead_symbols: usize,
+    /// The transmitted frame carries a ramp symbol before its first tone symbol and after its last: FT4
+    /// (`gen_ft4wave`; `subtractft4.f90` builds `cref` over `(103 + 2) * nsps` samples from
+    /// `nstart = dt * 12000 + 1 - nsps`). With `true`, the reference is `synth_complex_f32_lead_tail_into`'s
+    /// and `ramp_samples` is not read; with `false` it is `gen_ft8wave`'s form (FT8).
+    pub frame_ramp: bool,
 }
 
 impl SubtractCfg {
     /// Samples of the transmitted frame before its first tone symbol.
     fn lead_samples(&self) -> usize {
-        self.gfsk.map_or(0, |g| g.lead_symbols) * self.samples_per_symbol
+        usize::from(self.gfsk.is_some_and(|g| g.frame_ramp)) * self.samples_per_symbol
     }
 
     /// Samples of the reference for `ntones` tone symbols, ramp symbols included.
@@ -73,7 +73,8 @@ impl SubtractCfg {
 
 /// Generate phase-continuous cosine/sine references for a symbol stream.
 ///
-/// Returns `(w_cos, w_sin)` each of length `tones.len() * cfg.samples_per_symbol`.
+/// Returns `(w_cos, w_sin)` each of length [`SubtractCfg::frame_len`]`(tones.len())`: `tones.len() *
+/// cfg.samples_per_symbol`, plus a ramp symbol each side when `GfskParams::frame_ramp`.
 /// `freq_hz` is the carrier of tone 0.
 ///
 /// When `cfg.gfsk` is `Some`, the references are GFSK-shaped (matches
@@ -92,7 +93,7 @@ fn generate_iq(tones: &[u8], freq_hz: f32, cfg: &SubtractCfg) -> (Vec<f32>, Vec<
         };
         let mut w_cos = vec![0.0f32; n];
         let mut w_sin = vec![0.0f32; n];
-        if g.lead_symbols == 1 {
+        if g.frame_ramp {
             crate::engine::dsp::gfsk::synth_complex_f32_lead_tail_into(
                 &mut w_cos, &mut w_sin, tones, freq_hz, 1.0, &gfsk_cfg,
             );
@@ -168,7 +169,7 @@ fn ls_amp_mag(audio: &[i16], tones: &[u8], freq_hz: f32, dt_sec: f32, cfg: &Subt
 
 /// Number of samples between rotor-magnitude renormalizations in
 /// [`ls_amp_mag_tweaked`]'s incremental NCO. Bounds f32 rounding drift
-/// over the ~59k (FT4) / ~334k (FT8) sample buffers `refine_freq`
+/// over the ~60k (FT4, ramp symbols included) / ~334k (FT8) sample buffers `refine_freq`
 /// sweeps; cheap relative to the multiply-adds it guards (one `norm()`
 /// + divide every 256 samples).
 const NCO_RESYNC_SAMPLES: usize = 256;
@@ -1052,7 +1053,7 @@ mod refine_dt_tests {
                 bt: 2.0,
                 hmod: 1.0,
                 ramp_samples: 1920 / 8,
-                lead_symbols: 0,
+                frame_ramp: false,
             }),
         }
     }
@@ -1227,7 +1228,7 @@ mod tests {
                 bt: 1.0,
                 hmod: 1.0,
                 ramp_samples: 576 / 8,
-                lead_symbols: 0,
+                frame_ramp: true, // as `ft4::decode::FT4_SUBTRACT`
             }),
         }
     }
@@ -1242,7 +1243,7 @@ mod tests {
                 bt: 2.0,
                 hmod: 1.0,
                 ramp_samples: 1920 / 8,
-                lead_symbols: 0,
+                frame_ramp: false,
             }),
         }
     }

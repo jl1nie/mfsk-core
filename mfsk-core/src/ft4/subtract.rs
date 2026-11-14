@@ -205,7 +205,8 @@ mod tests {
         let power_after: f64 = audio.iter().map(|&s| (s as f64).powi(2)).sum::<f64>();
         // The reference is `gen_ft4wave`'s frame, which is what `synthesize::<Ft4>` transmits (#734): with
         // the exact timing nothing is left but rounding to `i16` (it was -20.9 dB, the two ramp symbols,
-        // when the reference was `gen_ft8wave`'s form).
+        // when the reference was `gen_ft8wave`'s form). This is the constant-amplitude LS path; the LPF
+        // path the decoder uses went from about -20 dB to -29 dB and has no test of its own.
         assert!(
             power_after < power_before * 1e-4,
             "power before={power_before:.0} after={power_after:.0}"

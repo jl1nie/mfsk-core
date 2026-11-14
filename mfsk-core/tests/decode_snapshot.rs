@@ -51,15 +51,6 @@
 //! also gains `K1JT HA5WA 73`; no message left any fixture. JT65's two fixtures differ here only in
 //! the last float bits (another machine wrote them) and were not rewritten.
 //!
-//! A fourth (#734, 2026-11-14): FT4's subtraction reference is `gen_ft4wave`'s frame (a ramp symbol each
-//! side, whole-symbol ramps; `subtractft4.f90`) instead of `gen_ft8wave`'s form, which a clean transmitted
-//! signal left at -20.9 dB and now leaves at nothing. Only the six `ft4_*` and the two `iq_*_ft4` fixtures
-//! move; no FT8, FST4, JT65, JT9, Q65 or WSPR one. Messages: none appears; in `ft4_eq_local` three go
-//! (`AC6BW KR9A R 559 WI` -15 dB, `CQ RU W0FRC DM79` -15 dB, `W7BOB KJ7G RR73`, all three in `jt9`'s list for
-//! this recording and all three still decoded by `ft4_default` and the other FT4 configurations). Where a
-//! row stays, its numbers move: `AC6BW KR9A R 559 WI` reads -15.02 dB where it read -14.13 (`jt9`: -15),
-//! 2299.19 Hz where it read 2299.71.
-//!
 //! A fourth (#721): `coarse_sync` dedupes on the integer-lag DT `(lag-0.5)*tstep`, as `sync8.f90:143`
 //! does, not on the parabolically interpolated one, so a weak candidate 3-4 Hz from a strong signal
 //! stays in the list and is decoded (and subtracted) from the residue as `jt9` does; and
@@ -67,6 +58,20 @@
 //! carry rows move in `sync_score`, `snr`, `hard_errors` and `pass`; no message appeared or left any
 //! of them. One row changes `freq_hz` / `dt_sec` (14 fixtures): `K1BZM DK8NE -10` is decoded from
 //! another candidate, 245.375 Hz / DT 0.500 -> 244.250 Hz / 0.505, 22 -> 18 hard errors (`jt9`: 18).
+//!
+//! A fifth (#734, 2026-11-14): FT4's subtraction reference is `gen_ft4wave`'s frame (a ramp symbol each
+//! side, whole-symbol ramps; `subtractft4.f90`) instead of `gen_ft8wave`'s form. The residual of a clean
+//! transmitted signal goes from -20.9 dB to nothing through the constant-amplitude LS subtraction, and from
+//! about -20 dB to -29 dB through the LPF subtraction the decoder uses (`lpf_half` 700; measured in review).
+//! Only the six `ft4_*` and the two `iq_*_ft4` fixtures move; no FT8, FST4, JT65, JT9, Q65 or WSPR one.
+//! Messages: none appears; in `ft4_eq_local` three go (`AC6BW KR9A R 559 WI` -15 dB, `CQ RU W0FRC DM79`
+//! -15 dB, `W7BOB KJ7G RR73`: all three in `jt9`'s list for this recording, all marginal under `Local`
+//! (found only in SIC round 1, 17-18 hard errors), and decoded by `ft4_default`, `ft4_ap_hint`,
+//! `ft4_codec_filter` and `ft4_sic_rounds_2/3`; `ft4_single_pass` and `ft4_sic_rounds_1` never held `AC6BW` or
+//! `W0FRC`). The review found no defect in the reference behind it: the new one subtracts every strong signal
+//! better, and the lost three are marginal decodes. A row that stays moves in its numbers (`AC6BW KR9A R
+//! 559 WI` 2299.71 -> 2299.19 Hz, -14.13 -> -15.02 dB, `jt9` -15; its cause is not measured, so it is not
+//! evidence of improvement). `ft4_wsjtx_sample_eq_local_recall_floor` now guards the configuration.
 //!
 //! Row format, one per line, sorted. Frame family (FT8/FT4/FST4): text,
 //! then `freq_hz`, `dt_sec`, `snr_db`, `sync_score` as f32 bit patterns in

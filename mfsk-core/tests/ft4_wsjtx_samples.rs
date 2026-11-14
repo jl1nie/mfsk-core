@@ -211,6 +211,53 @@ fn ft4_wsjtx_sample_recall_vs_golden() {
     );
 }
 
+/// `EqMode::Local` (a Rust-only Wiener equaliser that replaces the raw decode: WSJT-X has no counterpart) on the same
+/// wide-band, `sic_rounds(3)` run: recall against `jt9`'s 14, and nothing `jt9` does not report. The floor, 12 of 14, is a
+/// **stated debt**: until FT4's subtraction reference became `gen_ft4wave`'s frame (#734) the snapshot of this
+/// configuration also held `AC6BW KR9A R 559 WI`, `CQ RU W0FRC DM79` and `W7BOB KJ7G RR73`, each already marginal under
+/// `Local` (found only in SIC round 1, 17-18 hard errors) and still decoded by the default configuration. The
+/// configuration had no guard before, only the frozen snapshot, which the change had to rewrite.
+#[test]
+fn ft4_wsjtx_sample_eq_local_recall_floor() {
+    use common::golden::{DecodeView, GoldenSet, Tolerances, assert_golden};
+    use mfsk_core::engine::equalize::EqMode;
+
+    let Some(path) = sample_path() else {
+        eprintln!(
+            "skipping: WSJT-X FT4 sample not found at ../../WSJT-X/samples/FT4/000000_000002.wav"
+        );
+        return;
+    };
+    let raw = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let mut audio = vec![0i16; SLOT_SAMPLES];
+    let copy = raw.len().min(SLOT_SAMPLES);
+    audio[..copy].copy_from_slice(&raw[..copy]);
+    let out = DecodeRequest::<Ft4>::new(&audio, 100.0, 2700.0, 0.05, 100)
+        .sic_rounds(3)
+        .eq_mode(EqMode::Local)
+        .decode();
+    assert_golden(
+        &out.results,
+        &GoldenSet {
+            name: "FT4 000000_000002.wav (wide band, sic_rounds(3), EqMode::Local)",
+            expected: FT4_FULL_REFERENCE,
+            min_hits: 12,
+            max_extra: 0,
+        },
+        Tolerances {
+            freq_hz: FREQ_TOL_HZ,
+            dt_sec: DT_TOL_SEC,
+            snr_db: 2.0,
+        },
+        |d| DecodeView {
+            msg: unpack77(d.message77()).unwrap_or_default(),
+            freq_hz: d.freq_hz,
+            dt_sec: d.dt_sec,
+            snr_db: Some(d.snr_db),
+        },
+    );
+}
+
 /// Precision: the decoder must emit **nothing** the reference decoder
 /// doesn't. Also pins reported SNR against real `jt9`'s.
 ///

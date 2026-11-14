@@ -39,7 +39,7 @@ pub const FT4_DOWNSAMPLE: DownsampleCfg = DownsampleCfg {
 /// `bt=1.0`; `lib/ft4/gen_ft4wave.f90` calls `gfsk_pulse(1.0, tt)`).
 ///
 /// The reference is `gen_ft4wave`'s frame, as `subtractft4.f90` builds `cref` (#734): `(103+2)*NSPS`
-/// samples from `nstart=dt*12000+1-NSPS` (`lead_symbols: 1`), the same waveform `engine::tx` transmits
+/// samples from `nstart=dt*12000+1-NSPS` (`frame_ramp: true`), the same waveform `engine::tx` transmits
 /// (`Waveform::Ft4`).
 pub const FT4_SUBTRACT: SubtractCfg = SubtractCfg {
     sample_rate: 12_000.0,
@@ -51,7 +51,7 @@ pub const FT4_SUBTRACT: SubtractCfg = SubtractCfg {
         hmod: 1.0,
         ramp_samples: 576 / 8,
         // `gen_ft4wave` over (103 + 2) * nsps from one symbol before the tones (`subtractft4.f90`)
-        lead_symbols: 1,
+        frame_ramp: true,
     }),
 };
 
