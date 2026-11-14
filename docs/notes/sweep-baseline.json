@@ -26,7 +26,7 @@
       },
       "ft8": {
         "date": "2026-11-14",
-        "commit": "68c9a1d8-dirty",
+        "commit": "0311de1b",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 1040,
         "groups": 4
