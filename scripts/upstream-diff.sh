@@ -119,9 +119,11 @@ grep -rnoE '[A-Za-z0-9_]+\.(f90|F90|c|h|cpp)\b' mfsk-core/src mfsk-ffi/src embed
     | awk -F: '{ print $3 "\t" $1 }' | sort -u > "$cites"
 cited_by() { awk -F'\t' -v f="$1" '$1==f{print $2}' "$cites" | sort -u; }
 
-# Tree diff, whitespace- and line-ending-insensitive (as in #435). Only lib/ and
-# map65/ hold the algorithms; the GUI, tests, docs and CI are not ported.
-mapfile -t rows < <(g diff -w --ignore-cr-at-eol --numstat "$base" "$target" -- lib map65/libm65 \
+# Tree diff, whitespace- and line-ending-insensitive (as in #435). lib/ and map65/ hold the
+# algorithms, and Modulator/ the transmit waveform of WSPR, JT9, JT65 and Q65 (WSJT-X generates those
+# sample by sample in C++, not in lib/; it was missing here until #726 found a drifting phase); the GUI,
+# tests, docs and CI are not ported.
+mapfile -t rows < <(g diff -w --ignore-cr-at-eol --numstat "$base" "$target" -- lib map65/libm65 Modulator \
     | grep -vE '\.(ts|md|txt|png|py|cmake|json)\t?$' | grep -vE '\.ts$|/tests?/|\.md$|\.txt$|\.png$')
 
 bold "== changed upstream files that mfsk-core cites ($base -> $target) =="

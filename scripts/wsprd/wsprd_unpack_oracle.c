@@ -1,5 +1,5 @@
 /* Oracle for mfsk-core's msg::wspr::unpack and the WSPR decoder's message text: WSJT-X's own
- * `unpk_` (lib/wsprd/wsprd_utils.c, v3.2.0-rc1), called the way lib/wsprd/wsprd.c:1496 calls it.
+ * `unpk_` (lib/wsprd/wsprd_utils.c, v3.3.0-beta6), called the way lib/wsprd/wsprd.c:1496 calls it.
  *
  *   wsprd_unpack_oracle < cases        one case per line:  <50 bits '0'/'1'> TAB <seed call | ->
  *

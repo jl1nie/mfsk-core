@@ -309,8 +309,9 @@ fn c_str(b: &[u8]) -> &str {
 /// * `60000 ≤ nprefix ≤ 60035` → single-char digit/letter suffix
 /// * `60036 ≤ nprefix ≤ 60125` → two-digit suffix
 ///
-/// `nc = nprefix - 60000` is stored in a `char` (`:265`), so a field past 60255 wraps
-/// modulo 256 as it does there; what lands outside `0..=125` is refused (`:283`).
+/// `nc = nprefix - 60000` is an `int` (`:265`, since v3.3.0-beta6 `ffa884606`; a `char` before,
+/// which wrapped a field past 60255 into a valid suffix), and what lies outside `0..=125` is
+/// refused (`:283`).
 fn apply_prefix(nprefix: u32, base_call: &str) -> Option<String> {
     let call = if nprefix < 60_000 {
         let mut n = nprefix;
@@ -326,7 +327,7 @@ fn apply_prefix(nprefix: u32, base_call: &str) -> Option<String> {
             base_call
         )
     } else {
-        let nc = (nprefix - 60_000) as u8 as i8;
+        let nc = nprefix - 60_000;
         match nc {
             0..=9 => format!("{}/{}", base_call, (b'0' + nc as u8) as char),
             10..=35 => format!("{}/{}", base_call, (b'A' + (nc - 10) as u8) as char),
@@ -347,11 +348,10 @@ fn apply_prefix(nprefix: u32, base_call: &str) -> Option<String> {
 /// (`wsprd_utils.c:324-405`). `None` is what `unpk_` answers with a non-zero return
 /// (`noprint`): the decode is neither printed nor written to `ALL_WSPR.TXT`.
 ///
-/// Deliberate divergence: `unpk_` returns 0 with an **empty** message for `ntype == 63` (a
-/// 22-bit field whose low seven bits are 127, matching none of its `if`s), so `wsprd` prints a
-/// decode with no text. That is an upstream gap, not a message; this returns `None`.
+/// `ntype == 63` (a 22-bit field whose low seven bits are 127) is reserved: `unpk_` returns 1
+/// for it since v3.3.0-beta6 (`ffa884606`; before, 0 with an empty message), and so does this.
 ///
-/// Measured against `unpk_` itself on `tests/fixtures/wsprd_unpack_rc1.tsv` by
+/// Measured against `unpk_` itself on `tests/fixtures/wsprd_unpack_beta6.tsv` by
 /// `tests/wsprd_unpack.rs`.
 pub fn unpack(bits: &[u8; 50]) -> Option<WsprMessage> {
     // Pack bit vector back into the 7-byte word format unpack50 expects.

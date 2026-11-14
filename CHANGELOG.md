@@ -14,6 +14,13 @@
 
 ### Fixed
 
+- **Q65 decodes a noiseless frame (#735). Marked divergence from WSJT-X.** `condition_symbol_spectra` clips the symbol energies at 20x their 40th
+  percentile (`q65_loops.f90`'s `s3lim`). On float input with no noise that percentile is f32 rounding, 160 dB below the peak, so the clip saturated the
+  tones' sidelobes too (30-67 of 192 bins a symbol tied) and BP failed: an aligned noiseless Q65-15A frame with its start cut was lost with noise at 1e-9
+  and decoded at 1e-7 (found while making the CPFSK phase exact, #726). WSJT-X cannot meet it (`int16` audio has 128 dB of range at Q65-15; `jt9` decodes the
+  `int16` form of this slot); `base` is now floored at that range, `peak / (3 * 32767^2 * nsps)`. The floor never engaged on the vendored recordings (margin >= 114 dB) or the noisy
+  synthetic tests; it can engage on a noiseless int16 file (the quantisation error of a tone is not white; about -12 dBFS and louder), with the same decode. 4 of 12 new inputs fail without
+  it (noise 0 and 1e-9, cuts 3750 and 6000); the `dt_window` noise added for it is gone.
 - **FT4's subtraction reference is `gen_ft4wave`'s frame** (#734, follows #729). It was `gen_ft8wave`'s form (103 symbols, an `nsps/8` ramp),
   which left the two ramp symbols of a transmitted signal behind (-20.9 dB through the constant-amplitude LS subtraction, about -20 dB through
   the decoder's LPF one; now nothing, and -29 dB); `subtractft4.f90` builds `cref` with `gen_ft4wave` over `(103+2)*NSPS` from
@@ -26,16 +33,24 @@
   it, with `f0 + tone * spacing` in `f32`; WSJT-X advances a `double` phase first and takes `sin`. Against that, on a 110 s WSPR frame:
   -35 dB (an `f32` sum drifts 0.04 rad), and a different phase. Now a `u64` turn accumulator (`engine/dsp/nco.rs`, shared with
   the GFSK modes; no `f64` per sample) with the per-symbol frequency formed in `f64` (from the `f32` `f0` and spacing, widened: JT9's `12000/6912` is not exact in `f32`, 1e-4 rad over a frame): within 2e-4 of an `f64` reference of the Modulator's loop
-  (`cpfsk::tests`). `engine::dsp::subtract` rebuilds the same waveform through it. Test fixtures that were exact zeros around an exact tone burst
-  (`dt_window` Q65) now carry a little noise, and the JT65 averaging test tries up to 8 noise draws: the 0.8 dB window it relied on moved.
+  (`cpfsk::tests`). `engine::dsp::subtract` rebuilds the same waveform through it. The JT65 averaging test tries up to 8 noise draws: the window it relied on moved. (The exact-zero Q65 slot that this exposed is fixed, #735.)
 - **FT4 transmit waveform is `gen_ft4wave`'s** (#726). It was synthesised like `gen_ft8wave`: 103 symbols, an `nsps / 8` ramp, the phase
   starting at the first tone. WSJT-X frames the tones with a ramp symbol each side (105 symbols, 60 480 samples) and ramps a whole symbol.
   On a fixed tone list against WSJT-X's own generator, tones aligned: -21 dB over the frame before (-45 dB inside it, edges excluded), -103 dB
   (beta4) / -82 dB (beta6) now. **API (next release is a minor):** `synthesize::<Ft4>` / `synth_len` return 60 480 samples; the tones start
   `synth_lead_samples::<Ft4>(rate)` (576) in (`Encoded::synth_lead`, `ModeMeta::tx_lead_samples_12k`, C `mfsk_synth_lead_len`, Swift
   `synthesisedLeadLength`), so a caller places the buffer that much before `TX_START_OFFSET_S` (`ft4sim.f90:91`); `Waveform` is
-  `#[non_exhaustive]` with a new `Ft4` variant. New tier A `tests/gen_wave_vs_wsjtx.rs` (FT8 -68 dB, FT4 -82 dB). **Open:** FT4's subtraction reference
-  is still the FT8 form (#734); the CoreS3's `GfskStream` is not changed.
+  `#[non_exhaustive]` with a new `Ft4` variant. New tier A `tests/gen_wave_vs_wsjtx.rs` (FT8 -68 dB, FT4 -82 dB). FT4's subtraction reference follows (#734); the CoreS3's `GfskStream` is not changed.
+- **JTTY: a candidate that is a misaligned view of a frame already decoded is refused** (#726, upstream PR #702, v3.3.0-beta6
+  `is_frame_alias`). A strong signal left repeatable false frames (`IG4QXF TU`): a sync candidate a whole number of symbols inside a
+  decoded frame matched 7 of 13 sync tones by chance and still gave a TBCC codeword. It is dropped when, within 2.5 tone spacings and
+  at a near-whole-symbol offset, >= 80 % of >= 9 overlapping received tones equal that frame's, shifted alike. Measured on upstream's
+  own case (`tests/jtty_alias.rs`, fox at -3 dB, 24 seeded trials): 4 false frames before, 0 after, 24/24 decoded in full, and a
+  second station 30 Hz away at 18.5 symbols still decodes. Tier B (`jtty_rx` vectors) unchanged.
+- **WSPR: an out-of-range type-2 suffix and the reserved type 63 are refused, as `wsprd` of v3.3.0-beta6 does** (#726, upstream
+  `ffa884606`). `unpackpfx` kept `nc` in a `char`, so a suffix field past 60255 wrapped into a valid suffix; the port reproduced
+  that. Measured on the 26 046-row `unpk_` fixture, rebuilt from beta6 (`wsprd_unpack_beta6.tsv`): 1 488 rows change, none left
+  unmatched; the full tier A+B gate is green. Detail in `scripts/wsprd/`.
 - **FST4 transmit waveform is `gen_fst4wave`'s** (#726). The first and last symbol were extended and ramped `nsps / 8` (as FT8); upstream
   does not extend them and ramps a half symbol (`Waveform::Fst4`). **FT8, FT4 and FST4 keep phase and carrier in a `u64` turn accumulator**
   (no `f64` per sample, which an LX7 cannot afford; beta6 sums in `f64`): an f32 sum drifted (FST4-60: -42 dB over 51 s). This is the
