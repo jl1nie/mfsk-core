@@ -8,9 +8,10 @@
 //! still get an envelope ramp. FT8, FT4 and FST4 use the pre-computed,
 //! filtered waveform instead ([`super::gfsk`]).
 //!
-//! Each of the four `tx.rs` files used to carry its own copy of this
-//! loop. The body below is that loop exactly, so the output is
-//! bit-identical to what they produced.
+//! Each of the four `tx.rs` files used to carry its own copy of this loop, in `f32`. It is the
+//! Modulator's own loop now (#726): an `f64`-equivalent phase (`engine::dsp::nco`) advanced before the
+//! sample is taken, `sin` of it. That is not bit-identical to what the copies produced (they took `cos`
+//! of the phase before the step, and drifted).
 
 use alloc::vec;
 use alloc::vec::Vec;

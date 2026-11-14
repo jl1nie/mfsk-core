@@ -42,7 +42,8 @@ impl Nco {
         self.increment = ((frac - frac.floor()) * TURN) as u64;
     }
 
-    /// The phase now, radians in `[0, 2 pi)`, from its top 32 bits.
+    /// The phase now, radians, from its top 32 bits: in `[0, 2 pi]` (a value within 128 of a full turn
+    /// rounds to exactly `2 pi` in the `u32` to `f32` conversion; harmless to `sin` and `cos`).
     #[inline]
     pub(crate) fn phase(&self) -> f32 {
         ((self.turns >> 32) as u32) as f32 * (2.0 * core::f32::consts::PI / 4_294_967_296.0)

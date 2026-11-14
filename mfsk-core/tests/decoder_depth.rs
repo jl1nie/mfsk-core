@@ -289,9 +289,11 @@ fn jt65_averaging_decodes_what_no_single_period_does() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(2.0);
     // The level is a cliff: one period more or less than the noise draws allow decodes, and the window
-    // between "no single period decodes" and "the average does" is under 1 dB wide. A transmitter whose
-    // waveform moves by a part in 10^4 (#726) moved the one fixed draw out of it, so several draws are tried
-    // and the property asserted is that some draw shows averaging decoding what no single period does.
+    // between "no single period decodes" and "the average does" is narrow, and which draws land in it is a
+    // matter of the noise: of 12 draws at sigma 2.0, 6 show averaging decoding what no single period does
+    // with the old transmitter and 6 (a different 6) with the exact one (#726; the fixed draw 100.. was one of
+    // the first 6 and is not one of the second). So several draws are tried and the property asserted is that
+    // some draw shows it.
     let mut shown = None;
     for draw in 0..8u64 {
         let periods: Vec<Vec<f32>> = (0..6)

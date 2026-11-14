@@ -245,9 +245,9 @@ fn q65_decodes_frame_starting_before_the_buffer() {
     assert!(drop > 0, "test only meaningful when the frame is truncated");
     let mut slot = place(&signal[drop..], 0.0, 15.0);
     // A little deterministic noise (+-0.01 against a 0.3 signal). The slot is otherwise exact zeros around
-    // an exact tone burst, and the decoder's answer then depends on the burst's last bits: with the
-    // transmitter's phase made exact (#726) it lost 3 of 16 cuts between 0.25 s and 4 s that it kept
-    // before, and kept them all again with this noise.
+    // an exact tone burst, and the decoder's answer then depends on the burst's last bits (#735): with the
+    // transmitter's phase made exact (#726) this very cut fails with no noise, and decodes at 0.1x, 1x and
+    // 3x of this noise (measured in review). A real recording is never noiseless.
     let mut x: u32 = 12_345;
     for v in slot.iter_mut() {
         x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
