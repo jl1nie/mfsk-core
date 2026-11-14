@@ -2651,10 +2651,12 @@ is a whole symbol long. The tones therefore start `synth_lead_samples::<P>(rate)
 0 elsewhere) into the buffer. **Place the buffer at `tx_buffer_start::<P>(rate)`**
 (`Encoded::tx_buffer_start`, `ModeMeta::tx_buffer_start_samples_12k`, C
 `MfskModeInfo::tx_buffer_start_samples_12k`, Swift `txBufferStartSamples12k`, Kotlin the same):
-`TX_START_OFFSET_S` less that lead, so every mode is placed one way and its frame lands at DT = 0
-(FT4 5424, FT8 6000; `ft4sim.f90:91`). It is samples, not seconds, because 0.452 s has no exact
-`f32`. WSJT-X's own transmitter sends FT4 about 150 ms earlier (`Modulator.cpp:167`,
-`delay_ms = 300`), a marked divergence (`engine::tx::tx_buffer_start`). Up to 0.15 FT4 audio was the
+where WSJT-X's own transmitter starts it, `Modulator::start`'s `delay_ms` (`Modulator.cpp:163-168`;
+`FrameLayout::TX_DELAY_MS`). For every mode but FT4 that is `TX_START_OFFSET_S` less the lead, so the
+frame lands at DT = 0 (FT8 6000, the 1 s modes 12 000). FT4 is 3600 (`delay_ms = 300`, since 0.16.1,
+#749; 5424 in 0.16.0): its tones leave at 0.348 s and, over a chain with no latency, decode at
+DT -0.152 s, as a WSJT-X station's do. For a frame at DT = 0 (a simulator, `ft4sim.f90:91`; FT4 5424)
+use `engine::tx::dt0_buffer_start::<P>(rate)`. Up to 0.15 FT4 audio was the
 103-symbol, `nsps / 8`-ramp form `gen_ft8wave` has, -45 dB from `gen_ft4wave`;
 `tests/gen_wave_vs_wsjtx.rs` now holds FT8, FT4 and FST4 to WSJT-X v3.3.0-beta6's own
 generators (-88 to -95 dB). FST4 (`Waveform::Fst4`) does not extend its first and last
@@ -2928,9 +2930,9 @@ Beyond that geometry it publishes what a host cannot otherwise ask for:
   WSPR, JT9 and JT65 (Q65 follows `nsps` as `q65.f90:130-131` does; every
   sub-mode had published 1.0 until #399; JT9 and JT65 were 0.0 until #726).
 * `tx_buffer_start_samples_12k` — where a synthesised buffer goes, in samples
-  from the start of the slot: the offset less FT4's lead ramp symbol (FT4 5424,
-  FT8 6000, the 1 s modes 12 000). Place a transmission by this, not by
-  `tx_start_offset_s`.
+  from the start of the slot, where WSJT-X's transmitter starts it (`delay_ms`):
+  FT4 3600, FT8 6000, the 1 s modes 12 000. Place a transmission by this, not by
+  `tx_start_offset_s`. For every mode but FT4 the frame then lands at DT = 0.
 * `slot_samples_12k` — the slot in samples (FT4 90 000, FT8 180 000,
   FST4-300 3 600 000), and `decode_fft1_size` — the forward FFT the
   decoder takes over the whole slot (`Protocol::DECODE_FFT1_SIZE`; FT4

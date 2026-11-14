@@ -58,6 +58,13 @@ transmitter is not at DT = 0 for FT4: `Modulator::start` plays the 105-symbol bu
 (`Modulator.cpp:167`), so the tones leave the PC at 0.348 s; FT8 (`delay_ms = 500`) and the 1 s modes agree with
 `tx_buffer_start`.
 
+**Revised in 0.16.1 (#749):** that DT = 0 placement for FT4 was a divergence chosen without asking, and a value named
+for transmitting should follow the transmitter. `tx_buffer_start` is now WSJT-X's `delay_ms` (`FrameLayout::TX_DELAY_MS`,
+FT4 `Some(300)` = 3600 samples; `None` = the DT = 0 placement for every other mode); `engine::tx::dt0_buffer_start` keeps
+the DT = 0 placement (FT4 5424) for simulators. The every-mode round trip now expects the DT the placement implies: FT4
+measured -0.152 s (predicted (3600 + 576) / 12000 - 0.5), every other mode 0. `tests/encoder.rs::tx_buffer_start_is_wsjtx_delay_ms`
+holds every registry mode to the `Modulator.cpp:163-168` table written out from the source.
+
 ## Receive
 
 ### FT4 subtraction reference (#739, #734)

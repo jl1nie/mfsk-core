@@ -26,7 +26,17 @@ fn message_and_carrier(mode: Mode) -> (&'static str, f32) {
     }
 }
 
-/// Decoded DT of a frame placed at `tx_buffer_start`: within this of 0. A sixteenth of a symbol
+/// DT a WSJT-X receiver reads, over a chain with no latency, for a frame placed at
+/// `tx_buffer_start`: the first tone's time less `tx_start_offset_s`. 0 for every mode but FT4,
+/// whose buffer WSJT-X starts at 300 ms (#749): (3600 + 576) / 12000 - 0.5 = -0.152 s. The lead
+/// is what the buffer has beyond its tone symbols, half each side.
+fn expected_dt_sec(mode: Mode, synth_len: usize) -> f32 {
+    let meta = mode.meta();
+    let lead = (synth_len - meta.n_symbols as usize * meta.nsps as usize) / 2;
+    (meta.tx_buffer_start_samples_12k as usize + lead) as f32 / FS as f32 - meta.tx_start_offset_s
+}
+
+/// Decoded DT of a frame placed at `tx_buffer_start`: within this of [`expected_dt_sec`]. A sixteenth of a symbol
 /// covers the slow modes' DT grids (measured: FST4-1800 +0.12 s, Q65-300A -0.136 s), and the 30 ms
 /// floor still fails FT4 placed by `tx_start_offset_s` (its tones 48 ms late; measured +0.0475 s).
 fn dt_tol_sec(mode: Mode) -> f32 {
@@ -71,7 +81,8 @@ fn every_mode_encodes_to_what_the_decoder_reads() {
         let mut dec = AnyDecoder::with_defaults(mode);
         let res = dec.decode_i16(&period, Some(0));
         let got: Vec<&str> = res.rows.iter().map(|r| r.decoded.text.as_str()).collect();
-        // Placed at `tx_buffer_start`, the frame is at DT = 0 (#726: JT9/JT65 were 1.0 s off).
+        // Placed at `tx_buffer_start`, the frame decodes at WSJT-X's own DT: 0, FT4 -0.152 s
+        // (#726: JT9/JT65 were 1.0 s off; #749: FT4 starts where `Modulator.cpp` starts it).
         let dts: Vec<f32> = res
             .rows
             .iter()
@@ -79,7 +90,11 @@ fn every_mode_encodes_to_what_the_decoder_reads() {
             .map(|r| r.decoded.dt_sec)
             .collect();
         eprintln!("{:10} DT {:?}", mode.name(), dts);
-        let ok = got.contains(&tx.text()) && dts.iter().all(|dt| dt.abs() <= dt_tol_sec(mode));
+        let want_dt = expected_dt_sec(mode, audio.len());
+        let ok = got.contains(&tx.text())
+            && dts
+                .iter()
+                .all(|dt| (dt - want_dt).abs() <= dt_tol_sec(mode));
         eprintln!(
             "{:10} sent {:?} decoded {:?} ({:.1} s)",
             mode.name(),
@@ -89,7 +104,7 @@ fn every_mode_encodes_to_what_the_decoder_reads() {
         );
         if !ok {
             failures.push(format!(
-                "{}: sent {:?}, decoded {:?}, DT {:?}",
+                "{}: sent {:?}, decoded {:?}, DT {:?} (want {want_dt:+.3})",
                 mode.name(),
                 tx.text(),
                 got,
@@ -99,6 +114,37 @@ fn every_mode_encodes_to_what_the_decoder_reads() {
     }
     assert!(!Mode::ALL.is_empty());
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// `tx_buffer_start` is where WSJT-X's transmitter starts the buffer, `Modulator::start`'s
+/// `delay_ms` (v3.3.0-beta6 `Modulator/Modulator.cpp:163-168`, #749), written out here from the
+/// source rather than derived from the crate's constants: 1000 by default; 500 for FT8, FST4-15 and
+/// Q65 with `nsps <= 3600` (the 15 and 30 s periods); 300 for FT4.
+#[test]
+fn tx_buffer_start_is_wsjtx_delay_ms() {
+    for &mode in Mode::ALL {
+        let name = mode.name();
+        let delay_ms: usize = match name {
+            "FT4" => 300,
+            "FT8" | "FST4-15" | "Q65-15A" | "Q65-30A" => 500,
+            _ => 1000,
+        };
+        let want = delay_ms * FS as usize / 1000;
+        assert_eq!(
+            mode.meta().tx_buffer_start_samples_12k as usize,
+            want,
+            "{name} registry"
+        );
+        let text = message_and_carrier(mode).0;
+        let tx = encode(mode, text).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(tx.tx_buffer_start(FS), want, "{name} Encoded");
+        // and at another rate: 48 kHz is the rate `Modulator` itself plays at
+        assert_eq!(
+            tx.tx_buffer_start(48_000),
+            delay_ms * 48,
+            "{name} at 48 kHz"
+        );
+    }
 }
 
 #[test]

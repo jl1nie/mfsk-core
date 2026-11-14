@@ -311,12 +311,11 @@ pub struct ProtocolMeta {
     /// `tx_buffer_start_samples_12k`, not this: FT4's buffer starts before its first tone.
     pub tx_start_offset_s: f32,
     /// Where a synthesised frame goes, in samples at 12 kHz from the start of the slot: put the first
-    /// sample of `Encoded::synthesize`'s buffer here and the frame lands at DT = 0 on a WSJT-X
-    /// receiver. Every mode the same way: `tx_start_offset_s * 12000` less the samples before the
-    /// first tone, which only FT4 has (a ramp symbol, 576; `ft4sim.f90:91`), so FT4 5424, FT8 6000,
-    /// WSPR/JT9/JT65 12000. Integer on purpose: 0.452 s has no exact `f32`. WSJT-X's own transmitter
-    /// sends FT4 about 150 ms earlier (`engine::tx::tx_buffer_start`). 0 for a mode with no tone
-    /// stage.
+    /// sample of `Encoded::synthesize`'s buffer here, where WSJT-X's own transmitter starts it
+    /// (`Modulator.cpp:163-168` `delay_ms`; #749). FT4 3600 (300 ms: its tones decode at DT −0.152 s over
+    /// a chain with no latency, as a WSJT-X station's do), FT8 6000, WSPR/JT9/JT65 12000; for every mode
+    /// but FT4 the frame then lands at DT = 0. Integer on purpose. For DT = 0 placement (FT4 5424) see
+    /// `engine::tx::dt0_buffer_start`. 0 for a mode with no tone stage.
     pub tx_buffer_start_samples_12k: u32,
     /// Slot length in samples at the 12 kHz working rate — `t_slot_s`
     /// made exact, so a caller sizes a buffer without repeating the
@@ -360,11 +359,16 @@ macro_rules! protocol_meta {
             fec_n: <<$ty as Protocol>::Fec as FecCodec>::N,
             payload_bits: <<$ty as Protocol>::Msg as MessageCodec>::PAYLOAD_BITS,
             tx_start_offset_s: <$ty as FrameLayout>::TX_START_OFFSET_S,
-            // `engine::tx::tx_buffer_start::<P>(12_000)` in const form, from the same `N_RAMP / 2`
-            // symbols `synth_lead_samples` uses; `tests/encoder.rs` checks the two agree per mode.
-            tx_buffer_start_samples_12k: (<$ty as FrameLayout>::TX_START_OFFSET_S * 12_000.0)
-                as u32
-                - (<$ty as FrameLayout>::N_RAMP / 2) * <$ty as ModulationParams>::NSPS,
+            // `engine::tx::tx_buffer_start::<P>(12_000)` in const form: `TX_DELAY_MS`, else the DT = 0
+            // placement from the same `N_RAMP / 2` symbols `synth_lead_samples` uses;
+            // `tests/encoder.rs` checks the two agree per mode.
+            tx_buffer_start_samples_12k: match <$ty as FrameLayout>::TX_DELAY_MS {
+                Some(ms) => ms * 12,
+                None => {
+                    (<$ty as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as u32
+                        - (<$ty as FrameLayout>::N_RAMP / 2) * <$ty as ModulationParams>::NSPS
+                }
+            },
             slot_samples_12k: (<$ty as FrameLayout>::T_SLOT_S * 12_000.0) as u32,
             decode_fft1_size: <$ty as Protocol>::DECODE_FFT1_SIZE,
             profile: $profile,

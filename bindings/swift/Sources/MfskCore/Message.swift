@@ -161,14 +161,13 @@ extension Mode {
         return Array(out.prefix(Int(written)))
     }
 
-    /// All three stages: a message, placed in a full slot where this mode's
-    /// frame lands at DT = 0, ready to hand to ``Decoder`` or to a sound
-    /// card.
+    /// All three stages: a message, placed in a full slot where WSJT-X's
+    /// transmitter would start it, ready to hand to ``Decoder`` or to a
+    /// sound card.
     ///
     /// The frame starts at ``ModeInfo/txBufferStartSamples12k`` — 6000 for
-    /// FT8, 5424 for FT4 (its frame starts a ramp symbol before the tones),
-    /// 12 000 for the 1 s modes — the same rule for every mode, asked of
-    /// the mode rather than baked in.
+    /// FT8, 3600 for FT4 (300 ms, as WSJT-X; it decodes at DT -0.152 s),
+    /// 12 000 for the 1 s modes — asked of the mode rather than baked in.
     public func synthesiseSlot(
         _ message: Message,
         frequencyHz: Float,

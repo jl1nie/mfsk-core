@@ -94,7 +94,7 @@ fun main() {
     checkEq("FT8 slot FFT", info.decodeFft1Size, 192_000)
     checkEq("FT8 TX offset (ms)", info.txStartOffsetMs, 500)
     checkEq("FT8 buffer start", info.txBufferStartSamples12k, 6_000)
-    checkEq("FT4 buffer start (a ramp symbol before 0.5 s)", Mfsk.modeInfo(ft4).txBufferStartSamples12k, 5_424)
+    checkEq("FT4 buffer start (WSJT-X's delay_ms = 300)", Mfsk.modeInfo(ft4).txBufferStartSamples12k, 3_600)
 
     val f300 = fst4.first { Mfsk.modeName(it) == "FST4-300" }
     val i300 = Mfsk.modeInfo(f300)

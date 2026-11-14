@@ -238,10 +238,10 @@ public struct ModeInfo: Sendable {
     /// transmission use ``txBufferStartSamples12k``.
     public let txStartOffsetSeconds: Float
     /// Where a synthesised frame goes: the sample of the slot (12 kHz) its
-    /// first sample goes to, so it lands at DT = 0 on a WSJT-X receiver.
-    /// One rule for every mode; FT4's frame starts a ramp symbol (576
-    /// samples) before its tones, so FT4 is 5424. 0 for JTTY and MSK144.
-    /// WSJT-X's own transmitter sends FT4 about 150 ms earlier. See
+    /// first sample goes to, where WSJT-X's own transmitter starts it. For
+    /// every mode but FT4 the frame then lands at DT = 0; FT4 is 3600
+    /// (300 ms, as WSJT-X; its tones decode at DT -0.152 s over a chain
+    /// with no latency). 0 for JTTY and MSK144. See
     /// ``Mode/synthesiseSlot(_:frequencyHz:amplitude:)``.
     public let txBufferStartSamples12k: UInt32
     /// FEC information bits — 91 (CRC-14) or 101 (CRC-24).
