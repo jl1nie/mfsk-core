@@ -15,6 +15,42 @@
 
 pub use crate::engine::baseline::fit_baseline;
 
+/// `get_spectrum_baseline.f90` + `baseline.f90`'s band: `sbase` fitted over the decode band only,
+/// `ia = max(1, nint(nfa/df))` .. `ib = nint(nfb/df)` after `get_spectrum_baseline`'s clamps (`nfa`
+/// at least 100 Hz and `nfb` at most 4910 Hz, keeping a window under 100 Hz wide), and 0 outside it,
+/// as `sbase=0.0` leaves it. Returned bin-indexed (`out[k]` is bin `k`, the length of
+/// `avg_spectrum_power`), the indexing `xbase = sbase(nint(f1/3.125))` reads.
+///
+/// Until #747 the FT8 callers fitted every bin, 0 to 6000 Hz. On white noise that is the same fit; on
+/// a real recording whose audio passband rolls off inside 0-6000 Hz the lower envelope is a different
+/// curve, and `xsnr2` moved by 3-6 dB per recording against `jt9` (ft8_lib's `websdr_test4`, `_test7`).
+pub fn fit_baseline_band(avg_spectrum_power: &[f32], fa_hz: f32, fb_hz: f32) -> Vec<f32> {
+    let df = 12_000.0 / crate::ft8::decode_block::NFFT_SPEC as f32;
+    let (mut nfa, mut nfb) = (fa_hz.round() as i32, fb_hz.round() as i32);
+    let nwin = nfb - nfa;
+    if nfa < 100 {
+        nfa = 100;
+        if nwin < 100 {
+            nfb = nfa + nwin;
+        }
+    }
+    if nfb > 4910 {
+        nfb = 4910;
+        if nwin < 100 {
+            nfa = nfb - nwin;
+        }
+    }
+    let n = avg_spectrum_power.len();
+    let ia = ((nfa as f32 / df).round() as usize).max(1);
+    let ib = ((nfb as f32 / df).round() as usize).min(n.saturating_sub(1));
+    let mut out = vec![0.0f32; n];
+    if ib > ia {
+        let fit = fit_baseline(avg_spectrum_power, ia, ib);
+        out[ia..ia + fit.len()].copy_from_slice(&fit);
+    }
+    out
+}
+
 /// Compute the average linear power per FFT bin from a `Spectrogram`.
 /// `out.len()` must equal `spec.n_freq`. FT8-specific because it
 /// targets the embedded `decode_block::Spectrogram` layout.

@@ -391,7 +391,7 @@ fn decode_block_multipass<S: AudioSample>(
         #[cfg(not(feature = "fixed-point"))]
         let sbase: AllocVec<f32> = {
             let avg = crate::ft8::baseline::compute_baseline_spectrum(work.as_slice());
-            crate::ft8::baseline::fit_baseline(&avg, 0, spec.n_freq - 1)
+            crate::ft8::baseline::fit_baseline_band(&avg, freq_min, freq_max)
         };
         #[cfg(feature = "std")]
         let __trace_t0 = trace_stage.then(std::time::Instant::now);

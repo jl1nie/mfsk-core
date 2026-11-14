@@ -713,7 +713,7 @@ fn decode_frame_inner<Pol: MessagePolicy>(
     #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
     let sbase: alloc::vec::Vec<f32> = {
         let avg = crate::ft8::baseline::compute_baseline_spectrum(audio);
-        crate::ft8::baseline::fit_baseline(&avg, 0, spec.n_freq - 1)
+        crate::ft8::baseline::fit_baseline_band(&avg, freq_min, freq_max)
     };
 
     // The SNR gate and `on_result`, shared by the plain and the
@@ -991,7 +991,7 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
         #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
         let sbase: alloc::vec::Vec<f32> = {
             let avg = crate::ft8::baseline::compute_baseline_spectrum(residual);
-            crate::ft8::baseline::fit_baseline(&avg, 0, spec.n_freq - 1)
+            crate::ft8::baseline::fit_baseline_band(&avg, freq_min, freq_max)
         };
 
         let fft_cache = if ipass == 0
@@ -1685,7 +1685,7 @@ fn decode_sniper_inner<Pol: MessagePolicy>(
     #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
     let sbase: alloc::vec::Vec<f32> = {
         let avg = crate::ft8::baseline::compute_baseline_spectrum(audio);
-        crate::ft8::baseline::fit_baseline(&avg, 0, spec.n_freq - 1)
+        crate::ft8::baseline::fit_baseline_band(&avg, freq_min, freq_max)
     };
 
     // Same on_result-fires-before-dedup ordering as decode_frame_inner —

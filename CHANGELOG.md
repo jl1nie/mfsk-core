@@ -30,6 +30,10 @@ does. Measurements behind each entry: [`docs/notes/WSJTX_BETA6_PORT.md`](docs/no
 
 ### Fixed — receive
 
+- **FT8 SNR follows `jt9` on real recordings** (#747): the spectrum baseline `xsnr2` divides by is fitted over the decode band
+  (`get_spectrum_baseline.f90` → `baseline.f90`, `nfa..nfb`, 0 outside), not 0-6000 Hz; white noise could not tell the two apart. On
+  ft8_lib's 22 recordings against beta6's `jt9`: SD 1.29 → 0.35 dB, rows past 4 dB 7 → 0 (largest 6.4 → 3.4); `qso3_busy.wav` 7.3 →
+  0.4 dB. No decode gained or lost (snapshots, tier C FT8 +0.00 dB). The fixed-point (embedded) path has its own SNR, unchanged.
 - **JT9 picks its candidates as `jt9` does** (#742): `sync9`'s 0.732 Hz bins walked upwards, the first that passes `ccflim`/`red2lim`
   decoded (`jt9::sync9`), not this crate's own search in score order cut at 32. On `130418_1742.wav` the same rows as beta6's `jt9`
   at `-d 1`/`-d 3`, 1050-1550 and 200-4000 Hz, with and without an Rx window (DT within 0.1 s, SNR 0.5 dB); two DTs were 0.2 s off.
@@ -51,6 +55,12 @@ does. Measurements behind each entry: [`docs/notes/WSJTX_BETA6_PORT.md`](docs/no
 - **GFSK pulse and NCO `sin` are beta6's polynomials** (#738): no `exp`, division or libm `sin` per sample; within about 1 dB of the
   `erf`/`sinf` form against beta6's generators (FT8 -94 dB, FT4 -96 dB). FT8 `synthesize` on x86_64: 704 → 535 µs. Not measured on
   the LX7.
+
+### Tests
+
+- **All 22 of ft8_lib's real FT8 recordings are tier B**, against every line v3.3.0-beta6's `jt9` prints (402; rc1 401): 15 more
+  vendored (`embedded-poc/assets/`, MIT), so the comparison `bench/ft8-compare` made by hand runs on every PR. 402 of 402 found;
+  the six outputs `jt9` lacks are named, with their evidence, and any other fails as a phantom; every SNR within 4 dB of `jt9`'s.
 
 ### Docs
 

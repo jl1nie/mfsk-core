@@ -109,6 +109,21 @@ text in another recording, same 940 Hz / DT -0.6), `DK5OK DB4BU R-04` (the QSO `
 `DK5OK DB4BU 73`, 1822 Hz), `EA8PP JA6VQA -16` (OSD at 21 hard errors; `JA6VQA EA8PP R-24` / `73` elsewhere). Kept:
 `SP7NHS YC2FCE -15` (still undecided), `CQ EA5OL IM99`, `UA9SIX GM0LIR R-07`, `CQ CU2DX HM77`.
 
+## In tier B since 0.16 (2026-11-14), against v3.3.0-beta6's `jt9`
+
+All 22 recordings are vendored (`embedded-poc/assets/`) and `mfsk-core/tests/ft8_real_recordings_vs_jt9.rs` checks each against
+every line beta6's `jt9 -8 -d 3 -L 200 -H 3000` prints (`tests/fixtures/ft8_lib_jt9_beta6.tsv`), so this comparison runs on every PR
+instead of by hand at a release. beta6 prints 402: rc1's 401 and `EA8PP JA6VQA -16` in `websdr_test5`, one of the outputs listed
+below as attested, which `jt9` now makes too. The crate finds 402 of 402; its outputs `jt9` lacks are the six still listed below,
+named in the test (any other fails as a phantom).
+
+SNR on the 402, which the first version of this test held 8 rows out of: mean -0.10 dB, SD 1.29, 8 rows 4-6.4 dB off, clustered by
+recording (every row of `websdr_test4` 3-4 dB low, of `websdr_test7` 3-5 dB high). The cause (#747): `xsnr2`'s baseline was fitted
+over 0-6000 Hz, where `get_spectrum_baseline.f90` hands `baseline.f90` the decode band (`nfa..nfb`, 0 outside). White noise gives the
+same fit either way, which is why the dense corpus above never showed it; a real recording's passband rolls off inside 0-6000 Hz.
+Fitted over the band: mean +0.04 dB, SD 0.35, 90 % within -0.4..+0.5, the largest `websdr_test7`'s `LZ2KV PE0TS 73` +3.4 and
+`CU2DX SP6DXH -19` +2.2; `qso3_busy.wav`'s 21 within 0.4 dB of beta6's `jt9` (was up to 7.3). No decode changed.
+
 ## Limits
 
 One band session, 22 files, one reference decoder; the labelled corpora are white noise. The `jt9` trace build and our local trace patch

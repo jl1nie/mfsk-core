@@ -1,24 +1,39 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Tier B: the vendored real FT8 recordings (six) against what WSJT-X's own `jt9` decodes from them.
+//! Tier B: ft8_lib's 22 real FT8 recordings against what WSJT-X's own `jt9` decodes from them.
 //!
-//! Why this exists. `qso3_busy.wav` was the only real FT8 recording with a `jt9` reference list; these
-//! two (`191111_110130.wav`, `191111_110200.wav`, ft8_lib's `test/wav`, MIT) were vendored and used
-//! for a coarse-sync timing test only. On 2026-11-03 a comparison over ft8_lib's 22 recordings found
-//! `mfsk-core` missing 18 of `jt9`'s 401 decodes, one of them `DO2JHE LZ1JZ -13` in
-//! `191111_110130.wav`: a decode `jt9` makes by OSD at 29 hard errors on LLRs that differ from ours in
-//! one to four signs (the last group of each half of the multi-symbol bit metrics, `LlrTail`). Nothing in
-//! the suite compared that file with `jt9`, so nothing could see it.
+//! The recordings are ft8_lib's `test/wav` (kgoba/ft8_lib 9fec6ca3, MIT), the 22 that ft8_lib ships a
+//! `.txt` for, vendored in `embedded-poc/assets/` (`191111_*.wav`, `websdr_test{1..13}.wav`). The
+//! reference is every line `jt9 -8 -d 3 -L 200 -H 3000` of WSJT-X v3.3.0-beta6 printed for each
+//! (`scripts/build_jt9_upstream.sh ../WSJT-X v3.3.0-beta6`; the task `ft8/t1` of
+//! `scripts/upstream_tasks.json`), in `tests/fixtures/ft8_lib_jt9_beta6.tsv`: 402 decodes. v3.2.0-rc1
+//! prints 401, the same less `EA8PP JA6VQA -16` in `websdr_test5`, a decode this crate already made.
+//! Not ft8_lib's own `.txt` lists, on which `jt9` itself gets 71 %.
 //!
-//! Reference: WSJT-X `v3.2.0-rc1` `jt9 -8 -d 3 -L 200 -H 3000` (`scripts/build_jt9_upstream.sh`), the
-//! task `ft8/t1` of `scripts/upstream_tasks.json`, run on each file on 2026-11-03: every line it printed,
-//! with its frequency, DT and SNR. The decoder is the request `ft8_sweep`'s `t1` task makes,
-//! `DecodeParams::for_band((200, 3000))`, `Depth::Deep`, `ApMode::Full` (AP on, no callsigns, so the CQ
-//! hypothesis only). A decode `jt9` makes and this crate does not is a regression of recall; one this
-//! crate makes and `jt9` does not is a phantom until shown otherwise.
+//! Until 0.16 seven of the 22 were vendored and the rest compared by hand with `bench/ft8-compare`
+//! (`docs/notes/FT8_REAL_VS_JT9.md`): a comparison that has to be remembered at a release is one that
+//! gets skipped, so all 22 are here (#726).
 //!
-//! The margin on `DO2JHE LZ1JZ -13` is thin by nature: `jt9` gets it by OSD at 29 hard errors,
-//! so a platform whose FFT rounds differently (rustfft's NEON kernel on aarch64) could in principle flip
-//! it. CI tier B runs on x86-64 only; if this fails elsewhere, compare `jt9`'s LLRs before loosening it.
+//! The decoder is the request `ft8_sweep`'s `t1` task makes: `DecodeParams::for_band((200, 3000))`,
+//! `Depth::Deep`, `ApMode::Full` (AP on, no callsigns, so the CQ hypothesis only). Every `jt9` decode
+//! must be found (recall 402 of 402). A decode `jt9` lacks must be one of the six listed in
+//! [`ATTESTED`], each with the evidence that it is a real signal; any other is a phantom and fails.
+//!
+//! Cases the tables have carried, for when one moves:
+//! - `191111_110130`: `DO2JHE LZ1JZ -13` is `jt9`'s by OSD at 29 hard errors on LLRs that differ from ours
+//!   in one to four signs (the last group of each half of the multi-symbol bit metrics, #721). The margin
+//!   is thin by nature: a platform whose FFT rounds differently (rustfft's NEON kernel on aarch64) could
+//!   flip it. CI tier B runs on x86-64 only; if this fails elsewhere, compare `jt9`'s LLRs first.
+//! - `191111_110645`: `CQ UB3AQS KO85` (-12 dB) sits 9 Hz from one of seven copies of a +22 dB signal that
+//!   `jt9` decodes and subtracts three times; the crate's DT dedupe dropped two until #721.
+//! - `websdr_test11`: `<...> DA0FONTANE`, `i3=4`'s 11-character call (#721). `K3ZK IK2ZDT RR73` sits 10 Hz
+//!   from one of six copies of a splattering signal, each subtracted as `ft8b.f90` does (#721).
+//! - `websdr_test5`: `CQ DO6AZ JO50` is the blind-CQ AP pass at nsync 9 (#721).
+//! - `websdr_test2`: `CQ IZ8IQO JM89` (-25 dB, AP) needs `sync8.f90`'s lag grid (#721).
+//!
+//! SNR is held to `jt9`'s within 4 dB on every row. On the 402: mean +0.04 dB, SD 0.35, 90 % within
+//! -0.4..+0.5 dB; the largest are `websdr_test7`'s `LZ2KV PE0TS 73` (+3.4) and `CU2DX SP6DXH -19` (+2.2).
+//! Until #747 the FT8 baseline was fitted over 0-6000 Hz instead of the decode band, which left 8 rows
+//! 4-6.4 dB off, clustered by recording (SD 1.29).
 #![cfg(feature = "fft-rustfft")]
 
 #[allow(dead_code)]
@@ -28,6 +43,51 @@ use common::load_wav_i16;
 
 use mfsk_core::decoder::{ApMode, DecodeParams, Decoder, Depth, SlotInput};
 use mfsk_core::ft8::Ft8;
+
+const REFERENCE: &str = include_str!("fixtures/ft8_lib_jt9_beta6.tsv");
+
+/// Decodes `jt9` lacks, with the evidence each is a real signal (`docs/notes/FT8_REAL_VS_JT9.md`,
+/// "The outputs `jt9` lacks"; no ground truth exists for these recordings).
+const ATTESTED: &[(&str, &str, &str)] = &[
+    // No callsign seen elsewhere in the corpus; recovered in 6 of 16 noisy copies. Undecided.
+    ("191111_110215", "SP7NHS YC2FCE -15", "undecided"),
+    (
+        "websdr_test1",
+        "CQ EA5OL IM99",
+        "attested elsewhere in the corpus",
+    ),
+    // Continues a QSO `jt9` decodes in the next recording (`GM0LIR UA9SIX -09`).
+    ("websdr_test2", "UA9SIX GM0LIR R-07", "QSO sequence"),
+    (
+        "websdr_test4",
+        "CQ CU2DX HM77",
+        "attested elsewhere in the corpus",
+    ),
+    // CU2DX on 1011 Hz, DT 0.2 in other recordings; KO96 is an R2 grid.
+    (
+        "websdr_test7",
+        "CU2DX R2DQA KO96",
+        "callsign and frequency elsewhere",
+    ),
+    // `jt9`'s exact text in another recording, same 940 Hz and DT -0.6.
+    ("websdr_test7", "EA8PP JH0INP PM96", "jt9's text elsewhere"),
+];
+
+fn reference(file: &str) -> Vec<GoldenEntry> {
+    REFERENCE
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (f[0] == file).then(|| {
+                let msg: &'static str = Box::leak(f[4].to_string().into_boxed_str());
+                GoldenEntry::msg(msg)
+                    .at(f[1].parse().unwrap(), f[2].parse().unwrap())
+                    .snr(f[3].parse().unwrap())
+            })
+        })
+        .collect()
+}
 
 fn decode(path: &str) -> Vec<DecodeView> {
     let audio = load_wav_i16(path);
@@ -47,437 +107,93 @@ fn decode(path: &str) -> Vec<DecodeView> {
         .collect()
 }
 
-/// `jt9 -8 -d 3 -L 200 -H 3000 191111_110130.wav`: 6 decodes. `DO2JHE LZ1JZ -13` is the marginal one
-/// (OSD, 29 hard errors, `llre`).
-const WAV_110130: &[GoldenEntry] = &[
-    GoldenEntry::msg("CQ R7IW LN35").at(1291.0, 0.9).snr(-2.0),
-    GoldenEntry::msg("CQ TA6CQ KN70").at(682.0, 0.7).snr(-10.0),
-    GoldenEntry::msg("CQ DX R6WA LN32")
-        .at(2096.0, 0.9)
-        .snr(-8.0),
-    GoldenEntry::msg("OH3NIV ZS6S -03")
-        .at(990.0, 1.0)
-        .snr(-15.0),
-    GoldenEntry::msg("DO2JHE LZ1JZ -13")
-        .at(1149.0, 0.8)
-        .snr(-18.0),
-    GoldenEntry::msg("TK4LS YC1MRF 73")
-        .at(2479.0, 1.2)
-        .snr(-19.0),
-];
-
-/// `jt9 -8 -d 3 -L 200 -H 3000 191111_110200.wav`: 5 decodes.
-const WAV_110200: &[GoldenEntry] = &[
-    GoldenEntry::msg("CQ R7IW LN35").at(1292.0, 0.9).snr(-6.0),
-    GoldenEntry::msg("CQ DX R6WA LN32")
-        .at(2097.0, 0.9)
-        .snr(-11.0),
-    GoldenEntry::msg("CQ TA6CQ KN70").at(683.0, 0.7).snr(-9.0),
-    GoldenEntry::msg("OH3NIV ZS6S RR73")
-        .at(990.0, 1.0)
-        .snr(-14.0),
-    GoldenEntry::msg("CQ LZ1JZ KN22").at(1030.0, 0.6).snr(-15.0),
-];
-
-/// `jt9 -8 -d 3 -L 200 -H 3000 191111_110645.wav`.
-const WAV_110615: &[GoldenEntry] = &[
-    GoldenEntry::msg("PA3EPP SP8NFO KN09")
-        .at(906.0, 0.9)
-        .snr(22.0),
-    GoldenEntry::msg("CQ IZ1ANK JN33").at(2191.0, 1.5).snr(13.0),
-    GoldenEntry::msg("VK4BLE OH1EDK -20")
-        .at(2576.0, 0.8)
-        .snr(7.0),
-    GoldenEntry::msg("CQ JA OH1LWZ KP11")
-        .at(2656.0, 1.0)
-        .snr(11.0),
-    GoldenEntry::msg("VK4BLE OH8JK R-17")
-        .at(431.0, 1.0)
-        .snr(3.0),
-    GoldenEntry::msg("RV6K RU3XL -13").at(700.0, 1.8).snr(-4.0),
-    GoldenEntry::msg("CQ F4FSY JN25").at(1284.0, 0.9).snr(8.0),
-    GoldenEntry::msg("NT6Q OH8GDU -17").at(2281.0, 0.9).snr(3.0),
-    GoldenEntry::msg("JR5MJS OH8NW 73")
-        .at(1348.0, 0.9)
-        .snr(-1.0),
-    GoldenEntry::msg("CQ DL1UDO JO31").at(2447.0, 0.9).snr(-5.0),
-    GoldenEntry::msg("SQ8OHR UA9LL MO27")
-        .at(810.0, 1.3)
-        .snr(-5.0),
-    GoldenEntry::msg("SV1GN RK6AUV LN05")
-        .at(1404.0, 1.0)
-        .snr(-5.0),
-    GoldenEntry::msg("RK6AH JH1AJT -05")
-        .at(539.0, 0.9)
-        .snr(-11.0),
-    GoldenEntry::msg("PB5DX EI3CTB IO63")
-        .at(1617.0, 0.9)
-        .snr(-17.0),
-    GoldenEntry::msg("<...> ON7EE JO10")
-        .at(298.0, 1.0)
-        .snr(-14.0),
-    GoldenEntry::msg("CQ UB3AQS KO85")
-        .at(1047.0, 0.8)
-        .snr(-12.0),
-    GoldenEntry::msg("CQ DG0OFT JO50").at(593.0, 0.8).snr(-20.0),
-    GoldenEntry::msg("OT4B <...> -19").at(2111.0, 0.9).snr(-5.0),
-    GoldenEntry::msg("SP7XIF JA2GQT -15")
-        .at(2727.0, 1.4)
-        .snr(-16.0),
-    GoldenEntry::msg("WB2QJ ES3AT KO18")
-        .at(2093.0, 0.9)
-        .snr(-8.0),
-];
-
-const WAV_110645: &[GoldenEntry] = &[
-    GoldenEntry::msg("PA3EPP SP8NFO R+01")
-        .at(906.0, 0.7)
-        .snr(12.0),
-    GoldenEntry::msg("PC2J IZ1ANK +01").at(2191.0, 1.5).snr(0.0),
-    GoldenEntry::msg("CQ JA OH1LWZ KP11")
-        .at(2657.0, 0.9)
-        .snr(2.0),
-    GoldenEntry::msg("VK4BLE OH1EDK -20")
-        .at(2576.0, 0.7)
-        .snr(1.0),
-    GoldenEntry::msg("CQ OH8GDU KP24").at(2281.0, 0.9).snr(-8.0),
-    GoldenEntry::msg("VK4BLE OH8JK R-17")
-        .at(430.0, 0.9)
-        .snr(-1.0),
-    GoldenEntry::msg("CQ DL1UDO JO31")
-        .at(2447.0, 0.9)
-        .snr(-15.0),
-    GoldenEntry::msg("CQ RU3XL KO84").at(699.0, 1.8).snr(-17.0),
-    GoldenEntry::msg("CQ F4FSY JN25").at(1283.0, 0.9).snr(4.0),
-    GoldenEntry::msg("CQ OR18TRA").at(2111.0, 1.0).snr(-12.0),
-    GoldenEntry::msg("SV1GN RK6AUV R-03")
-        .at(1405.0, 1.0)
-        .snr(-11.0),
-    GoldenEntry::msg("PB5DX EI3CTB IO63")
-        .at(1617.0, 0.9)
-        .snr(-23.0),
-    GoldenEntry::msg("CQ UB3AQS KO85")
-        .at(1049.0, 0.9)
-        .snr(-15.0),
-    GoldenEntry::msg("SP7XIF JA2GQT -13")
-        .at(2726.0, 1.4)
-        .snr(-19.0),
-    GoldenEntry::msg("WB2QJ ES3AT KO18")
-        .at(2092.0, 0.9)
-        .snr(-23.0),
-    GoldenEntry::msg("CQ DG0OFT JO50").at(594.0, 0.8).snr(-25.0),
-    GoldenEntry::msg("<...> DA0FONTANE")
-        .at(1114.0, 0.7)
-        .snr(-18.0),
-];
-
-/// `jt9 -8 -d 3 -L 200 -H 3000 websdr_test11.wav`.
-const WEBSDR_TEST11: &[GoldenEntry] = &[
-    GoldenEntry::msg("CQ PD1ECA JO32").at(1881.0, -0.0).snr(7.0),
-    GoldenEntry::msg("CQ IK4LZH JN54").at(903.0, 0.1).snr(13.0),
-    GoldenEntry::msg("CQ HA1RB JN86").at(1653.0, 0.1).snr(15.0),
-    GoldenEntry::msg("CQ SV2FPI KN10").at(1125.0, 0.1).snr(-8.0),
-    GoldenEntry::msg("CQ F8IJV/P IN97").at(2830.0, 0.3).snr(7.0),
-    GoldenEntry::msg("K2DSW IU8LLZ R-16")
-        .at(2601.0, -1.2)
-        .snr(-2.0),
-    GoldenEntry::msg("PD3JO IZ2ODN JN55")
-        .at(1544.0, -0.0)
-        .snr(-5.0),
-    GoldenEntry::msg("CQ 9A7DA JN86").at(1431.0, 0.0).snr(-7.0),
-    GoldenEntry::msg("CQ PY1SX GG87").at(1955.0, -0.0).snr(-4.0),
-    GoldenEntry::msg("OE4RWD NU2Q RR73")
-        .at(734.0, -0.2)
-        .snr(0.0),
-    GoldenEntry::msg("R7EL VE9FI FN75")
-        .at(1320.0, 0.2)
-        .snr(-6.0),
-    GoldenEntry::msg("F4DFQ F5LOW IN95")
-        .at(2198.0, 1.5)
-        .snr(8.0),
-    GoldenEntry::msg("CQ N2BJ EN61").at(609.0, 0.1).snr(-16.0),
-    GoldenEntry::msg("M0LMR IW1AYD 73")
-        .at(2036.0, -1.1)
-        .snr(-12.0),
-    GoldenEntry::msg("K4VBM HA8EK RR73")
-        .at(2480.0, -2.3)
-        .snr(-18.0),
-    GoldenEntry::msg("EA8BEV LU3DW -13")
-        .at(311.0, -1.5)
-        .snr(-4.0),
-    GoldenEntry::msg("KC8MUE V51MA RRR")
-        .at(1219.0, 0.1)
-        .snr(-18.0),
-    GoldenEntry::msg("CQ YO9HP KN35").at(1951.0, 0.1).snr(-8.0),
-    GoldenEntry::msg("CQ 2E0PKK IO90")
-        .at(2406.0, 0.1)
-        .snr(-15.0),
-    GoldenEntry::msg("OK1AW G3JFS R+02")
-        .at(1686.0, 0.2)
-        .snr(-6.0),
-    GoldenEntry::msg("G3PXT HA5MG R+01")
-        .at(1619.0, -0.8)
-        .snr(-7.0),
-    GoldenEntry::msg("VE6BTC W1JGM R-22")
-        .at(1410.0, -0.4)
-        .snr(-18.0),
-    GoldenEntry::msg("Z81D W3GQ EM95").at(725.0, 0.3).snr(-9.0),
-    GoldenEntry::msg("K3ZK IK2ZDT RR73")
-        .at(2219.0, 0.1)
-        .snr(2.0),
-    GoldenEntry::msg("CQ OE4ATS JN87")
-        .at(2304.0, -0.2)
-        .snr(-15.0),
-    GoldenEntry::msg("PY5HT IW9CTR RR73")
-        .at(726.0, 0.0)
-        .snr(-13.0),
-];
-
-/// `jt9 -8 -d 3 -L 200 -H 3000 websdr_test5.wav`.
-const WEBSDR_TEST5: &[GoldenEntry] = &[
-    GoldenEntry::msg("CQ F5RRS JN36").at(1494.0, 0.2).snr(8.0),
-    GoldenEntry::msg("R2ZBK UA3IBD -15")
-        .at(1172.0, 0.1)
-        .snr(14.0),
-    GoldenEntry::msg("SV8EUB OM7AZA JN98")
-        .at(1397.0, 0.2)
-        .snr(15.0),
-    GoldenEntry::msg("SB7W DL6CHF JO52").at(788.0, 0.2).snr(2.0),
-    GoldenEntry::msg("SP2EWQ DL8TG R+07")
-        .at(2747.0, 0.2)
-        .snr(11.0),
-    GoldenEntry::msg("ON8GE DL6ZNG 73")
-        .at(2040.0, -0.0)
-        .snr(6.0),
-    GoldenEntry::msg("CQ DD2XJ JO53").at(1054.0, 0.5).snr(12.0),
-    GoldenEntry::msg("LZ2KV GW1YQM IO82")
-        .at(349.0, 0.2)
-        .snr(-3.0),
-    GoldenEntry::msg("UT9LB RZ3OA KO91").at(692.0, 0.2).snr(9.0),
-    GoldenEntry::msg("OZ1KNX OZ5D -11")
-        .at(1801.0, 0.2)
-        .snr(23.0),
-    GoldenEntry::msg("CQ DJ0AH JN57").at(2392.0, 0.2).snr(6.0),
-    GoldenEntry::msg("OM7ZM RW6FY 73").at(1992.0, 0.6).snr(4.0),
-    GoldenEntry::msg("EA8PP DL5OBC JO52")
-        .at(2184.0, 0.3)
-        .snr(-4.0),
-    GoldenEntry::msg("EA2AA HA1BL JN87")
-        .at(2105.0, 0.2)
-        .snr(7.0),
-    GoldenEntry::msg("RA6FSD 4X5MZ RR73")
-        .at(570.0, 0.3)
-        .snr(-3.0),
-    GoldenEntry::msg("CQ RA3QUE KO91").at(1624.0, 0.2).snr(-3.0),
-    GoldenEntry::msg("CQ UA3YFS KO73").at(2409.0, -1.3).snr(4.0),
-    GoldenEntry::msg("EA8PP JH0INP PM96")
-        .at(940.0, -0.6)
-        .snr(-12.0),
-    GoldenEntry::msg("UT8UU ON4FG RR73")
-        .at(2133.0, 0.2)
-        .snr(5.0),
-    GoldenEntry::msg("EA8PP UN7IT LO80")
-        .at(1108.0, 0.5)
-        .snr(-7.0),
-    GoldenEntry::msg("OH1WR RA4UDC RR73")
-        .at(1874.0, -1.7)
-        .snr(8.0),
-    GoldenEntry::msg("CQ DO1RPK JO32").at(1503.0, 0.1).snr(-1.0),
-    GoldenEntry::msg("LZ2KV SV8LMQ 73").at(1028.0, 0.4).snr(0.0),
-    GoldenEntry::msg("OZ0JD SM5NAS R-08")
-        .at(1218.0, 0.2)
-        .snr(-8.0),
-    GoldenEntry::msg("ON6OM DL8FBD 73").at(1766.0, 0.2).snr(9.0),
-    GoldenEntry::msg("DB4BU DK5OK RR73")
-        .at(1822.0, 0.1)
-        .snr(6.0),
-    GoldenEntry::msg("EA2AA S56ECR JN65")
-        .at(2047.0, 0.3)
-        .snr(-5.0),
-    GoldenEntry::msg("CQ ON7PM JO20").at(735.0, 0.2).snr(-15.0),
-    GoldenEntry::msg("CQ DO6AZ JO50").at(1481.0, 0.6).snr(-5.0),
-    GoldenEntry::msg("CQ DO1FPI JN58")
-        .at(1357.0, 0.2)
-        .snr(-11.0),
-];
-
-/// `jt9 -8 -d 3 -L 200 -H 3000 websdr_test2.wav`.
-const WEBSDR_TEST2: &[GoldenEntry] = &[
-    GoldenEntry::msg("CQ IT9PQO JM78").at(1495.0, 1.4).snr(7.0),
-    GoldenEntry::msg("IK4LZH 9A9TT JN76")
-        .at(1109.0, 0.3)
-        .snr(4.0),
-    // SNR not checked: +15 dB here against `jt9`'s +11, the same before #721 (a separate gap in the
-    // strong-signal SNR estimate, not this test's subject).
-    GoldenEntry::msg("SP4FCA G4CUS R+13").at(309.0, 1.1),
-    GoldenEntry::msg("UR4MSF E75C R+10")
-        .at(1188.0, 1.1)
-        .snr(0.0),
-    GoldenEntry::msg("LA9XBA F6CAM JO10")
-        .at(1430.0, 1.0)
-        .snr(18.0),
-    GoldenEntry::msg("DC8VA LZ1CWK R-09")
-        .at(598.0, 1.2)
-        .snr(6.0),
-    GoldenEntry::msg("CQ 2E0VDS JO02").at(2672.0, 2.1).snr(0.0),
-    GoldenEntry::msg("UA9CJM ON8BB -20")
-        .at(2597.0, 1.0)
-        .snr(-1.0),
-    GoldenEntry::msg("EA1ABT I8LWL JN70")
-        .at(2267.0, 1.2)
-        .snr(11.0),
-    GoldenEntry::msg("4F3OM F6GGA JN37").at(638.0, 1.1).snr(0.0),
-    GoldenEntry::msg("A41ZZ YO7CGS R-18")
-        .at(2016.0, 1.1)
-        .snr(-1.0),
-    GoldenEntry::msg("S9CT 9A4ZM -04").at(389.0, 1.1).snr(-7.0),
-    GoldenEntry::msg("CQ LZ2II KN22").at(1706.0, 1.7).snr(7.0),
-    GoldenEntry::msg("OH3KAV 2M0OGG RR73")
-        .at(1642.0, 1.4)
-        .snr(-6.0),
-    GoldenEntry::msg("S9CT F4HPY JN28").at(458.0, 1.8).snr(-5.0),
-    GoldenEntry::msg("HA8RC R4OF 73").at(2393.0, 1.1).snr(-14.0),
-    GoldenEntry::msg("S9CT EW8KT KO42")
-        .at(2344.0, 1.6)
-        .snr(-17.0),
-    GoldenEntry::msg("CQ M0OIC IO92").at(1707.0, 1.0).snr(2.0),
-    GoldenEntry::msg("CQ SV1GN KM17").at(895.0, 1.8).snr(-6.0),
-    GoldenEntry::msg("YO8TVD M0JBF IO91")
-        .at(2158.0, 1.1)
-        .snr(-16.0),
-    GoldenEntry::msg("CQ G4IJC JO02").at(1642.0, 1.1).snr(-19.0),
-    GoldenEntry::msg("CQ IZ8IQO JM89").at(711.0, 1.1).snr(-25.0),
-    GoldenEntry::msg("DM8PV GM7VFR RR73")
-        .at(2026.0, 1.3)
-        .snr(-13.0),
-];
-
-#[test]
-fn recording_191111_110130_matches_jt9() {
-    let set = GoldenSet {
-        name: "191111_110130 vs jt9",
-        expected: WAV_110130,
-        min_hits: 6,
-        max_extra: 0,
-    };
+/// Every `jt9` decode of `file`, and nothing else but its attested extras.
+fn check(file: &'static str, path: &str) {
+    let expected = reference(file);
+    assert!(!expected.is_empty(), "{file}: not in the fixture");
+    let attested: Vec<&str> = ATTESTED
+        .iter()
+        .filter(|(f, ..)| *f == file)
+        .map(|(_, m, _)| *m)
+        .collect();
+    let views = decode(path);
+    let extras: Vec<&str> = views
+        .iter()
+        .filter(|d| !expected.iter().any(|g| g.msg == d.msg))
+        .map(|d| d.msg.as_str())
+        .collect();
+    for e in &extras {
+        assert!(
+            attested.contains(e),
+            "{file}: `{e}` is not in jt9's list and not an attested decode: a phantom until shown otherwise"
+        );
+    }
+    let expected: &'static [GoldenEntry] = Box::leak(expected.into_boxed_slice());
     assert_golden(
-        &decode(asset_path!("191111_110130.wav")),
-        &set,
+        &views,
+        &GoldenSet {
+            name: file,
+            expected,
+            min_hits: expected.len(),
+            max_extra: attested.len(),
+        },
         Tolerances::default(),
         |d| d.clone(),
     );
 }
 
-#[test]
-fn recording_191111_110200_matches_jt9() {
-    let set = GoldenSet {
-        name: "191111_110200 vs jt9",
-        expected: WAV_110200,
-        min_hits: 5,
-        max_extra: 0,
+macro_rules! recordings {
+    ($($name:ident => $file:literal),* $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                check(
+                    $file,
+                    concat!(env!("CARGO_MANIFEST_DIR"), "/../embedded-poc/assets/", $file, ".wav"),
+                );
+            }
+        )*
     };
-    assert_golden(
-        &decode(asset_path!("191111_110200.wav")),
-        &set,
-        Tolerances::default(),
-        |d| d.clone(),
-    );
 }
 
-/// `CQ UB3AQS KO85` (-12 dB, OSD at 9 hard errors in `jt9`) sits 9 Hz from one of seven copies of the +22 dB
-/// `PA3EPP SP8NFO KN09`. `jt9` decodes and subtracts that signal three times in its first pass, from the
-/// candidates at 906.25, 903.125 and 909.375 Hz; the last two are 0.04 s of DT from the first. This crate
-/// deduped on a parabolically interpolated DT (0.931, 0.878), inside the 0.04 s window, so the two were
-/// dropped and the residue stayed over UB3AQS. `sync8.f90:143` compares the integer-lag DT, and so does
-/// `coarse_sync` now (#721).
-#[test]
-fn recording_191111_110615_matches_jt9() {
-    let set = GoldenSet {
-        name: "191111_110615 vs jt9",
-        expected: WAV_110615,
-        min_hits: WAV_110615.len(),
-        max_extra: 0,
-    };
-    assert_golden(
-        &decode(asset_path!("191111_110615.wav")),
-        &set,
-        Tolerances::default(),
-        |d| d.clone(),
-    );
+recordings! {
+    recording_191111_110115_matches_jt9 => "191111_110115",
+    recording_191111_110130_matches_jt9 => "191111_110130",
+    recording_191111_110145_matches_jt9 => "191111_110145",
+    recording_191111_110200_matches_jt9 => "191111_110200",
+    recording_191111_110215_matches_jt9 => "191111_110215",
+    recording_191111_110615_matches_jt9 => "191111_110615",
+    recording_191111_110630_matches_jt9 => "191111_110630",
+    recording_191111_110645_matches_jt9 => "191111_110645",
+    recording_191111_110700_matches_jt9 => "191111_110700",
+    recording_websdr_test1_matches_jt9 => "websdr_test1",
+    recording_websdr_test2_matches_jt9 => "websdr_test2",
+    recording_websdr_test3_matches_jt9 => "websdr_test3",
+    recording_websdr_test4_matches_jt9 => "websdr_test4",
+    recording_websdr_test5_matches_jt9 => "websdr_test5",
+    recording_websdr_test6_matches_jt9 => "websdr_test6",
+    recording_websdr_test7_matches_jt9 => "websdr_test7",
+    recording_websdr_test8_matches_jt9 => "websdr_test8",
+    recording_websdr_test9_matches_jt9 => "websdr_test9",
+    recording_websdr_test10_matches_jt9 => "websdr_test10",
+    recording_websdr_test11_matches_jt9 => "websdr_test11",
+    recording_websdr_test12_matches_jt9 => "websdr_test12",
+    recording_websdr_test13_matches_jt9 => "websdr_test13",
 }
 
-/// One `jt9` decode of a non-standard call with an unresolved hash, `<...> DA0FONTANE` (BP, 15 hard errors):
-/// `i3=4`'s 11-character call was refused by the 7-character callsign grammar until #721.
+/// The fixture is all 22 and nothing else: a recording dropped from it, or one added without a test,
+/// fails here rather than passing silently.
 #[test]
-fn recording_191111_110645_matches_jt9() {
-    let set = GoldenSet {
-        name: "191111_110645 vs jt9",
-        expected: WAV_110645,
-        min_hits: WAV_110645.len(),
-        max_extra: 0,
-    };
-    assert_golden(
-        &decode(asset_path!("191111_110645.wav")),
-        &set,
-        Tolerances::default(),
-        |d| d.clone(),
-    );
-}
-
-/// `K3ZK IK2ZDT RR73` (+2 dB, 2219 Hz) sits 10 Hz from one of six copies of a splattering
-/// `K4VBM HA8EK RR73`. `jt9` subtracts every copy (`ft8b.f90` subtracts each valid decode before the
-/// duplicate check); until #721 a duplicate was dropped unsubtracted and K3ZK never became a candidate.
-#[test]
-fn recording_websdr_test11_matches_jt9() {
-    let set = GoldenSet {
-        name: "websdr_test11 vs jt9",
-        expected: WEBSDR_TEST11,
-        min_hits: WEBSDR_TEST11.len(),
-        max_extra: 0,
-    };
-    assert_golden(
-        &decode(asset_path!("websdr_test11.wav")),
-        &set,
-        Tolerances::default(),
-        |d| d.clone(),
-    );
-}
-
-/// `CQ DO6AZ JO50` is the blind-CQ AP pass at nsync 9 (OSD, 26 hard errors), which an `nsync >= 12` gate
-/// of this crate's own skipped until #721. The one output `jt9` lacks, `EA8PP JA6VQA -16` (OSD at 21 hard
-/// errors), is a QSO `jt9` decodes in other recordings of the session (`JA6VQA EA8PP R-24`, `... 73`).
-#[test]
-fn recording_websdr_test5_matches_jt9() {
-    let set = GoldenSet {
-        name: "websdr_test5 vs jt9",
-        expected: WEBSDR_TEST5,
-        min_hits: WEBSDR_TEST5.len(),
-        max_extra: 1,
-    };
-    assert_golden(
-        &decode(asset_path!("websdr_test5.wav")),
-        &set,
-        Tolerances::default(),
-        |d| d.clone(),
-    );
-}
-
-/// `CQ IZ8IQO JM89` (-25 dB, AP): `jt9`'s coarse candidate is at lag 29; with this crate's lag grid two
-/// steps off `sync8.f90`'s (until #721) it was at 27, and `ft8b`'s ±10-sample search found another peak.
-/// The one output `jt9` lacks, `UA9SIX GM0LIR R-07`, continues a QSO `jt9` decodes in the next recording
-/// (`GM0LIR UA9SIX -09`).
-#[test]
-fn recording_websdr_test2_matches_jt9() {
-    let set = GoldenSet {
-        name: "websdr_test2 vs jt9",
-        expected: WEBSDR_TEST2,
-        min_hits: WEBSDR_TEST2.len(),
-        max_extra: 1,
-    };
-    assert_golden(
-        &decode(asset_path!("websdr_test2.wav")),
-        &set,
-        Tolerances::default(),
-        |d| d.clone(),
+fn the_fixture_is_the_22_recordings() {
+    let mut files: Vec<&str> = REFERENCE
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .map(|l| l.split('\t').next().unwrap())
+        .collect();
+    files.dedup();
+    assert_eq!(files.len(), 22, "{files:?}");
+    assert_eq!(
+        REFERENCE.lines().filter(|l| !l.starts_with('#')).count(),
+        402
     );
 }
