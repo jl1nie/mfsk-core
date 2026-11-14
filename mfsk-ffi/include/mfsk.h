@@ -1004,7 +1004,7 @@ typedef struct MfskModeInfo {
      * reference decoded `dt_sec` is measured from. 0.5 for FT8, FT4, FST4-15 and Q65-15/30; 1.0
      * for the other FST4 sub-modes, Q65 from 60 s, WSPR, JT9 and JT65. To place a transmission use
      * [`tx_buffer_start_samples_12k`](Self::tx_buffer_start_samples_12k): FT4's buffer starts
-     * before its first tone.
+     * before its first tone, and WSJT-X starts it earlier still.
      */
     float tx_start_offset_s;
     /**
@@ -1041,13 +1041,15 @@ typedef struct MfskModeInfo {
     /**
      * Where a synthesised frame goes (appended in 0.16.0, ABI 3): put the first sample of the
      * 12 kHz buffer from `mfsk_tones_to_i16` / `mfsk_tones_to_f32` (or `mfsk_encode` at 12 kHz)
-     * this many samples after the start of the slot, and the frame lands at DT = 0 on a WSJT-X
-     * receiver. At another rate scale it and round: `round(v * rate / 12000)` is exact at 48 kHz
-     * and 44.1 kHz too (FT4: 21 696 and 19 933). One rule for every mode: FT4 5424
-     * (its buffer starts a ramp symbol, 576 samples, before the tones at 0.5 s), FT8 6000, WSPR,
-     * JT9 and JT65 12000; 0 for JTTY and MSK144, which have no slot. WSJT-X's own transmitter
-     * sends FT4 about 150 ms earlier (`Modulator.cpp:167`). A library older than the caller's
-     * header leaves it as the caller set it: check `size` covers it.
+     * this many samples after the start of the slot, where WSJT-X's own transmitter starts it
+     * (`Modulator.cpp:163-168` `delay_ms`). At another rate scale it and round:
+     * `round(v * rate / 12000)` is exact at 48 kHz and 44.1 kHz too (FT4: 14 400 and 13 230). FT8
+     * 6000, WSPR, JT9 and JT65 12000, where the frame lands at DT = 0; FT4 3600 (300 ms, since
+     * 0.16.1, #749; 5424 in 0.16.0), so over a chain with no latency its tones decode at DT -0.152 s
+     * (this crate's decoder, measured; `ft4_decode.f90:477` shares the 0.5 s reference, so a WSJT-X
+     * receiver should read the same, not run against `jt9`). 0 for JTTY and MSK144, which have no
+     * slot. A library older than the caller's header leaves it as the caller set it: check `size`
+     * covers it.
      */
     uint32_t tx_buffer_start_samples_12k;
 } MfskModeInfo;
@@ -1851,7 +1853,7 @@ enum MfskStatus mfsk_encode_ft8(const char *call1,
 /**
  * Synthesise a standard FT4 message at `freq_hz`. 12 kHz f32 PCM, 60 480 samples: the 103 tone
  * symbols between a ramp symbol each side, as `gen_ft4wave` frames them, so the tones start 576
- * samples in. Place the buffer at [`MfskModeInfo::tx_buffer_start_samples_12k`] (5424).
+ * samples in. Place the buffer at [`MfskModeInfo::tx_buffer_start_samples_12k`] (3600, WSJT-X's FT4 start).
  *
  * # Safety
  *

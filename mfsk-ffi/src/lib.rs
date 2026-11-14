@@ -488,7 +488,7 @@ pub unsafe extern "C" fn mfsk_encode_ft8(
 
 /// Synthesise a standard FT4 message at `freq_hz`. 12 kHz f32 PCM, 60 480 samples: the 103 tone
 /// symbols between a ramp symbol each side, as `gen_ft4wave` frames them, so the tones start 576
-/// samples in. Place the buffer at [`MfskModeInfo::tx_buffer_start_samples_12k`] (5424).
+/// samples in. Place the buffer at [`MfskModeInfo::tx_buffer_start_samples_12k`] (3600, WSJT-X's FT4 start).
 ///
 /// # Safety
 ///

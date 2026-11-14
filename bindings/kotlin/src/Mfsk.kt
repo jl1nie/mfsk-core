@@ -659,10 +659,10 @@ data class MfskModeInfo(
     /// Milliseconds from the slot boundary to the first tone of a frame at DT = 0, the reference
     /// decoded DTs are measured from. To place a transmission use [txBufferStartSamples12k].
     val txStartOffsetMs: Int,
-    /// Where a synthesised frame goes: the sample of the slot (12 kHz) its first sample goes to, so
-    /// it lands at DT = 0 on a WSJT-X receiver. One rule for every mode; FT4's frame starts a ramp
-    /// symbol (576 samples) before its tones, so FT4 is 5424, FT8 6000. WSJT-X's own transmitter
-    /// sends FT4 about 150 ms earlier.
+    /// Where a synthesised frame goes: the sample of the slot (12 kHz) its first sample goes to,
+    /// where WSJT-X's own transmitter starts it. FT8 6000 and the 1 s modes 12000, where the frame
+    /// lands at DT = 0; FT4 3600 (300 ms, as WSJT-X; its tones decode at DT -0.152 s over a chain
+    /// with no latency).
     val txBufferStartSamples12k: Int,
 )
 

@@ -348,6 +348,15 @@ pub trait FrameLayout: Copy + Default + 'static {
     /// sync, signal subtraction, and DT reporting. FT8 = 0.5, FT4 = 0.5.
     const TX_START_OFFSET_S: f32;
 
+    /// Where WSJT-X's transmitter starts this mode's audio, in milliseconds from the start of the
+    /// slot, when that is not where the frame lands at DT = 0: `Modulator::start`'s `delay_ms`
+    /// (`Modulator/Modulator.cpp:163-168`). `None` (the default) means it is the DT = 0 placement,
+    /// `TX_START_OFFSET_S` less the lead ramp, which is what upstream does for FT8 (500), FST4-15 and
+    /// Q65-15/30 (500) and every 1 s mode (1000). Only FT4 differs: `Some(300)`, ~150 ms ahead of
+    /// DT = 0 (upstream gives no reason in the source). Read through
+    /// [`tx_buffer_start`](crate::engine::tx::tx_buffer_start), not directly.
+    const TX_DELAY_MS: Option<u32> = None;
+
     /// Optional bit interleaver: permutation table such that
     /// `cw[CODEWORD_INTERLEAVE[j]]` is the codeword bit transmitted at
     /// **channel-bit position** `j`. Length must equal

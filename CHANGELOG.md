@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed — transmit
+
+- **FT4 `tx_buffer_start` is WSJT-X's own start, 3600 samples (0.300 s), not 5424** (#749): `Modulator::start` plays FT4
+  from `delay_ms = 300` (`Modulator.cpp:167`); 0.16.0 placed it at DT = 0 instead, a divergence chosen without asking.
+  `FrameLayout::TX_DELAY_MS` (default `None`, FT4 `Some(300)`) carries it; every other mode is unchanged. Over a chain
+  with no latency an FT4 frame now decodes at DT -0.152 s (this crate's decoder, `tests/encoder.rs`; `jt9` not run).
+  A simulator wanting DT = 0 uses the new `engine::tx::dt0_buffer_start` (FT4 5424). C / Swift / Kotlin: same field.
+
 ## 0.16.0 — every transmit waveform is WSJT-X's own generator's, and one value, `tx_buffer_start`, says where to place it in every mode (breaking for FT4 hosts); JT9 picks its candidates as `jt9` does and JT9/JT65 report DT from WSJT-X's 1.0 s; FT4 subtracts `gen_ft4wave`'s frame; WSJT-X v3.3.0-beta4 → beta6 ported (#726)
 
 WSJT-X v3.3.0-beta4 → beta6, ported (#726): every transmit waveform now follows WSJT-X's own generator, and JT9 decodes as `jt9`

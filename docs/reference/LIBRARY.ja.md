@@ -2496,10 +2496,13 @@ impl FskWaveform for Ft4 {
 `synth_lead_samples::<P>(rate)` サンプル目（FT4 は 576、他は 0）から始まる。**バッファは
 `tx_buffer_start::<P>(rate)` に置く**（`Encoded::tx_buffer_start`、`ModeMeta::tx_buffer_start_samples_12k`、
 C の `MfskModeInfo::tx_buffer_start_samples_12k`、Swift の `txBufferStartSamples12k`、Kotlin も同名）。
-`TX_START_OFFSET_S` からその先行分を引いた値なので、どのモードも同じやり方で置けて、フレームは
-DT = 0 に来る（FT4 は 5424、FT8 は 6000。`ft4sim.f90:91`）。秒ではなくサンプル数なのは、0.452 s が
-`f32` で正確に表せないため。WSJT-X 自身の送信機は FT4 を約 150 ms 早く出す（`Modulator.cpp:167`、
-`delay_ms = 300`）。これは本家との意図的な相違として記してある（`engine::tx::tx_buffer_start`）。0.15 までの FT4 は、`gen_ft8wave` と同じ 103 シンボル・
+WSJT-X 自身の送信機がバッファを出し始める位置、つまり `Modulator::start` の `delay_ms`
+（`Modulator.cpp:163-168`、`FrameLayout::TX_DELAY_MS`）。FT4 以外のモードでは `TX_START_OFFSET_S` から
+先行分を引いた値で、フレームは DT = 0 に来る（FT8 は 6000、1 秒のモードは 12 000）。FT4 は 3600
+（`delay_ms = 300`。0.16.1 から、#749。0.16.0 では 5424）で、トーンは 0.348 s に出て、遅延のない経路なら
+DT -0.152 s でデコードされる（この crate のデコーダで測定。`ft4_decode.f90:477` も同じ 0.5 s 基準なので
+WSJT-X の受信側も同じ値になるはずだが、`jt9` では試していない）。フレームを DT = 0 に置きたいとき（シミュレータ、
+`ft4sim.f90:91`。FT4 は 5424）は `engine::tx::dt0_buffer_start::<P>(rate)` を使う。0.15 までの FT4 は、`gen_ft8wave` と同じ 103 シンボル・
 `nsps / 8` ランプの形で、`gen_ft4wave` から -45 dB ずれていた。
 `tests/gen_wave_vs_wsjtx.rs` が FT8・FT4・FST4 を WSJT-X v3.3.0-beta6 自身の
 生成器と突き合わせる（-88〜-95 dB）。FST4（`Waveform::Fst4`）は `gen_fst4wave.f90` と同じく
@@ -2769,8 +2772,8 @@ for p in PROTOCOLS {
   サブモード、Q65 の 60 s 以上、WSPR、JT9、JT65 で 1.0（Q65 は `q65.f90:130-131` と同じく
   `nsps` に従う。#399 まではどのサブモードも 1.0 を公開していた。JT9 と JT65 は #726 まで 0.0）。
 * `tx_buffer_start_samples_12k` — 合成したバッファの置き場所。スロット先頭からのサンプル数で、
-  オフセットから FT4 の先行ランプシンボル分を引いたもの（FT4 は 5424、FT8 は 6000、
-  1 秒のモードは 12 000）。送信はこれで置き、`tx_start_offset_s` では置かない。
+  WSJT-X の送信機が出し始める位置（`delay_ms`）。FT4 は 3600、FT8 は 6000、1 秒のモードは 12 000。
+  送信はこれで置き、`tx_start_offset_s` では置かない。FT4 以外ではフレームは DT = 0 に来る。
 * `slot_samples_12k` — サンプル数で表したスロット（FT4 90 000、FT8 180 000、
   FST4-300 3 600 000）と、`decode_fft1_size` — デコーダがスロット全体に
   かける前方 FFT（`Protocol::DECODE_FFT1_SIZE`。FT4 92 160、FT8 192 000、

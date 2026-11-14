@@ -304,10 +304,10 @@ impl Encoded {
     }
 
     /// Where to put the audio: its first sample goes this many samples (at `sample_rate`) after
-    /// the start of the slot, and the frame then lands at DT = 0 on a WSJT-X receiver. One rule for
-    /// every mode; FT4's buffer starts a ramp symbol before its tones, and this has subtracted it.
-    /// [`engine::tx::tx_buffer_start`](crate::engine::tx::tx_buffer_start) has the detail and the
-    /// one divergence (WSJT-X itself sends FT4 about 150 ms earlier).
+    /// the start of the slot, where WSJT-X's own transmitter starts it (`Modulator.cpp` `delay_ms`).
+    /// For every mode but FT4 the frame then lands at DT = 0 on a WSJT-X receiver; FT4 starts at
+    /// 300 ms, ~150 ms earlier, as WSJT-X does (#749).
+    /// [`engine::tx::tx_buffer_start`](crate::engine::tx::tx_buffer_start) has the detail.
     pub fn tx_buffer_start(&self, sample_rate: u32) -> usize {
         tx_buffer_start(self.mode, sample_rate)
     }

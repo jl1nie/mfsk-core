@@ -445,12 +445,14 @@ for the other four (and FST4-900 / -1800 and the FST4W periods go to 66 560
 and 134 400).
 
 **Where the buffer goes:** `MfskModeInfo::tx_buffer_start_samples_12k`, the sample of the slot its
-first sample goes to, so the frame lands at DT = 0 on a WSJT-X receiver. One rule for every mode
-(FT8 6000, FT4 5424, the 1 s modes including WSPR, JT9 and JT65 12000): FT4's waveform carries a ramp
-symbol each side (`gen_ft4wave`), so its buffer starts 576 samples before its tones, and the field has
-subtracted that. `tx_start_offset_s` is the DT = 0 reference, not the placement. The field was
-appended in 0.16.0; a host built against this header and run on an older library checks `size`.
-WSJT-X's own transmitter sends FT4 about 150 ms earlier than DT = 0 (`Modulator.cpp:167`).
+first sample goes to, where WSJT-X's own transmitter starts it (`Modulator.cpp:163-168`, `delay_ms`).
+FT8 6000 and the 1 s modes including WSPR, JT9 and JT65 12000, where the frame lands at DT = 0; FT4
+3600 (300 ms, since 0.16.1, #749; 5424 in 0.16.0). FT4's waveform carries a ramp symbol each side
+(`gen_ft4wave`), so its tones start 576 samples into the buffer, at 0.348 s, and over a chain with no
+latency decode at DT -0.152 s (measured on this crate's decoder; a WSJT-X receiver should agree,
+`ft4_decode.f90:477` using the same 0.5 s reference, but `jt9` has not been run on it). `tx_start_offset_s` is the DT = 0 reference,
+not the placement. The field was appended in 0.16.0; a host built against this header and run on an
+older library checks `size`.
 
 The seven `mfsk_encode_*` helpers are the one-call shortcut for the
 common `call1 / call2 / report` message:

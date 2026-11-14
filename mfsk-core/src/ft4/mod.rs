@@ -15,19 +15,20 @@
 //! # #[cfg(all(feature = "ft4", any(feature = "fft-rustfft", feature = "fft-extern")))] {
 //! use mfsk_core::Mode;
 //! use mfsk_core::decoder::{Decoder, SlotInput, default_params};
-//! use mfsk_core::engine::tx::{message_to_tones, synthesize_i16, tx_buffer_start};
+//! use mfsk_core::engine::tx::{dt0_buffer_start, message_to_tones, synthesize_i16};
 //! use mfsk_core::ft4::Ft4;
 //! use mfsk_core::msg::wsjt77::pack77;
 //!
 //! // 1. Pack a standard message and synthesise 12 kHz i16 PCM.
-//! //    Place it where `tx_buffer_start` says: the frame has a ramp symbol
+//! //    Place it at DT = 0 (`dt0_buffer_start`): the frame has a ramp symbol
 //! //    before its tones (`gen_ft4wave`), so its tones then start at 0.5 s.
+//! //    To transmit, use `tx_buffer_start` (3600, where WSJT-X starts FT4).
 //! let msg77 = pack77("CQ", "JA1ABC", "PM95").expect("pack");
 //! let tones = message_to_tones::<Ft4>(&msg77);
 //! let frame = synthesize_i16::<Ft4>(&tones, 12_000, /* freq */ 1500.0, /* amp */ 20_000);
 //!
 //! let mut audio = vec![0i16; 90_000]; // 7.5 s @ 12 kHz
-//! let start = tx_buffer_start::<Ft4>(12_000); // 5424
+//! let start = dt0_buffer_start::<Ft4>(12_000); // 5424
 //! for (i, &s) in frame.iter().enumerate() {
 //!     if start + i < audio.len() { audio[start + i] = s; }
 //! }
@@ -119,6 +120,9 @@ impl FrameLayout for Ft4 {
     const SYNC_MODE: SyncMode = SyncMode::Block(&FT4_SYNC_BLOCKS);
     const T_SLOT_S: f32 = 7.5;
     const TX_START_OFFSET_S: f32 = 0.5;
+    // `Modulator/Modulator.cpp:167` `if(request.mode=="FT4") delay_ms=300;` (#749): WSJT-X starts
+    // the 105-symbol buffer here, not at DT = 0's 0.452 s.
+    const TX_DELAY_MS: Option<u32> = Some(300);
 }
 
 impl Protocol for Ft4 {

@@ -251,23 +251,36 @@ pub fn synth_len<P: FskWaveform>(sample_rate: u32) -> usize {
 /// `tx_buffer_start_samples_12k` reads the same constant). Only FT4 has any: `gen_ft4wave` frames the
 /// 103 tone symbols with a ramp symbol each side, which [`Waveform::Ft4`] synthesises, so FT4's
 /// `N_RAMP` is 2 and every other waveform's 0 (`tests/protocol_invariants.rs` holds every protocol
-/// to that). To place the buffer, use [`tx_buffer_start`], which already subtracts this.
+/// to that). [`dt0_buffer_start`] already subtracts this; to transmit, use [`tx_buffer_start`].
 pub fn synth_lead_samples<P: FskWaveform>(sample_rate: u32) -> usize {
     (P::N_RAMP / 2) as usize * samples_per_symbol::<P>(sample_rate)
 }
 
 /// Where the buffer from [`synthesize`] goes: its first sample is this many samples (at
-/// `sample_rate`) after the start of the slot, and then the frame's first tone lands at
-/// [`FrameLayout::TX_START_OFFSET_S`], which is DT = 0 on a WSJT-X receiver. The same rule for every
-/// mode: for FT4 it is one ramp symbol before the tones ([`synth_lead_samples`]; `ft4sim.f90:91`,
-/// `k=nint((xdt+0.5)/dt)-NSPS`), for every other mode the start offset itself.
+/// `sample_rate`) after the start of the slot, where WSJT-X's own transmitter starts it
+/// (`Modulator::start`, `delay_ms`, `Modulator/Modulator.cpp:163-168`; #749).
 ///
-/// Deliberate divergence: WSJT-X's own transmitter does not place FT4 at DT = 0. `Modulator::start`
-/// starts the 105-symbol buffer `delay_ms = 300` into the period (`Modulator.cpp:167`), so its tones
-/// leave the PC at 0.348 s, about 150 ms early (left, presumably, for the sound card, rig and PTT
-/// delay; upstream does not say). FT8 (`delay_ms = 500`) and the 1 s modes match this value.
-/// A host that wants WSJT-X's own timing starts its FT4 audio that much earlier.
+/// For every mode but FT4 that is where the frame's first tone lands at
+/// [`FrameLayout::TX_START_OFFSET_S`], DT = 0 on a WSJT-X receiver: FT8 0.5 s, the 1 s modes 1.0 s.
+/// FT4 is [`FrameLayout::TX_DELAY_MS`] = 300 ms (3600 samples at 12 kHz), so its tones leave at
+/// 0.348 s and, over a chain with no latency, decode at DT −0.152 s (measured on this crate's
+/// decoder, `tests/encoder.rs`; a WSJT-X receiver should agree, `ft4_decode.f90:477` using the same
+/// 0.5 s reference, but `jt9` has not been run on it).
+/// For a frame at DT = 0 instead (a simulator, `ft4sim.f90:91`), place it at
+/// [`dt0_buffer_start`].
 pub fn tx_buffer_start<P: FskWaveform>(sample_rate: u32) -> usize {
+    match P::TX_DELAY_MS {
+        // Exact: an integer count of ms at an integer rate, rounded to the nearest sample.
+        Some(ms) => ((u64::from(ms) * u64::from(sample_rate) + 500) / 1000) as usize,
+        None => dt0_buffer_start::<P>(sample_rate),
+    }
+}
+
+/// Where the buffer from [`synthesize`] goes for its frame to land at DT = 0: the first tone at
+/// [`FrameLayout::TX_START_OFFSET_S`], so one ramp symbol ([`synth_lead_samples`]) earlier for FT4
+/// (`ft4sim.f90:91`, `k=nint((xdt+0.5)/dt)-NSPS`; 5424 at 12 kHz), the start offset itself for every
+/// other mode. What a simulator or a test wants; to transmit, use [`tx_buffer_start`].
+pub fn dt0_buffer_start<P: FskWaveform>(sample_rate: u32) -> usize {
     // Rounded to the nearest sample (non-negative, so `+ 0.5` and truncate; no `f64::round` in no_std).
     (f64::from(P::TX_START_OFFSET_S) * f64::from(sample_rate) + 0.5) as usize
         - synth_lead_samples::<P>(sample_rate)
