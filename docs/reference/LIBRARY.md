@@ -1190,6 +1190,8 @@ The strategy extensions are where phantom decodes come from ([§2.2](#22-decodep
 carry `search: SearchTuning` (`time_tolerance_early_sec`,
 `time_tolerance_late_sec`, `score_threshold`, `max_candidates`, each
 `Option`, over the mode's `default_search_params()` with the block's band).
+JT9 reads none of the four: its scan is `jt9`'s (`sync9` and the bin loop of
+`jt9_decode.f90`), whose lag range and `ccflim` gates are fixed upstream (#726).
 WSPR adds `max_cycles_per_bit` over the depth's (10000 is `wsprd`'s own
 default, which the GUI's Normal and Deep lower to 500; measured: on the
 WSJT-X golden 500 loses G8VDQ at −23 dB, which 10000 decodes); JT65 adds

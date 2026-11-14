@@ -32,29 +32,39 @@ fn gauss(seed: u64, n: usize) -> Vec<f32> {
         .collect()
 }
 
-/// JT9 keeps `truncate(max(max_candidates, 32))` of its coarse list (`jt9/mod.rs`): 32 by default, and
-/// lowering `max_candidates` below 32 changes nothing; above it, the count is the cap until the list is
-/// shorter, and then it is the list. `130418_1742.wav`'s list is 2190 long, so 5000 and 3000 both give
-/// 2190: a count taken after dedup or decoding would not.
+/// JT9 counts the bins its band pass (`nqd = 0`) may try: `ccfred > ccflim` and `red2 > 1.6`, outside the Rx
+/// window (`jt9_decode.f90:233-240`, `jt9/mod.rs`). `max_candidates` is not read since #726 (it capped the old
+/// coarse list at `max(max_candidates, 32)`), and `ccflim` falls with depth (3.0 at `Fast`, 2.5 at `Deep`), so
+/// `Deep` counts more bins than `Fast` on a busy recording, and a count taken after decoding would be at most
+/// the 6 decodes, not that.
 #[test]
-fn jt9_counts_the_truncated_coarse_list() {
+fn jt9_counts_the_bins_the_band_pass_may_try() {
     let Some(a) = common::load_wav_f32_opt(asset_path!("130418_1742.wav")) else {
         common::skip_or_fail("130418_1742.wav");
         return;
     };
-    let count = |cap: Option<usize>| {
-        let mut d =
-            Decoder::<Jt9>::new(DecodeParams::for_band((200.0, 4_000.0)).depth(Depth::Deep));
+    let count = |depth: Depth, cap: Option<usize>| {
+        let mut d = Decoder::<Jt9>::new(DecodeParams::for_band((200.0, 4_000.0)).depth(depth));
         d.extras_mut().search.max_candidates = cap;
         d.decode(&SlotInput::f32(&a)).candidates
     };
-    assert_eq!(count(None), Some(32), "the floor of 32");
-    assert_eq!(count(Some(5)), Some(32), "below the floor, the floor");
-    assert_eq!(count(Some(40)), Some(40));
-    assert_eq!(count(Some(100)), Some(100));
-    let all = count(Some(5_000)).expect("a search ran");
-    assert!(all > 100, "the whole coarse list is {all}");
-    assert_eq!(count(Some(3_000)), Some(all), "above the list, the list");
+    let deep = count(Depth::Deep, None).expect("a search ran");
+    let fast = count(Depth::Fast, None).expect("a search ran");
+    assert_eq!(
+        count(Depth::Deep, Some(5)),
+        Some(deep),
+        "max_candidates is not read"
+    );
+    assert_eq!(
+        count(Depth::Deep, Some(5_000)),
+        Some(deep),
+        "max_candidates is not read"
+    );
+    assert!(
+        deep > fast,
+        "ccflim 2.5 keeps more bins than 3.0: Deep {deep}, Fast {fast}"
+    );
+    assert!(fast > 6, "more bins pass than decode: {fast}");
 }
 
 /// JT65 counts pass 1's list, capped at `min(max_candidates, 50)` (`jt65/mod.rs`, `jt65_decode.f90:323`),

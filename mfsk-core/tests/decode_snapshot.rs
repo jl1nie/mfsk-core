@@ -79,6 +79,14 @@
 //! (`jt9`: 0.0/0.1/-0.2/1.2), and `JA1KAU PD0JAC -23`, the latest frame, is found from another lag inside the
 //! re-centred window (DT 2.196 -> 1.124, `jt9` 1.2; 1504.7 -> 1504.4 Hz; -4.17 -> -3.96 dB). No message appears or goes.
 //!
+//! A seventh (#726, 2026-11-14): JT9's scan is `jt9`'s (`jt9::sync9`: `symspec`'s `ss`, `sync9`, and
+//! `jt9_decode.f90`'s upward bin loop with its `ccflim`/`red2lim` gates), replacing this crate's coarse scan in
+//! score order, and the crate's own `peakdt9` score gate (1.5) is gone. Only the three `jt9_*` fixtures move. Each
+//! now holds what `jt9 -d 1/2/3` prints without an Rx frequency (local build, same file): `fast`/`normal` lose
+//! `CQ GM7GAX IO75` and `K1JT N5KDV EM41`, `deep` loses `CQ GM7GAX IO75` (`jt9` decodes it only with an Rx
+//! window there, `-f 1119`; `jt9_wsjtx_samples.rs` checks that), and the rows that stay come from `jt9`'s bins:
+//! DT within `jt9`'s 0.1 s print (`G7CNF N4HFA EL89` -0.21 in `deep`, `jt9` -0.2), SNR within 0.5 dB.
+//!
 //! Row format, one per line, sorted. Frame family (FT8/FT4/FST4): text,
 //! then `freq_hz`, `dt_sec`, `snr_db`, `sync_score` as f32 bit patterns in
 //! hex, then `hard_errors` and `pass`. Other families and the IQ path: the

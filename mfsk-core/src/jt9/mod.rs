@@ -42,7 +42,7 @@ use alloc::vec::Vec;
 use num_traits::Float;
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-use crate::engine::pipeline::{ScanRow, push_unique};
+use crate::engine::pipeline::ScanRow;
 use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use crate::fec::ConvFano232;
 use crate::msg::Jt72Codec;
@@ -62,6 +62,8 @@ pub mod rx;
 pub mod search;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub(crate) mod softsym;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub(crate) mod sync9;
 pub mod sync_pattern;
 #[cfg(all(test, any(feature = "fft-rustfft", feature = "fft-extern")))]
 mod test_util;
@@ -134,12 +136,20 @@ pub struct Jt9Result {
 }
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-/// Scan an audio buffer for any JT9 frames: runs coarse (freq, time)
-/// search via [`search::coarse_search`] and uses the WSJT-X-faithful
-/// `softsym` pipeline (`downsam9` + `peakdt9` + `symspec2`) on each
-/// candidate in score order, collapsing duplicates that decode to the
-/// same message within ±4 Hz / ±1 symbol. Public through
-/// [`DecodeRequest`].
+/// Scan an audio buffer for JT9 frames the way `jt9_decode.f90:180-283` does: `sync9` scores every
+/// 0.732 Hz bin of the band ([`sync9`]), then two passes walk the bins upwards and run `softsym` +
+/// Fano at each bin that passes the gates, the first (`nqd = 1`) over `narrow`'s Rx window, the
+/// second (`nqd = 0`) over the band. A decode marks bins `i-1..=i+22` done, so a signal is reported
+/// once, at the lowest bin that decodes it. Public through [`DecodeRequest`].
+///
+/// `params` supplies the band only: `sync9`'s lag range is upstream's fixed `-2.5..+5.0` s of the
+/// buffer and its gates are `ccflim`/`red2lim`, so `time_tolerance_*`, `score_threshold` and
+/// `max_candidates` (the old scan's) are not read (#726).
+///
+/// Deliberate divergences: there is no `nqd = 1` pass without `narrow` (upstream always has an Rx
+/// frequency); [`Jt9Depth::Max`] takes `nagain`'s limits (`limit` 100000, `ccflim` 2.4) but still
+/// runs the band pass, where `nagain` stops after the Rx window.
+#[allow(clippy::too_many_arguments)]
 fn decode_scan_inner(
     audio: &[f32],
     sample_rate: u32,
@@ -150,69 +160,91 @@ fn decode_scan_inner(
     on_result: Option<&(dyn Fn(&Jt9Result) + Sync)>,
     gate: &crate::engine::pipeline::BudgetGate<'_>,
 ) -> Vec<Jt9Result> {
-    use crate::engine::ModulationParams;
-    let nsps = (sample_rate as f32 * <Jt9 as ModulationParams>::SYMBOL_DT).round() as usize;
+    use sync9::{DF3, bin_range};
 
-    // Collect all coarse candidates above a very low threshold (the score
-    // formula saturates near 1.0 for real JT9 signals regardless of SNR,
-    // so threshold filtering is not effective here).
-    let mut scan_params = *params;
-    scan_params.score_threshold = 0.001;
-    scan_params.max_candidates = 50_000; // no practical cap; NMS below limits processing
-
-    let mut cands = search::coarse_search(audio, sample_rate, nominal_start_sample, &scan_params);
-
-    // Sort by coarse score so high-quality candidates get tried first.
-    // Duplicate-signal suppression happens after decode via `seen`
-    // (message + freq ± 4 Hz + time ± 1 symbol), mirroring WSJT-X
-    // `lib/jt9_decode.f90:157-163` which marks ±22 freq bins `done`
-    // around each successful decode rather than pre-filtering by NMS.
-    cands.sort_unstable_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(core::cmp::Ordering::Equal)
-    });
-    cands.truncate(params.max_candidates.max(32));
-    gate.note_candidates(cands.len());
-
-    // Build the big FFT once for the whole slot — `downsam9` extracts
-    // one baseband per candidate frequency from this cached spectrum.
+    let (ia_band, ib_band) = bin_range(params.freq_min_hz, params.freq_max_hz);
+    let Some(s9) = sync9::sync9(audio, ia_band, ib_band) else {
+        return Vec::new();
+    };
+    // `downsam9` reads the whole slot's spectrum; build it once for every bin tried.
     let big_fft = softsym::AudioFft::build(audio);
 
-    let mut seen: Vec<Jt9Result> = Vec::new();
-    for c in cands {
-        // The caller's budget, once per candidate before it is tried (#593).
-        if !gate.proceed() {
-            break;
+    // `jt9_decode.f90:199-201`.
+    let df8 = 1500.0 / 864.0;
+    let red2lim = 1.6;
+    let mut done = alloc::vec![false; s9.ib() + 2];
+    let mut ccfok = alloc::vec![false; s9.ib() + 2];
+    let (mut ia1, mut ib1) = (1usize, 1usize);
+    let mut found: Vec<Jt9Result> = Vec::new();
+
+    for nqd in [1u8, 0] {
+        // `jt9_decode.f90:204-222`: the Fano limit and `ccflim` by depth; the Rx pass always deep.
+        let (limit, ccflim) = match (depth, nqd) {
+            (Jt9Depth::Max, _) => (Jt9Depth::Max, 2.4),
+            (_, 1) | (Jt9Depth::Deep, _) => (Jt9Depth::Deep, 2.5),
+            (Jt9Depth::Normal, _) => (Jt9Depth::Normal, 2.7),
+            (Jt9Depth::Fast, _) => (Jt9Depth::Fast, 3.0),
+        };
+        ccfok.iter_mut().for_each(|b| *b = false);
+        let (ia, ib) = if nqd == 1 {
+            let Some((f0, tol)) = narrow else { continue };
+            let (ia, ib) = bin_range(f0 - tol, f0 + tol);
+            let (ia, ib) = (ia.max(s9.ia), ib.min(s9.ib()));
+            for i in ia..=ib {
+                ccfok[i] = s9.ccfred(i) > ccflim - 2.0 && s9.red2(i) > red2lim - 1.0;
+            }
+            (ia1, ib1) = (ia, ib);
+            (ia, ib)
+        } else {
+            for i in s9.ia..=s9.ib() {
+                ccfok[i] = s9.ccfred(i) > ccflim && s9.red2(i) > red2lim;
+            }
+            for b in ccfok.iter_mut().take(ib1 + 1).skip(ia1) {
+                *b = false;
+            }
+            (s9.ia, s9.ib())
+        };
+        if nqd == 0 {
+            gate.note_candidates(ccfok.iter().filter(|&&b| b).count());
         }
-        let strict = decode::decode_at_baseband_with_fft_depth(&big_fft, c.freq_hz, depth);
-        // `jt9_decode.f90:81-135`: around the Rx frequency (`nfqso ± ntol`)
-        // upstream scans first (`nqd = 1`) at the deepest Fano limit with
-        // looser sync gates (sync 0.5, schk 1.0 against 1.0, 1.5), so a
-        // candidate the wide scan rejects is tried again there.
-        let relaxed = || {
-            let (f0, tol) = narrow?;
-            ((c.freq_hz - f0).abs() <= tol)
-                .then(|| {
-                    decode::decode_at_baseband_gated(
-                        &big_fft,
-                        c.freq_hz,
-                        Jt9Depth::Deep,
-                        decode::Gates::NARROW,
-                    )
-                })
-                .flatten()
+        let gates = if nqd == 1 {
+            decode::Gates::NARROW
+        } else {
+            decode::Gates::WIDE
         };
-        let Some(mut d) = strict.or_else(relaxed) else {
-            continue;
-        };
-        // The builder reports dt from the buffer origin; dt is defined
-        // from the nominal start, and this is the one place that knows
-        // it.
-        d.dt_sec -= nominal_start_sample as f32 / sample_rate as f32;
-        push_unique(&mut seen, d, 4.0, nsps as i64, on_result);
+
+        let mut fgood = 0.0f32;
+        for i in ia..=ib {
+            if done[i] || !ccfok[i] {
+                continue;
+            }
+            let f = (i - 1) as f32 * DF3;
+            if !(nqd == 1 || (s9.ccfred(i) >= ccflim && (f - fgood).abs() > 10.0 * df8)) {
+                continue;
+            }
+            // The caller's budget, once per `softsym` call (#593).
+            if !gate.proceed() {
+                return found;
+            }
+            let Some(mut d) = decode::decode_at_baseband_gated(&big_fft, f, limit, gates) else {
+                continue;
+            };
+            // The builder reports dt from the buffer origin; dt is defined from the nominal start.
+            d.dt_sec -= nominal_start_sample as f32 / sample_rate as f32;
+            if let Some(cb) = on_result {
+                cb(&d);
+            }
+            found.push(d);
+            fgood = f;
+            let iaa = i.saturating_sub(1).max(1);
+            let ibb = (i + 22).min(s9.ib() + 1);
+            for j in iaa..=ibb {
+                ccfok[j] = false;
+                done[j] = true;
+            }
+        }
     }
-    seen
+    found
 }
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]

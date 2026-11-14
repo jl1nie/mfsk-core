@@ -9,6 +9,7 @@
 use std::path::Path;
 
 use mfsk_core::__internal::jt9::DecodeRequest;
+use mfsk_core::jt9::Jt9Depth;
 use mfsk_core::jt9::search::SearchParams;
 
 #[allow(dead_code)]
@@ -21,112 +22,73 @@ const SAMPLE_PATH: &str = concat!(
     "/../embedded-poc/assets/130418_1742.wav"
 );
 
-// WSJT-X reports JT9 DT from 1.0 s into the minute, where it starts the audio
-// (`Modulator.cpp:163`, `jt9sim.f90:124`; `Jt9::TX_START_OFFSET_S` since #726). This file
-// measures `start_sample` from the beginning of the WAV, so it adds that 1.0 s to each `jt9` DT.
-// (This was 0.91 with a comment that the WAV "starts ~0.91 s before the slot boundary"; it is the
-// 1.0 s reference. `tests/jt_dt_vs_jt9.rs` checks `Decoder`'s DT against `jt9`'s directly.)
-const WAV_PRE_ROLL_SEC: f32 = 1.0;
+/// `Jt9::TX_START_OFFSET_S` (1.0 s, #726): the request measures DT from there, as `jt9` does.
+const NOMINAL: usize = 12_000;
 
-const FREQ_TOL_HZ: f32 = 4.0;
-const DT_TOL_SEC: f32 = 0.5; // ≈ 1 symbol; covers ⅛-sym lag grid + slot-offset uncertainty
-const SNR_TOL_DB: f32 = 4.0;
+const FREQ_TOL_HZ: f32 = 1.0;
+/// `jt9` prints DT to 0.1 s.
+const DT_TOL_SEC: f32 = 0.1;
+/// `jt9` prints SNR to 1 dB; this crate is within 0.5 dB of every row below.
+const SNR_TOL_DB: f32 = 1.0;
 
-/// All seven real signals on this recording. `CQ GM7GAX IO75` is real
-/// WSJT-X GUI output (`reference_jt9_wsjtx_sample_decode.md`, user-
-/// provided 2026-05-06); the other six are a local
-/// `jt9 -9 -p 60 -L 1050 -H 1550 -d 3` CLI run (2026-08-14) — `TF3G
-/// N7MQ CN84` / `K1JT KF4RWA 73` / `CQ M0WAY IO82` / `K1JT N5KDV
-/// EM41` match the original GUI table too; `G7CNF N4HFA EL89` and
-/// `JA1KAU PD0JAC -23` were previously confirmed via JTDX
-/// (2026-05-08) without SNR — the CLI run backfills theirs.
+const fn row(msg: &'static str, freq: f32, dt: f32, snr: f32) -> GoldenEntry {
+    GoldenEntry {
+        msg,
+        freq_hz: Some(freq),
+        dt_sec: Some(dt),
+        snr_db: Some(snr),
+    }
+}
+
+/// `jt9 -9 -p 60 -L 1050 -H 1550 -d 3 -f 1119 -F 20 130418_1742.wav` (the local `jt9` build of 2026-08-12, run 2026-11-14), in
+/// full. The Rx window at 1119 Hz is what decodes `CQ GM7GAX IO75` (the `nqd = 1` pass's lower gates):
+/// without `-f 1119` neither `jt9` nor this crate reports it, and it was in this table from the WSJT-X
+/// GUI's output (2026-05-06), whose Rx frequency was there.
 ///
-/// Six source-faithful fixes under issue #19 lifted recall from 1/5
-/// to 5/5 (see `project_jt9_wsjtx_recall.md`); `DecodeRequest` reaches
-/// full 7/7 recall with zero phantoms as of 2026-08-14 — so the
-/// budget below is 0, not a looser recall-only floor. The `params`
-/// `freq_max_hz` is 1550 Hz (default `SearchParams` is 1400..1600,
-/// which excludes every golden tone here) to bring all seven inside
-/// the search band, including the 1505 Hz signal.
-static JT9_FULL_REFERENCE: &[GoldenEntry] = &[
-    GoldenEntry {
-        msg: "CQ GM7GAX IO75",
-        freq_hz: Some(1119.0),
-        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.0),
-        snr_db: Some(-25.0),
-    },
-    GoldenEntry {
-        msg: "TF3G N7MQ CN84",
-        freq_hz: Some(1186.0),
-        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.0),
-        snr_db: Some(-18.0),
-    },
-    GoldenEntry {
-        msg: "K1JT KF4RWA 73",
-        freq_hz: Some(1224.0),
-        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.1),
-        snr_db: Some(-19.0),
-    },
-    GoldenEntry {
-        msg: "CQ M0WAY IO82",
-        freq_hz: Some(1290.0),
-        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.1),
-        snr_db: Some(-22.0),
-    },
-    GoldenEntry {
-        msg: "K1JT N5KDV EM41",
-        freq_hz: Some(1346.0),
-        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.1),
-        snr_db: Some(-1.0),
-    },
-    GoldenEntry {
-        msg: "G7CNF N4HFA EL89",
-        freq_hz: Some(1461.0),
-        dt_sec: Some(WAV_PRE_ROLL_SEC + 0.0),
-        snr_db: Some(-15.0),
-    },
-    GoldenEntry {
-        msg: "JA1KAU PD0JAC -23",
-        freq_hz: Some(1505.0),
-        dt_sec: Some(WAV_PRE_ROLL_SEC + 1.2),
-        snr_db: Some(-5.0),
-    },
+/// Until #726 this crate reached these seven with its own candidate scan, at other bins: the DTs differed
+/// from `jt9`'s by up to 0.2 s (tolerance was 0.5) and the SNRs by up to 4 dB. Since `jt9::sync9` the
+/// rows are `jt9`'s.
+static JT9_DEEP_RX_1119: &[GoldenEntry] = &[
+    row("CQ GM7GAX IO75", 1119.0, 0.0, -25.0),
+    row("TF3G N7MQ CN84", 1186.0, 0.0, -18.0),
+    row("K1JT KF4RWA 73", 1224.0, 0.0, -18.0),
+    row("CQ M0WAY IO82", 1290.0, 0.1, -22.0),
+    row("K1JT N5KDV EM41", 1346.0, 0.1, -1.0),
+    row("G7CNF N4HFA EL89", 1461.0, -0.2, -15.0),
+    row("JA1KAU PD0JAC -23", 1505.0, 1.2, -5.0),
+];
+
+/// `jt9 -9 -p 60 -L 1050 -H 1550 -d 1` on the same file (same build and date), in full: `ccflim` 3.0
+/// keeps `K1JT N5KDV EM41` out (it decodes from the 1344.0 Hz bin, `ccfred` 2.60), and so `G7CNF N4HFA
+/// EL89` is decoded at another bin, DT 0.0 and -13 dB instead of -0.2 and -15. `-d 2` prints the same.
+static JT9_FAST: &[GoldenEntry] = &[
+    row("TF3G N7MQ CN84", 1186.0, 0.0, -17.0),
+    row("K1JT KF4RWA 73", 1224.0, 0.0, -18.0),
+    row("CQ M0WAY IO82", 1290.0, 0.1, -22.0),
+    row("G7CNF N4HFA EL89", 1461.0, 0.0, -13.0),
+    row("JA1KAU PD0JAC -23", 1505.0, 1.2, -5.0),
 ];
 
 fn jt9_search_params() -> SearchParams {
     SearchParams {
         freq_min_hz: 1050.0,
         freq_max_hz: 1550.0,
-        time_tolerance_early_sec: 1.728,
-        time_tolerance_late_sec: 1.728,
-        score_threshold: 0.05,
-        max_candidates: 200,
+        ..mfsk_core::jt9::search::default_search_params()
     }
 }
 
-/// Recall, precision, and SNR together, in one `assert_golden` call —
-/// see `common::golden`'s module doc for why that is one call and not
-/// three. JT9 had no false-decode guard and no SNR check before this;
-/// this single test replaces what used to be three separate ones
-/// (a message+freq+dt-only recall test, a message-only precision
-/// test, and a standalone SNR-vs-jt9 test covering only 4 of the 7
-/// signals).
-#[test]
-fn jt9_wsjtx_sample_recall_precision_and_snr() {
+fn check(
+    name: &'static str,
+    decodes: &[mfsk_core::jt9::Jt9Result],
+    expected: &'static [GoldenEntry],
+) {
     use common::golden::{DecodeView, GoldenSet, Tolerances, assert_golden};
-
-    let audio = read_wsjtx_wav_f32(Path::new(SAMPLE_PATH));
-    // JT9 transmissions start at the top of the slot — `nominal_start_sample = 0`.
-    let decodes = DecodeRequest::new(&audio, 12_000)
-        .params(jt9_search_params())
-        .decode();
-
     assert_golden(
-        &decodes,
+        decodes,
         &GoldenSet {
-            name: "JT9 130418_1742.wav",
-            expected: JT9_FULL_REFERENCE,
-            min_hits: 7,
+            name,
+            expected,
+            min_hits: expected.len(),
             max_extra: 0,
         },
         Tolerances {
@@ -137,10 +99,39 @@ fn jt9_wsjtx_sample_recall_precision_and_snr() {
         |d| DecodeView {
             msg: d.message.to_string(),
             freq_hz: d.freq_hz,
-            dt_sec: d.start_sample as f32 / 12_000.0,
+            dt_sec: d.dt_sec,
             snr_db: Some(d.snr_db),
         },
     );
+}
+
+/// Recall, precision and DT/SNR against `jt9 -d 3` with an Rx window, every row and nothing else.
+#[test]
+fn jt9_wsjtx_sample_deep_with_rx_window_is_jt9s() {
+    let audio = read_wsjtx_wav_f32(Path::new(SAMPLE_PATH));
+    let decodes = DecodeRequest::new(&audio, 12_000)
+        .nominal_start(NOMINAL)
+        .params(jt9_search_params())
+        .depth(Jt9Depth::Deep)
+        .narrow(1119.0, 20.0)
+        .decode();
+    check(
+        "JT9 130418_1742.wav -d 3 -f 1119 -F 20",
+        &decodes,
+        JT9_DEEP_RX_1119,
+    );
+}
+
+/// The same against `jt9 -d 1`: the shallow depth's `ccflim` is `jt9`'s too.
+#[test]
+fn jt9_wsjtx_sample_fast_is_jt9s() {
+    let audio = read_wsjtx_wav_f32(Path::new(SAMPLE_PATH));
+    let decodes = DecodeRequest::new(&audio, 12_000)
+        .nominal_start(NOMINAL)
+        .params(jt9_search_params())
+        .depth(Jt9Depth::Fast)
+        .decode();
+    check("JT9 130418_1742.wav -d 1", &decodes, JT9_FAST);
 }
 
 /// `DecodeRequest::on_result` callback — real-signal
@@ -158,6 +149,8 @@ fn jt9_scan_streaming_matches_batch_exactly() {
     let on_result = |r: &Jt9Result| streamed.lock().unwrap().push(r.message.to_string());
     let batch = DecodeRequest::new(&audio, 12_000)
         .params(jt9_search_params())
+        .depth(Jt9Depth::Deep)
+        .narrow(1119.0, 20.0)
         .on_result(&on_result)
         .decode();
 

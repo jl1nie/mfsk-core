@@ -1121,7 +1121,9 @@ for row in &result.rows {
 *WSPR・JT9・JT65* は `WsprExtras`、`Jt9Extras`、`Jt65Extras` を取る。3 つとも
 `search: SearchTuning`（`time_tolerance_early_sec`、`time_tolerance_late_sec`、
 `score_threshold`、`max_candidates`。いずれも `Option` で、ブロックの帯域を載せた
-モードの `default_search_params()` の上に重なる）を持つ。WSPR は depth のものを上書きする
+モードの `default_search_params()` の上に重なる）を持つ。JT9 はこの 4 つのどれも読まない。
+JT9 のスキャンは `jt9` のもの（`sync9` と `jt9_decode.f90` のビンのループ）で、ラグの範囲と
+`ccflim` のゲートは本家で固定されている（#726）。WSPR は depth のものを上書きする
 `max_cycles_per_bit` を足す（10000 は `wsprd` 自身の既定で、GUI の Normal と Deep は速度の
 ため 500 に下げる。実測: WSJT-X の golden では 500 だと −23 dB の G8VDQ を失い、10000 だと
 復号する）。JT65 は `chase: Option<ChaseParams>` を足す（既定では Chase デコーダの試行回数は

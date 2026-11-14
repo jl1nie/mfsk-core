@@ -13,13 +13,6 @@ use crate::msg::Jt72Codec;
 use super::Jt9Result;
 use super::softsym::{AudioFft, FSAMPLE_DOWN, afc9, llrs_from_c5, peakdt9, twkfreq_poly};
 
-/// Sync-score gate: peakdt9 returns `(sync_avg/data_avg)−1`. For pure
-/// noise this is ≈ 0; clean JT9 frames sit in the 0.3–10 range. WSJT-X
-/// uses ccfbest > 30 (raw integrated power) on its own scale; the 1.5
-/// threshold here is calibrated from the 130418_1742 sample (golden
-/// signals score 1.5..15, phantoms < 0.8).
-const SYNC_GATE: f32 = 1.5;
-
 /// JT9 Fano-decode depth — mirrors WSJT-X `jt9_decode.f90`'s `ndepth`
 /// cycle-per-bit budget tiers (the `-d`/`--depth` CLI flag, plus
 /// "Decode Again" which uses the deepest tier unconditionally). Only
@@ -141,10 +134,11 @@ pub fn decode_at_baseband_gated(
     }
 
     let c2 = big_fft.downsam9(freq_hz);
-    let (lagpk, sync_score, mut c3) = peakdt9(&c2);
-    if !sync_score.is_finite() || sync_score < SYNC_GATE {
-        return None;
-    }
+    // No gate on `peakdt9`'s score: `jt9` has none (`softsym.f90`). Until #726 this crate gated it at
+    // 1.5 (calibrated on `130418_1742.wav`, phantoms < 0.8) because its own coarse scan offered
+    // candidates `sync9`'s `ccfred`/`red2` gates would not; with those gates in front
+    // (`jt9::sync9`) the 1.5 gate changed no decode on that file at any depth.
+    let (lagpk, _sync_score, mut c3) = peakdt9(&c2);
 
     // WSJT-X-faithful AFC: 3-parameter chi-square optimisation over
     // (frequency, drift, integer-sample time shift). `afc9` mutates

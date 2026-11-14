@@ -23,11 +23,10 @@ use super::Jt9Result;
 use super::decode::Jt9Depth;
 use super::search::{SearchParams, default_search_params};
 
-/// Wide-band JT9 decode request: coarse (freq, time) search over
-/// `params`, then the WSJT-X-faithful `softsym` pipeline (`downsam9` +
-/// `peakdt9` + `symspec2` + Fano) on each candidate in score order,
-/// collapsing duplicates that decode to the same message within ±4 Hz /
-/// ±1 symbol.
+/// Wide-band JT9 decode request, as `jt9_decode.f90` runs it: `sync9` scores every 0.732 Hz bin of
+/// `params`' band, then the bins that pass its gates are tried upwards (the Rx window first, with
+/// [`Self::narrow`]) through `softsym` (`downsam9` + `peakdt9` + `symspec2`) and Fano; a decode marks
+/// the next 22 bins done. Of `params` only the band is read (#726).
 ///
 /// ```no_run
 /// # #[cfg(feature = "internal-testing")] {

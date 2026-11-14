@@ -56,6 +56,11 @@ use crate::engine::search::{SearchWindow, best_lag_in_bin, rank_and_truncate};
 /// search's cost is the whole-buffer spectrogram build, not the
 /// per-bin scan, so the narrow band was buying nothing at all.
 ///
+/// Since #726 the wide-band scan (`DecodeRequest`, `Decoder::<Jt9>`) reads only the band from this:
+/// it runs `jt9`'s own candidate stage (`jt9::sync9`), whose lag range and gates are fixed upstream.
+/// The time window, `score_threshold` and `max_candidates` below are [`coarse_search`]'s, which that
+/// scan no longer calls.
+///
 /// The ±1.728 s window is numerically identical to the previous
 /// `time_tolerance_symbols: 3` (JT9 symbols are 0.576 s), so that was
 /// a unit change, not a behaviour change. `jt9_decode.f90:69-70` reads
