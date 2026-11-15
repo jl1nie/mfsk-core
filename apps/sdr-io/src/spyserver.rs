@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use mfsk_core::iq::IqSampleFormat;
 
-use crate::now_ns;
+use crate::clock::now_ns;
 
 pub const PROTOCOL_VERSION: u32 = (2 << 24) | 1700;
 pub const CMD_HELLO: u32 = 0;
@@ -98,11 +98,11 @@ pub struct Conn {
 /// and costs one reconnect.
 const SLEEP_JUMP: Duration = Duration::from_secs(3);
 
-/// Text of the error [`Conn::read`] returns on waking, which `describe` in lib.rs recognises.
+/// Text of the error [`Conn::read`] returns on waking, which `describe` in skimmer-core's lib.rs recognises.
 pub const SLEPT: &str = "the machine slept";
 
 /// Whether `wall` advanced `SLEEP_JUMP` more than `mono` since the last pass.
-pub(crate) fn slept(mono: Duration, wall: Option<Duration>) -> bool {
+pub fn slept(mono: Duration, wall: Option<Duration>) -> bool {
     wall.is_some_and(|w| w.saturating_sub(mono) >= SLEEP_JUMP)
 }
 
