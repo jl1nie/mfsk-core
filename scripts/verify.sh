@@ -15,7 +15,7 @@
 #              untracked or ignored files): what CI sees. COMMIT FIRST: it tests HEAD, not the
 #              working tree. This is the stage that catches a test that passes here only because a
 #              generated, git-ignored corpus (`embedded-poc/assets/ft4_sweep`, ...) is on this disk.
-#   skimmer    cargo test -p skimmer-core
+#   skimmer    cargo test -p skimmer-core -p sdr-io (sdr-io: the IQ clients moved out of skimmer-core)
 #   esp        cargo check --release in each embedded-poc crate (skipped, and said so, when the
 #              `esp` toolchain is absent)
 #
@@ -136,7 +136,7 @@ if [ "$QUICK" = 0 ]; then
     echo "NOTE  clean: the working tree has uncommitted changes; this stage tests HEAD only"
   fi
   run clean clean_checkout
-  run skimmer cargo test -p skimmer-core
+  run skimmer cargo test -p skimmer-core -p sdr-io
   if [ "$RUN_ESP" = 1 ]; then
     if rustup toolchain list 2>/dev/null | grep -q '^esp'; then
       run esp esp_check
