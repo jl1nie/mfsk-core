@@ -10,6 +10,11 @@
   with no latency an FT4 frame now decodes at DT -0.152 s (this crate's decoder, `tests/encoder.rs`; `jt9` not run).
   A simulator wanting DT = 0 uses the new `engine::tx::dt0_buffer_start` (FT4 5424). C / Swift / Kotlin: same field.
 
+### Skimmer
+
+- **Skimmer 1.1.0 is the skimmer on `mfsk-core` 0.16.1** (tag `skimmer-v1.1.0`; the four version files and `package.json` agree). It takes the library by path, so its receive side gets 0.16.0's: a reported FT8 SNR fitted over the decode band as `jt9` does (SD against `jt9` 1.29 → 0.35 dB on ft8_lib's 22 recordings, #747), FT4 subtraction of `gen_ft4wave`'s frame (#739), JT9 candidates picked as `jt9` does and JT9/JT65 `dt` from 1.0 s (#742), JTTY alias frames refused (#728). Transmit changes do not reach it. Also: the SpyServer and rtl_tcp clients now live in the std-only `sdr-io` crate (no behaviour change intended).
+  Checked: `skimmer-core` and `sdr-io` tests (release), `cargo check` of the workspace; not checked: a live SpyServer / rtl_tcp session, the installers (the tag run builds them).
+
 ## 0.16.0 — every transmit waveform is WSJT-X's own generator's, and one value, `tx_buffer_start`, says where to place it in every mode (breaking for FT4 hosts); JT9 picks its candidates as `jt9` does and JT9/JT65 report DT from WSJT-X's 1.0 s; FT4 subtracts `gen_ft4wave`'s frame; WSJT-X v3.3.0-beta4 → beta6 ported (#726)
 
 WSJT-X v3.3.0-beta4 → beta6, ported (#726): every transmit waveform now follows WSJT-X's own generator, and JT9 decodes as `jt9`
