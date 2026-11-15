@@ -828,7 +828,7 @@ the set). FST4, FST4W and Q65 mean every sub-mode.
 4. The FT family's QSO-context AP (`frame.rs`, `qso_hint`): not read when the mode's `Extras::ap_hint` is set, which replaces it; FT4 and FST4 run no AP at `Depth::Fast`, and FT4 none for a Fox / Hound contest setting.
 5. JT65: only with `deep_search` (the hint bank).
 6. JT65 reads no AP setting: WSJT-X's AP passes (`extract.f90`) are not ported (`jt65/chase.rs`, #703).
-7. WSPR searches the whole of wsprd's baseband (1500 ± 187.5 Hz). `wsprd` takes no band either: its `fmin` / `fmax` are fixed at ±110 Hz (`wsprd.c:781`), a narrowing this port does not apply (`wspr/decode.rs`, #697). `default_params` still sets a band for WSPR, which it ignores.
+7. WSPR searches the whole of wsprd's baseband (1500 ± 187.5 Hz). `wsprd` takes no band either: its `fmin` / `fmax` are fixed at ±110 Hz (`wsprd.c:781`), a narrowing this port applies only when `WsprExtras::freq_span_hz` is set (`wspr/decode.rs`, #697). `default_params` still sets a band for WSPR, which it ignores.
 8. Q65: `rx_freq_hz` / `tol_hz` place the AP-list and averaged q3 decodes (`q65_decode.f90:263-272`), the plain decode searching `band_hz`; `station.call`, the QSO calls, `ap` and `contest` build the AP list only with `ap` not Off, a station call, and `rx_freq_hz` set or `Contest::GridExchange` (the only contest that changes anything).
 9. FT8 also reads `contest` for its message filter (`/R`, `TU; `, §2.6), with or without `ap_hint`.
 10. **Differs from WSJT-X** (#704): upstream reads FST4 / FST4W `emedelay` (`fst4_decode.f90:889-892`), Q65 `nQSOprogress` and `lapcqonly` (`q65_decode.f90:212,235,242`; here `CqOnly` acts as `Full`), and bounds FST4's noise-blanker sweep with `ntol` (`fst4_decode.f90:318-319`; here `Fst4Extras::noise_blanker`'s `Sweep { ftol_hz }`); the port reads none of them. FST4's `contest` is the other way round: the port applies the contest's CQ token and the Fox rule, upstream's FST4 takes no `ncontest`.
@@ -1197,6 +1197,23 @@ default, which the GUI's Normal and Deep lower to 500; measured: on the
 WSJT-X golden 500 loses G8VDQ at −23 dB, which 10000 decodes); JT65 adds
 `chase: Option<ChaseParams>` (by default the Chase decoder's trial count is
 the depth's `nvec`).
+
+*`wsprd` compatibility (WSPR).* The rest of `WsprExtras` mirrors `wsprd`'s options, each an `Option` that, when `Some`,
+replaces that one setting of the depth's mapping (`-qB` / `-C 500 -o 4` / `+ -d`) and leaves the others: `passes`
+(`npasses`, `wsprd.c:825`; `-B` 2, `-s` 1), `subtraction` (`-s` off), `jitter` (`-q` off), `more_candidates` (`-d`),
+`osd_depth` (`-o n`, `wsprd.c:826,1422`: `Some(-1)` none, `Some(0..=5)` `osdwspr` at that depth on every rung of every pass,
+accepting only what the callsign table holds, `wsprd.c:1462-1468`; `None` keeps the depth's own order-2 OSD on the final
+pass), `freq_span_hz` (`fmin` / `fmax`, `wsprd.c:781`, `-w` is ±150; also selects candidates in `wsprd`'s order),
+`dial_error_hz` (`-e`; shifts the window once per pass the loop runs, as `wsprd.c:1172-1176` does) and `fano_bias`
+(`-z`, default 0.45). `WsprExtras::wsprd()` sets every field to bare `wsprd`'s default, so the depth no longer matters;
+`with_*` builders change one. Each `WsprResult` also carries what `wsprd` prints and keeps: `sync`, `pass`, `blocksize`,
+`jitter`, `decode_type`, `nhardmin`, `cycles`, `metric`, `freq_offset_hz`. `Decoder::state()` / `state_mut()` reach the
+`WsprState`, whose `table_mut()` is the `WsprCallsignTable`: `from_hashtable_txt` / `to_hashtable_txt` read and write
+`wsprd`'s `hashtable.txt` (`wsprd.c:1053-1060,1636-1645`) and `iter()` lists it; `wsprd -H` is a caller that does neither.
+`wspr::wsprd_fmt` (`std`) formats the stdout line, the `ALL_WSPR.TXT` line and the `wspr_spots.txt` line byte for byte
+(`wsprd.c:1572-1595`) from a `WsprResult`, the file's date and time and the dial in MHz (`dialfreq - e * 1e-6` with `-e`);
+`in_wsprd_order` sorts as `wsprd` does. Measured against v3.3.0-beta6 on the golden, every option set and `-o 0..5` with a
+preloaded table, byte-equal: `tests/wsprd_beta6_parity.rs`, `docs/notes/WSPRD_PARITY.md`.
 
 **WSPR** decimates the slot to wsprd's 375 Hz baseband and runs
 wsprd's own coarse search and three decode passes there, rather than

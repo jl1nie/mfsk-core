@@ -1129,6 +1129,23 @@ JT9 のスキャンは `jt9` のもの（`sync9` と `jt9_decode.f90` のビン�
 復号する）。JT65 は `chase: Option<ChaseParams>` を足す（既定では Chase デコーダの試行回数は
 depth の `nvec`）。
 
+*`wsprd` 互換（WSPR）。* `WsprExtras` の残りは `wsprd` のオプションに対応し、それぞれ `Option` で、`Some` のとき depth の
+マッピング（`-qB` / `-C 500 -o 4` / `+ -d`）のその設定だけを置き換え、他は変えない: `passes`（`npasses`、`wsprd.c:825`。
+`-B` は 2、`-s` は 1）、`subtraction`（`-s` で off）、`jitter`（`-q` で off）、`more_candidates`（`-d`）、
+`osd_depth`（`-o n`、`wsprd.c:826,1422`。`Some(-1)` は OSD なし、`Some(0..=5)` は全パス・全ラングで `osdwspr` をその深さで
+実行し、コールサイン表にあるものだけを受理する、`wsprd.c:1462-1468`。`None` は depth 自前の最終パスの order-2 OSD）、
+`freq_span_hz`（`fmin` / `fmax`、`wsprd.c:781`、`-w` は ±150。候補を `wsprd` の順で選ぶ指定も兼ねる）、
+`dial_error_hz`（`-e`。`wsprd.c:1172-1176` と同じく、ループが回るパスごとに窓を 1 回ずらす）、`fano_bias`（`-z`、既定 0.45）。
+`WsprExtras::wsprd()` は全フィールドを素の `wsprd` の既定にするので depth は効かなくなり、`with_*` ビルダーが 1 つずつ変える。
+`WsprResult` は `wsprd` が表示・保持する値も持つ: `sync`、`pass`、`blocksize`、`jitter`、`decode_type`、`nhardmin`、`cycles`、
+`metric`、`freq_offset_hz`。`Decoder::state()` / `state_mut()` で `WsprState` に届き、その `table_mut()` が
+`WsprCallsignTable` で、`from_hashtable_txt` / `to_hashtable_txt` が `wsprd` の `hashtable.txt`
+（`wsprd.c:1053-1060,1636-1645`）を読み書きし、`iter()` が一覧する。`wsprd -H` は、どちらもしない呼び出し側である。
+`wspr::wsprd_fmt`（`std`）は stdout の行、`ALL_WSPR.TXT` の行、`wspr_spots.txt` の行を `WsprResult`、ファイルの日付と時刻、
+MHz のダイヤル（`-e` では `dialfreq - e * 1e-6`）からバイト単位で一致して整形する（`wsprd.c:1572-1595`）。
+`in_wsprd_order` は `wsprd` と同じ順に並べる。v3.3.0-beta6 に対し golden 上で、全オプション組と、表を事前に読み込んだ
+`-o 0..5` がバイト一致: `tests/wsprd_beta6_parity.rs`、`docs/notes/WSPRD_PARITY.md`。
+
 **WSPR** はスロットを wsprd と同じ 375 Hz ベースバンドにデシメートし、そこで wsprd 自身の
 粗探索と 3 回のデコードパスを走らせる。共有の FT 系パイプラインとはステージ構成が異なる。
 ただし内部で使っている FEC (`ConvFano`) とメッセージコーデック (`Wspr50Message`) は
