@@ -2,22 +2,19 @@
 
 ## Unreleased
 
-### Added — `wsprd` v3.3.0-beta6 output, reproduced through the public API
+### Added — `wsprd` v3.3.0-beta6 output through the public API
 
-- `WsprExtras::wsprd()` and one `Option` per `wsprd` flag (`passes`, `subtraction`, `jitter`, `more_candidates`, `osd_depth`,
-  `freq_span_hz`, `dial_error_hz`, `fano_bias`); `WsprResult` gains `sync`, `pass`, `blocksize`, `jitter`, `decode_type`,
-  `nhardmin`, `cycles`, `metric`, `freq_offset_hz`; `WsprCallsignTable` reads / writes `hashtable.txt` and lists; `Decoder::state()`
-  / `state_mut()`; `wspr::wsprd_fmt` prints stdout, `ALL_WSPR.TXT` and `wspr_spots.txt` lines. `Depth`'s mapping is unchanged.
-- Measured: 15 option sets plus 9 preloaded-table / `-o 0..5` cases byte-equal to `wsprd` on the golden (`tests/wsprd_beta6_parity.rs`);
-  detail and per-knob mutations in `docs/notes/WSPRD_PARITY.md`.
+- `WsprExtras::wsprd()` and `Option` fields per `wsprd` flag (`passes`, `subtraction`, `jitter`, `more_candidates`, `osd: WsprOsd`,
+  `freq_span_hz`, `dial_error_hz`, `fano_bias`, `replica_from_text`, `wsprd_gates`); new `WsprResult` fields (`sync`, `pass`, `blocksize`,
+  `jitter`, `decode_type`, `nhardmin`, `cycles`, `metric`, `f1_hz`); `hashtable.txt` read / write; `Decoder::state()`; `wspr::wsprd_fmt`.
+- Measured: 24 golden cases and 4 synthetic ones byte-equal to `wsprd` (`tests/wsprd_beta6_parity.rs`, `docs/notes/WSPRD_PARITY.md`).
 
-### Fixed — fidelity to `wsprd.c` (fixes, not features)
+### Fixed — fidelity to `wsprd.c`; **default-path results can change**
 
-- `-s` (one pass, no subtraction) exists; `-B` keeps pass 1 when pass 0 found nothing (only `npasses > 2` skips it, `wsprd.c:1065`);
-  OSD follows `-o` (every rung of every pass, `osdwspr.f90` ported with `indexx.f90`); candidates are windowed to `fmin..fmax`, shifted by `-e`
-  once per pass as the C does; `-z` is a parameter; a decode `unpk_` will not print stops the ladder and counts (`noprint`).
-- Subtraction took the signal centre as `1500 + f1` rounded to `float` (up to 0.04 rad over the frame): W5BIT's subtracted component
-  was 0.3 % off `wsprd`'s, which moved G8VDQ's Fano path under `-z 0.40`. The callsign table is `wsprd`'s 32768 buckets (a colliding call evicts).
+- `-s`, `-B` (pass 1 skipped only with `npasses > 2`), `-o n` (`osdwspr` ported, every rung of every pass), `fmin`/`fmax` with `-e` once per pass, `-z`.
+- Also on the `Depth` path, plainly: (a) subtraction takes `f1` itself, not `1500 + f1` rounded to `f32`; (b) a decode `unpk_` will not print
+  stops the ladder; (c) the callsign table is 32768 buckets, a colliding call evicts, the whole run's table is handed back; (d) `Depth::Fast`
+  runs pass 1 after an empty pass 0. Merge gate and snapshots unchanged; tier C (`wspr`) not run: its corpus is not on this machine.
 
 ## 0.16.1 — FT4 is sent where WSJT-X sends it: `tx_buffer_start` is `Modulator.cpp`'s `delay_ms` (3600 samples, 0.300 s), not the DT = 0 placement (#749)
 

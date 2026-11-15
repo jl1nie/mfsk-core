@@ -806,7 +806,7 @@ FT8 と FT4 は `jt9` のコマンドラインの 200〜4000 Hz、FST4 は GUI �
 4. FT 系の QSO 文脈 AP（`frame.rs`、`qso_hint`）: モードの `Extras::ap_hint` を与えると読まれない（そちらで置き換わる）。FT4 と FST4 は `Depth::Fast` では AP を走らせず、FT4 は Fox / Hound の contest 設定でも走らせない。
 5. JT65: `deep_search` のときだけ（ヒントバンク）。
 6. JT65 は AP の設定を読まない: WSJT-X の AP パス（`extract.f90`）は未移植（`jt65/chase.rs`、#703）。
-7. WSPR は wsprd のベースバンド全体（1500 ± 187.5 Hz）を探す。`wsprd` も帯域を受け取らない: `fmin` / `fmax` は ±110 Hz の固定値で（`wsprd.c:781`）、この移植はその絞り込みをしない（`wspr/decode.rs`、#697）。`default_params` は WSPR にも帯域を設定するが、WSPR はそれを無視する。
+7. WSPR は wsprd のベースバンド全体（1500 ± 187.5 Hz）を探す。`wsprd` も帯域を受け取らない: `fmin` / `fmax` は ±110 Hz の固定値で（`wsprd.c:781`）、この移植はその絞り込みを `WsprExtras::freq_span_hz` を設定したときだけ行う（`wspr/decode.rs`、#697）。`default_params` は WSPR にも帯域を設定するが、WSPR はそれを無視する。
 8. Q65: `rx_freq_hz` / `tol_hz` は AP リストと平均化 q3 デコードの位置を決め（`q65_decode.f90:263-272`）、通常のデコードは `band_hz` を探す。`station.call`・QSO のコールサイン・`ap`・`contest` が AP リストを組み立てるのは、`ap` が Off でなく、自局のコールサインがあり、`rx_freq_hz` が設定されているか `Contest::GridExchange` のとき（何かを変える contest はそれだけ）。
 9. FT8 は `ap_hint` の有無にかかわらず、メッセージフィルタ（`/R`、`TU; `、§2.6）のためにも `contest` を読む。
 10. **WSJT-X と異なる**（#704）: 本家は FST4 / FST4W の `emedelay`（`fst4_decode.f90:889-892`）、Q65 の `nQSOprogress` と `lapcqonly`（`q65_decode.f90:212,235,242`。ここでは `CqOnly` は `Full` と同じに働く）を読み、FST4 のノイズブランカのスイープ幅を `ntol` で決める（`fst4_decode.f90:318-319`。ここでは `Fst4Extras::noise_blanker` の `Sweep { ftol_hz }`）。この移植はどれも読まない。FST4 の `contest` は逆で、移植は contest の CQ トークンと Fox の規則を当てるが、本家の FST4 は `ncontest` を受け取らない。
@@ -1132,19 +1132,27 @@ depth の `nvec`）。
 *`wsprd` 互換（WSPR）。* `WsprExtras` の残りは `wsprd` のオプションに対応し、それぞれ `Option` で、`Some` のとき depth の
 マッピング（`-qB` / `-C 500 -o 4` / `+ -d`）のその設定だけを置き換え、他は変えない: `passes`（`npasses`、`wsprd.c:825`。
 `-B` は 2、`-s` は 1）、`subtraction`（`-s` で off）、`jitter`（`-q` で off）、`more_candidates`（`-d`）、
-`osd_depth`（`-o n`、`wsprd.c:826,1422`。`Some(-1)` は OSD なし、`Some(0..=5)` は全パス・全ラングで `osdwspr` をその深さで
-実行し、コールサイン表にあるものだけを受理する、`wsprd.c:1462-1468`。`None` は depth 自前の最終パスの order-2 OSD）、
-`freq_span_hz`（`fmin` / `fmax`、`wsprd.c:781`、`-w` は ±150。候補を `wsprd` の順で選ぶ指定も兼ねる）、
-`dial_error_hz`（`-e`。`wsprd.c:1172-1176` と同じく、ループが回るパスごとに窓を 1 回ずらす）、`fano_bias`（`-z`、既定 0.45）。
-`WsprExtras::wsprd()` は全フィールドを素の `wsprd` の既定にするので depth は効かなくなり、`with_*` ビルダーが 1 つずつ変える。
-`WsprResult` は `wsprd` が表示・保持する値も持つ: `sync`、`pass`、`blocksize`、`jitter`、`decode_type`、`nhardmin`、`cycles`、
-`metric`、`freq_offset_hz`。`Decoder::state()` / `state_mut()` で `WsprState` に届き、その `table_mut()` が
-`WsprCallsignTable` で、`from_hashtable_txt` / `to_hashtable_txt` が `wsprd` の `hashtable.txt`
-（`wsprd.c:1053-1060,1636-1645`）を読み書きし、`iter()` が一覧する。`wsprd -H` は、どちらもしない呼び出し側である。
-`wspr::wsprd_fmt`（`std`）は stdout の行、`ALL_WSPR.TXT` の行、`wspr_spots.txt` の行を `WsprResult`、ファイルの日付と時刻、
-MHz のダイヤル（`-e` では `dialfreq - e * 1e-6`）からバイト単位で一致して整形する（`wsprd.c:1572-1595`）。
-`in_wsprd_order` は `wsprd` と同じ順に並べる。v3.3.0-beta6 に対し golden 上で、全オプション組と、表を事前に読み込んだ
-`-o 0..5` がバイト一致: `tests/wsprd_beta6_parity.rs`、`docs/notes/WSPRD_PARITY.md`。
+`osd: Option<WsprOsd>`（`-o n`、`wsprd.c:826,1422`。`WsprOsd::Off` は OSD なし、`Wsprd(0..=5)` は全パス・全ラングで `osdwspr` を
+その深さで実行し、コールサイン表にあるものだけを受理する、`wsprd.c:1462-1468`、5 を超える深さは 5。既定の `Crate` は depth 自前の
+最終パスの order-2 OSD で、`wsprd -o 0..5` のどれとも一致しない）、`freq_span_hz`（`fmin` / `fmax`、`wsprd.c:781`、`-w` は ±150。
+候補を `wsprd` の順で選ぶ指定も兼ねるので、`search.max_candidates` は、このとき強い順の N 個ではなく、周波数順の先頭 N 個のスペクトル
+ピーク、その後に窓、の意味になる）、`dial_error_hz`（`-e`。`wsprd.c:1172-1176` と同じく、ループが回るパスごとに窓を 1 回ずらす。
+`freq_span_hz` が未設定なら `wsprd` の ±110 Hz の窓を意味する）、`fano_bias`（`-z`、既定 0.45）、`replica_from_text`、`wsprd_gates`。
+`replica_from_text` は `wsprd` の減算（`wsprd.c:1497-1503`）を再現する: 信号を*表示テキスト*から作り直すので、表にない Type 3
+（`<...>`）は `nhash("...")` の符号語、つまり誤った符号語として減算され、`nhardmin` もそれに対して数えられ、作り直しが拒むテキストは
+そのパスの候補ループを打ち切り、11〜12 文字のハッシュ化コールサイン（`unpk_` の 13 バイトのバッファに入らない）は表示されない。
+off では復号した符号語を減算する。これは正しく、意図的な相違である。`wsprd_gates` は、量子化したソフトシンボルに対する `wsprd` の
+RMS ゲート（`wsprd.c:1400-1408`）と重複規則（同じコールサイン文字列で 4 Hz 以内、最大 50 件、`wsprd.c:1506-1516`）をこのクレート自前の
+ものの代わりに使う。`WsprExtras::wsprd()` は全フィールドを素の `wsprd` の既定にするので depth は効かなくなり、`with_*`
+ビルダーが 1 つずつ変える。`WsprResult` は `wsprd` が表示・保持する値も持つ: `sync`、`pass`、`blocksize`、`jitter`、`decode_type`、
+`nhardmin`、`cycles`、`metric`、`f1_hz`（4 トーンの中心の 1500 Hz からのオフセット、`wsprd` の `f1`）。`Decoder::state()` /
+`state_mut()`（モードに対して汎用。最も侵襲の小さいアクセサ）で `WsprState` に届き、その `table_mut()` が `WsprCallsignTable` で、
+`from_hashtable_txt` / `to_hashtable_txt` が `wsprd` の `hashtable.txt`（`wsprd.c:1051-1060,1637-1645`）を読み書きし、`iter()` が
+一覧する。`wsprd -H` は、どちらもしない呼び出し側である。`wspr::wsprd_fmt`（`std`）は stdout の行、`ALL_WSPR.TXT` の行、
+`wspr_spots.txt` の行を `WsprResult`、ファイルの日付と時刻、MHz のダイヤル（`-e` では `dialfreq - e * 1e-6`）からバイト単位で
+一致して整形する（`wsprd.c:1577-1594`）。`in_wsprd_order` は `wsprd` と同じ順に並べる。v3.3.0-beta6 に対してバイト一致: golden の
+全オプション組と、表を事前に読み込んだ `-o 0..5`、および Type 3 の置き換え信号・13 バイト制限・`-B -e` の合成録音
+（`tests/wsprd_beta6_parity.rs`、`docs/notes/WSPRD_PARITY.md`）。
 
 **WSPR** はスロットを wsprd と同じ 375 Hz ベースバンドにデシメートし、そこで wsprd 自身の
 粗探索と 3 回のデコードパスを走らせる。共有の FT 系パイプラインとはステージ構成が異なる。

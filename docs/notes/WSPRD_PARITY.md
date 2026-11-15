@@ -30,7 +30,7 @@ old order-2 sweep matches none of them. So `osdwspr.f90` and `indexx.f90` (whose
 | # | `wsprd.c` | what |
 |---|---|---|
 | 1 | `-s` (npasses 1, no subtraction) | did not exist |
-| 2 | `ipass==1 && ndecodes_pass==0 && npasses>2` | `-B` stopped after an empty pass 0; the C keeps pass 1 (unobservable on any recording: pass 1 on unchanged data finds nothing) |
+| 2 | `ipass==1 && ndecodes_pass==0 && npasses>2` | `-B` stopped after an empty pass 0; the C keeps pass 1. Unobservable with a fixed window (pass 1 on unchanged data finds nothing), observable with `-e`, which moves the window between the passes: fixture `far_B_e10` (a call at f1 -126 Hz, outside the window on pass 0, inside on pass 1) |
 | 3 | `ndepth >= 0` | OSD always on, final pass only, its own algorithm; now `-o`, every rung of every pass, `osdwspr` |
 | 4 | `fmin`/`fmax` -110..110, `-w` ±150, `fmin += dialfreq_error` | no window; the C adds `-e` **inside the pass loop**, so it accumulates (window `-110+e`, `-110+2e`, `-110+3e`): ported and marked |
 | 5 | `-z` | constant |
@@ -58,23 +58,63 @@ Run with the final tree, one mutation at a time, `cargo test --release --test ws
 | `-o` every pass | OSD final pass only | `pre_o0`..`pre_o5`, `pre_C500_o4_d` |
 | `-o -1` is none | run OSD at depth 0 | `pre` |
 | window | ignore `freq_span_hz` | `f_e60` |
-| default span | ±50 instead of ±110 | every case on the default span except `f_w` (ND6P at -98 Hz is lost); run before `f_B`, `f_q`, `f_e45` existed |
-| `-e` accumulation | shift the window once | `f_e45` |
+| default span | ±50 instead of ±110 | every case on the default span except `f_w` (ND6P at -98 Hz is lost), including `f_B`, `f_q`, `f_e45`, `far_*` (re-run with them present) |
+| `-e` accumulation | shift the window once | `f_e45`, `far_B_e10`, `far_e10` |
+| `-B` keeps pass 1 | skip it after an empty pass 0 for `-B` too | `far_B_e10` |
+| `-e` implies the span | no implied window | `dial_error_implies_the_span` |
 | subtraction centre | `1500 + f1` through `float` | `f_z040`, `f_C500_o4_d`, `pre_C500_o4_d` |
 | Fano `nhardmin` | count without subtraction | `f_s`, `pre_o4_s` |
+| Type 3 replica | subtract the decoded bits | `t3`, `depth_path_subtracts_the_decoded_codeword`, `the_replica_is_rebuilt_from_the_printed_text` |
+| `nhardmin` vs the replica | not counted | `t3` |
+| 13-byte hashed-call limit | 12 instead of 10 | `t3_long` |
+| `wsprd` duplicate rule | never fires | `t3`, `depth_path_subtracts_the_decoded_codeword` |
+| OSD `Break` | `continue` instead of leaving the DT loop | `ladder_tests::an_unpackable_osd_codeword_ends_the_dt_loop` |
+| table eviction | buckets that do not collide | `a_colliding_call_evicts_the_earlier_one`, `type2_keeps_the_buckets_locator` |
+| Type 2 locator | Type 2 clears the locator | `type2_keeps_the_buckets_locator` |
 | formatter | drift rounded; sync rounded; `cycles / 80`; index width 4 | all rows / `hashtable_round_trip` |
 
-Not distinguishable on this recording (mutation stays green), stated rather than hidden: `-w` (every peak the golden has lies
-inside ±110 Hz), the `-B` pass-1 rule, and the `noprint` ladder stop (no decode the golden makes is refused by `unpk_`). They are
-ported from the C text and covered by nothing but reading.
+Not distinguishable on any recording used (mutation stays green), stated rather than hidden: `-w` (every peak the golden has lies
+inside ±110 Hz), and the quantised RMS gate (`wsprd_gates`: the float and quantised RMS differ only within a quantisation step of
+the threshold). The `noprint` ladder stop and the replica-refusal `break` are covered by reading and by the unit test of
+`replica_info_from_text`, not by a fixture. Mutations were run with `--no-fail-fast` (a failing unit test otherwise hides the
+integration binary).
 
-## Known remaining differences (not exercised by the fixtures)
+## `wsprd` mode and the `Depth` path
 
-- Duplicates: `wsprd` drops a decode with the same call within 4 Hz of an earlier one; the crate keeps its own rule (same message,
-  5 Hz, one symbol) and has no `-v`, nor the 50-decode cap.
-- `wsprd.c:1259`: a candidate whose refined sync stays at or below `minsync1` keeps its *coarse* frequency, shift and sync; the
-  crate drops it.
+`WsprExtras::wsprd()` sets `replica_from_text` and `wsprd_gates` besides the options; the `Depth` path keeps its own behaviour in
+those three places and marks each at the code (CLAUDE.md §2.1):
+
+- **Subtraction replica** (`wsprd.c:1497-1503`): `wsprd` rebuilds the signal from the printed text, so a Type 3 whose call is not in
+  the table is subtracted as the codeword of `nhash("...")`, counts `nhardmin` against it, and a text the rebuild refuses ends the
+  pass's candidate loop; a hashed call of 11 or 12 characters does not fit `unpk_`'s 13 bytes and is not printed. Measured on a
+  synthetic recording (`<K1ABC> FN42AB 37` at -5 dB, `W1AW FN31 30` at -27 dB 3 Hz above): `wsprd` prints only the Type 3, `nhardmin` 48,
+  and never hears W1AW; the `Depth` path subtracts the right codeword and hears both (`depth_path_subtracts_the_decoded_codeword`).
+  Fixtures `t3` and `t3_long` (an 11-character call in the same bucket: nothing printed). The recording is made by
+  `tests/common/wspr_t3.rs` (integer xorshift noise, the crate's synthesiser), written by `examples/gen_wsprd_t3_wav.rs` for
+  `gen_fixtures.sh` and rebuilt in memory by the test: only `wsprd`'s outputs are vendored, no WAV. Its `sin` is the one platform
+  dependence (a last-bit difference in a sample).
+- **RMS gate** (`wsprd.c:1400-1408`) on the quantised symbols (the Depth path reads the floats), and the **duplicate rule**
+  (`wsprd.c:1506-1516`: same call text within 4 Hz, no time test, at most 50), under `wsprd_gates`.
+- **OSD**: the crate's own order-2 sweep (final pass) versus `osdwspr` (`WsprOsd::Wsprd`).
+
+## Known remaining differences (each marked at its code)
+
+- `wsprd.c:1325-1343`: a candidate whose refined sync stays at or below `minsync1` keeps its *coarse* frequency, shift and sync in
+  `wsprd`; the crate drops it, on every path (`refine_cascade`).
 - `fano()` reports a timeout when the search converges on its very last cycle; the crate calls that converged.
-- OSD acceptance: the C's probe (`unpackcall` / `unpackgrid` / `unpackpfx` failing breaks the DT loop; `ntype` outside 0..62 is skipped) is
-  ported as `msg::wspr::osd_probe`; a Type 2 with an implausible power is accepted by the gate and then `NoPrint`, as in the C.
-- The default `Depth` mapping still runs the crate's own OSD (final pass, order-2 sweep): left as it was on request.
+- OSD acceptance: the C's probe (`unpackcall` / `unpackgrid` / `unpackpfx` failing breaks the DT loop; `ntype` outside 0..62 is
+  skipped) is `msg::wspr::osd_probe`; a Type 2 with an implausible power is accepted by the gate and then `NoPrint`, as in the C.
+  The Break path is tested by `ladder_tests::an_unpackable_osd_codeword_ends_the_dt_loop`.
+- The grid half of the replica of a Type 3 (`pack_call` of the rotated six-character grid) is taken to round-trip; it does for any
+  grid `unpk_` prints (two letters, two digits).
+- The `wspr-pass2-topn` embedded final pass fills `sync` (its refined sync) and `pass` (2) but none of the other new fields beyond
+  what its ladder gives, and it neither subtracts nor deduplicates in `wsprd`'s way.
+
+## Follow-ups
+
+- `embedded-poc/embedded-shared/src/apps/wspr_scan.rs` still subtracts through `subtract_signal_baseband` with `1500 + f1` rounded
+  to `f32` (marked there). Moving it to `subtract_signal_baseband_at` changes the CoreS3's runtime path, so it needs a flash and a
+  captured log (`embedded-poc/CLAUDE.md`); not done here.
+- Tier C (`scripts/run-sensitivity-sweeps.sh wspr`) before the next release: the default-path changes listed in the CHANGELOG
+  (subtraction centre, `noprint`, table buckets, `Depth::Fast` pass 1) touch code every WSPR sweep exercises; the corpus is not on
+  the machine this was developed on.
