@@ -24,8 +24,9 @@
 //!
 //! **Time.** SpyServer sends no timestamps; see [`anchor`].
 
-pub mod anchor;
-pub mod clock;
+// The IQ clients, the clock and the anchor live in `sdr-io` (std only, for front ends that need
+// none of this crate's store, uploader or modes), re-exported at their old paths.
+pub use sdr_io::{anchor, clock, rtltcp, spyserver};
 pub mod fake;
 pub mod geo;
 #[cfg(test)]
@@ -36,9 +37,7 @@ pub mod plan;
 pub mod pskreporter;
 #[cfg(test)]
 mod recorded_iq;
-pub mod rtltcp;
 pub mod spot;
-pub mod spyserver;
 pub mod store;
 pub mod sun;
 #[cfg(test)]

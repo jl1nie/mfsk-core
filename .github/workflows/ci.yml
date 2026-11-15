@@ -133,6 +133,7 @@ jobs:
               - 'mfsk-core/examples/**'
               - 'mfsk-core/benches/**'
               - 'mfsk-ffi/**'
+              - 'apps/sdr-io/**'
               - 'apps/skimmer/core/**'
               - 'apps/skimmer/cli/**'
               - 'wasm-smoke/**'
@@ -698,11 +699,16 @@ jobs:
       - name: cargo test -p mfsk-app-shared-hosttest
         run: cargo test -p mfsk-app-shared-hosttest --release
 
-      # The SpyServer skimmer's shared core (`apps/skimmer/core`): protocol
-      # parsing, the stream planner, the anchor estimator. Lint already
+      # The SpyServer skimmer's shared core (`apps/skimmer/core`): the
+      # stream planner, the session loop, the store. Lint already
       # covers it as a workspace member; nothing else would run its tests.
       - name: cargo test -p skimmer-core
         run: cargo test -p skimmer-core --release
+
+      # The IQ clients skimmer-core builds on (`apps/sdr-io`): SpyServer and rtl_tcp
+      # framing, the NTP clock, the anchor. Split out of skimmer-core, so its tests went with it.
+      - name: cargo test -p sdr-io
+        run: cargo test -p sdr-io --release
 
       - name: Build mfsk-ffi
         run: cargo build -p mfsk-ffi --release

@@ -1,9 +1,10 @@
 [workspace]
 members  = [
     "mfsk-core", "mfsk-ffi", "mfsk-ffi-abi", "hosttest/mfsk-app-shared",
-    # Sample apps: mfsk-skimmer's shared core and its CLI. The
+    # Sample apps: mfsk-skimmer's shared core and its CLI, and the
+    # std-only IQ clients they build on (`apps/sdr-io`). The
     # Tauri GUI beside them (`apps/skimmer/gui`) is excluded below.
-    "apps/skimmer/core", "apps/skimmer/cli",
+    "apps/sdr-io", "apps/skimmer/core", "apps/skimmer/cli",
 ]
 # `embedded-poc/*` are stand-alone Cargo projects targeting embedded
 # MCUs (ESP32-S3, RP2350, …) with their own toolchain (`+esp` for

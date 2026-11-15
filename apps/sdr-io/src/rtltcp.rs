@@ -24,7 +24,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use mfsk_core::iq::IqSampleFormat;
 
-use crate::now_ns;
+use crate::clock::now_ns;
 use crate::spyserver::{MSG_INT16_IQ, MSG_UINT8_IQ, Message, SLEPT, STALL};
 
 /// What the user asks the sample format to be. The server decides it (with `rsp_tcp`, by
@@ -307,7 +307,7 @@ impl Drop for Conn {
 /// 1 s of time in a minute, which the receiver took for a clock step each time (#685). A least-squares
 /// line through (arrival time, samples so far) per message; the slope is the rate.
 ///
-/// A pause (no message for over [`PAUSE_NS`], the 1.4 s `rsp_tcp` resets) is taken out of the time axis
+/// A pause (no message for over `PAUSE_NS`, the 1.4 s `rsp_tcp` resets) is taken out of the time axis
 /// but for one message interval: left in, it reads as a lower rate (a pause inside the 30 s window moved
 /// the rate 1.7-2.0 % and cut FT8 decodes to 10-70 %, RTLTCP_EVAL_PLAN.md 10.5).
 #[derive(Clone, Debug, Default)]

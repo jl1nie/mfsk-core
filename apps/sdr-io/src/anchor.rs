@@ -36,7 +36,8 @@ impl AnchorEstimate {
     }
 
     /// [`Self::push`] with the time the stream had run as the caller knows it: the receiver's own
-    /// ([`IqReceiver::elapsed_ns`](mfsk_core::iq::IqReceiver::elapsed_ns)), which follows a rate offset
+    /// (`mfsk_core::iq::IqReceiver::elapsed_ns`, not linked: this crate builds mfsk-core without
+    /// the FFT and modes `IqReceiver` needs), which follows a rate offset
     /// that is learned and changes. `samples` still bounds the window.
     pub fn push_elapsed(&mut self, samples: u64, elapsed_ns: i64, arrival_ns: i64) -> i64 {
         let cand = arrival_ns - elapsed_ns;
