@@ -650,8 +650,9 @@ fn wspr_diag_candidate_cost_split() {
     let sample_rate = 12_000u32;
     let max_drift = 4i32;
 
-    // Mirror decode_scan's own NEGATIVE_DT_PAD_SEC padding exactly so
-    // candidate counts/alignment match the production path.
+    // 3.0 s of front padding, as the embedded pipelines do (`wspr_scan::PAD_AUDIO`). The host
+    // `decode_scan` no longer pads (after 0.16.1), so this bench's candidate counts and alignments
+    // are the embedded path's, not the host scan's.
     let pad = (3.0 * sample_rate as f32) as usize;
     let mut padded = vec![0.0f32; pad + audio.len()];
     padded[pad..].copy_from_slice(&audio);
@@ -1011,10 +1012,10 @@ fn wspr_bake_golden_baseband() {
     let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
     let sample_rate = 12_000u32;
 
-    // Mirror decode_scan_inner's NEGATIVE_DT_PAD_SEC padding exactly:
-    // the baked baseband must be sample-for-sample what the production
-    // path hands the candidate loop, or every `start_sample` the bench
-    // feeds `decode_at_baseband*` is off by `pad / 32`.
+    // The embedded pipelines' 3.0 s of front padding (`wspr_scan::PAD_AUDIO`): the baked baseband
+    // must be sample-for-sample what they hand the candidate loop, or every `start_sample` the
+    // bench feeds `decode_at_baseband*` is off by `pad / 32`. The host `decode_scan` no longer
+    // pads (after 0.16.1).
     let pad = (3.0 * sample_rate as f32) as usize;
     let mut padded = vec![0.0f32; pad + audio.len()];
     padded[pad..].copy_from_slice(&audio);

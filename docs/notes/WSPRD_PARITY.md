@@ -100,8 +100,12 @@ those three places and marks each at the code (CLAUDE.md §2.1):
 
 ## Known remaining differences (each marked at its code)
 
-- `wsprd.c:1325-1343`: a candidate whose refined sync stays at or below `minsync1` keeps its *coarse* frequency, shift and sync in
-  `wsprd`; the crate drops it, on every path (`refine_cascade`).
+- `wsprd.c:1325-1343`: a candidate whose refined sync stays at or below `minsync1` keeps its *coarse* frequency, shift, drift and sync,
+  and `minsync2` is tested on the coarse sync. The scan (`refine_candidate`) does the same. The point decode
+  (`decode_at_baseband_inner`) has no coarse sync to fall back on and still drops such a candidate on its refined sync. The pass-2 ranking
+  (`rank_pass2_candidates`, the embedded `wspr-pass2-topn` path) holds the coarse candidate and could do the same; it is left because it
+  changes the CoreS3's runtime path (needs a flash and a captured log). `docs/notes/sweep-baseline.json` still says `wspr/awgn` -31.4; the
+  crossing is now -31.44, to be taken at the release sweep.
 - `fano()` reports a timeout when the search converges on its very last cycle; the crate calls that converged.
 - OSD acceptance: the C's probe (`unpackcall` / `unpackgrid` / `unpackpfx` failing breaks the DT loop; `ntype` outside 0..62 is
   skipped) is `msg::wspr::osd_probe`; a Type 2 with an implausible power is accepted by the gate and then `NoPrint`, as in the C.
@@ -123,6 +127,33 @@ those three places and marks each at the code (CLAUDE.md §2.1):
 - `embedded-poc/embedded-shared/src/apps/wspr_scan.rs` still subtracts through `subtract_signal_baseband` with `1500 + f1` rounded
   to `f32` (marked there). Moving it to `subtract_signal_baseband_at` changes the CoreS3's runtime path, so it needs a flash and a
   captured log (`embedded-poc/CLAUDE.md`); not done here.
-- Tier C (`scripts/run-sensitivity-sweeps.sh wspr`) before the next release: the default-path changes listed in the CHANGELOG
-  (subtraction centre, `noprint`, table buckets, `Depth::Fast` pass 1) touch code every WSPR sweep exercises; the corpus is not on
-  the machine this was developed on.
+- Tier C (`scripts/run-sensitivity-sweeps.sh wspr`) before the next release: the default-path changes listed in the CHANGELOG touch code
+  every WSPR sweep exercises. The corpus (`embedded-poc/assets/wspr_sweep`, 716 MB) is on the machine this was run on: see the next
+  section for what it measured.
+
+## Against `wsprd` on the AWGN sweep (2026-11-15)
+
+`wsprd` v3.3.0-beta6 (`scripts/wsprd/build_wsprd.sh`) and `Decoder<Wspr>` on the 260 files of `wspr_sweep` (one message, `JL1NIE PM95 37`,
+at 1500 Hz, 13 SNRs × 20 files), default options, file by file:
+
+| | -29 dB | -30 | -31 | -32 | -34 | crossing |
+|---|---|---|---|---|---|---|
+| `wsprd` | 20 | 19 | 14 | 5 | 0 | -31.44 dB |
+| crate, `minsync1` rule not ported (0.16.1) | 20 | 19 | 14 | 4 (`wsprd` also has m32_10) | 0 | -31.40 dB |
+| crate, rule ported, front pad kept | 20 | 19 | 14 | 6 (also m32_09, `wsprd` does not) | 0 | -31.50 dB |
+| crate, rule ported, no front pad | 20 | 19 | 14 | 5 | 0 | -31.44 dB |
+
+In the last row the set of decoded files equals `wsprd`'s in every cell. Where the two earlier rows differed, `wsprd` was instrumented
+(a copy of `wsprd.c` with `fprintf` at the candidate loop, not committed): m32_10 has coarse sync 0.10114 and refined 0.08997, so it
+passes the final pass's `minsync2` (0.10) only on its coarse sync, which the crate threw away; m32_09 has coarse sync 0.09791, below
+0.10, and the crate's was 0.10070 because of the front pad. The crate's `coarse_baseband` on the unpadded audio gives 0.09791 and 0.10114
+exactly; the refined syncs (0.09210, 0.08997) matched `wsprd` to five digits all along. Why the pad moves the value in the coarse sync is not measured here. It also moved the reported SNR: the nine golden SNRs
+of `150426_0918.wav` equal `wsprd`'s float `snr` (a copy of `wsprd.c` printing `decodes[i].snr`) to four decimals without the pad and were
+0.010-0.121 dB off with it (`G8VDQ IO91 37` -23.149 vs `wsprd` -23.2695). Why is not measured: the pad shifts every spectrogram row, and the
+old buffer was also cut 3 s short at the end of the recording.
+
+The six files at -31 dB that neither decoder finds (m31_04, 05, 09, 13, 16, 19) fall into three groups, from a throw-away trace of the
+ladder: 05 and 19 stop at `minsync2` (refined 0.093); 04, 13 and 16 pass it and exhaust the ladder (17 jitters × the rungs, each Fano
+run using its whole 10 000 cycles/bit); in 09 the ladder accepts a false codeword (`NM2MDB GO19 37`, pass 0, rung 1, jitter -32) before
+the right one, and `wsprd` prints the same. The one phantom of the sweep is that file. A point decode at the right alignment finds the
+real message in 09, so the signal is there; the gap is the ladder's order, as in `wsprd`.

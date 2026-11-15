@@ -506,6 +506,7 @@ fn run_pass2_job(job: Box<Pass2Job>) -> Option<WsprResult> {
     // `WsprPass2Candidate`'s contract for this one caller.
     let stand_in = BasebandCandidate {
         start_sample: 0,
+        lag_baseband: 0,
         freq_hz: job.freq,
         drift_hz: job.drift,
         sync: job.sync,
