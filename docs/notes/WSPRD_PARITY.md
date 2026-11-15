@@ -104,7 +104,8 @@ those three places and marks each at the code (CLAUDE.md §2.1):
   and `minsync2` is tested on the coarse sync. The scan (`refine_candidate`) does the same. The point decode
   (`decode_at_baseband_inner`) has no coarse sync to fall back on and still drops such a candidate on its refined sync. The pass-2 ranking
   (`rank_pass2_candidates`, the embedded `wspr-pass2-topn` path) holds the coarse candidate and could do the same; it is left because it
-  changes the CoreS3's runtime path (needs a flash and a captured log). `docs/notes/sweep-baseline.json` still says `wspr/awgn` -31.4; the
+  changes what the embedded WSPR bench (`m5stack-s3`'s `wspr-bench`) measures; no app runs WSPR on a board any more (the CoreS3 receiver was
+  removed, 2026-09-30). `docs/notes/sweep-baseline.json` still says `wspr/awgn` -31.4; the
   crossing is now -31.44, to be taken at the release sweep.
 - `fano()` reports a timeout when the search converges on its very last cycle; the crate calls that converged.
 - OSD acceptance: the C's probe (`unpackcall` / `unpackgrid` / `unpackpfx` failing breaks the DT loop; `ntype` outside 0..62 is
@@ -125,8 +126,8 @@ those three places and marks each at the code (CLAUDE.md §2.1):
 ## Follow-ups
 
 - `embedded-poc/embedded-shared/src/apps/wspr_scan.rs` still subtracts through `subtract_signal_baseband` with `1500 + f1` rounded
-  to `f32` (marked there). Moving it to `subtract_signal_baseband_at` changes the CoreS3's runtime path, so it needs a flash and a
-  captured log (`embedded-poc/CLAUDE.md`); not done here.
+  to `f32` (marked there). Moving it to `subtract_signal_baseband_at` changes the numbers the embedded WSPR bench (`m5stack-s3`'s
+  `wspr-bench`) reports, and the bench is run on a board (`embedded-poc/CLAUDE.md`); not done here.
 - Tier C (`scripts/run-sensitivity-sweeps.sh wspr`) before the next release: the default-path changes listed in the CHANGELOG touch code
   every WSPR sweep exercises. The corpus (`embedded-poc/assets/wspr_sweep`, 716 MB) is on the machine this was run on: see the next
   section for what it measured.

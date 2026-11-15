@@ -580,8 +580,9 @@ fn refine_cascade(
     // (`refine_candidate`) does the same. The point decode (`decode_at_baseband_inner`) has no
     // coarse sync to fall back on and still drops such a candidate on its refined sync. The pass-2
     // ranking (`rank_pass2_candidates`, the embedded `wspr-pass2-topn` path) does hold the coarse
-    // candidate and could do the same; it is left because it changes the CoreS3's runtime path,
-    // which needs a flash and a captured log.
+    // candidate and could do the same; it is left because it changes what the embedded WSPR bench
+    // (`m5stack-s3`'s `wspr-bench`) measures. No app runs WSPR on a board any more (the CoreS3
+    // receiver was removed, 2026-09-30).
     if best_sync > MINSYNC1 {
         #[cfg(feature = "instrument")]
         super::instrument::bump(&super::instrument::MINSYNC1_PASS);
