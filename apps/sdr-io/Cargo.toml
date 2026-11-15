@@ -1,0 +1,14 @@
+[package]
+name        = "sdr-io"
+# Its own version, as the skimmer crates have theirs: `publish = false`, used by path.
+version     = "0.1.0"
+rust-version.workspace = true
+edition     = "2024"
+license     = "GPL-3.0-only"
+publish     = false
+description = "Std-only IQ clients (SpyServer, rtl_tcp), NTP-corrected UTC and the stream time anchor, shared by mfsk-skimmer and lighter IQ front ends."
+
+[dependencies]
+# Only `mfsk_core::iq::IqSampleFormat` is used, which no feature gates: no protocol, no FFT.
+# No version requirement on the path dependency, as in skimmer-core.
+mfsk-core = { path = "../../mfsk-core", default-features = false }

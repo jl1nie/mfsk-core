@@ -22,6 +22,8 @@ mfsk-core = { path = "../../../mfsk-core", default-features = false, features = 
     "std", "parallel", "fft-rustfft",
     "ft8", "ft4", "fst4", "wspr", "jt9", "jt65", "q65", "jtty",
 ] }
+# The IQ clients (SpyServer, rtl_tcp), the clock and the stream anchor, std only.
+sdr-io = { path = "../../sdr-io" }
 
 [dev-dependencies]
 serde_json = "1"

@@ -8,7 +8,7 @@ name: Skimmer installers
 #     `skimmer-vX.Y.Z` tag and attaches the results to that release. The
 #     library's `release.yml` no longer does (2026-10-11).
 #   - By hand: `workflow_dispatch`, for the installers of a branch at any time.
-#   - A pull request that touches `apps/skimmer/**`. `ci.yml` excludes
+#   - A pull request that touches `apps/skimmer/**` or `apps/sdr-io/**`. `ci.yml` excludes
 #     `apps/skimmer/gui/**` because it needs a webview and Node, so before
 #     this workflow the GUI was built only by hand, on Windows.
 #
@@ -37,6 +37,8 @@ on:
   pull_request:
     paths:
       - 'apps/skimmer/**'
+      # The IQ clients the skimmer builds on (`skimmer-core` re-exports them).
+      - 'apps/sdr-io/**'
       - '.github/workflows/skimmer-installers.yml'
 
 env:
