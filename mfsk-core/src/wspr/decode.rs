@@ -461,6 +461,10 @@ mod callsign_table_tests {
     }
 }
 
+/// `minsync1`, `wsprd.c:820`: the refined sync a candidate needs for the fine stages (and, in
+/// `wsprd`, for its refined values to replace the coarse ones).
+const MINSYNC1: f32 = 0.10;
+
 /// wsprd's refine cascade (`wsprd.c:1221-1277`), in full. Each stage is
 /// `sync_and_demodulate` in mode 0 (search lag, freq fixed) or mode 1
 /// (search freq, lag fixed), keeping whichever cell scores highest on
@@ -568,13 +572,12 @@ fn refine_cascade(
     // Stages 4-5 run only above wsprd's `minsync1` (`wsprd.c:820,1325`);
     // below it the candidate is noise and the extra evals are wasted.
     //
-    // **Deliberate divergence from `wsprd`** (CLAUDE.md §2.1, on every path): `wsprd` writes the
-    // refined `freq` / `shift` / `drift` / `sync` back to the candidate only inside this branch
-    // (`wsprd.c:1325-1343`), so a candidate that stays at or below `minsync1` keeps its *coarse*
-    // values and can still pass `minsync2` on the coarse sync. Here such a candidate is dropped,
-    // its refined sync being the figure `minsync2` is compared with. Not measured to matter on
-    // the golden; not ported.
-    const MINSYNC1: f32 = 0.10;
+    // `wsprd` writes the refined `freq` / `shift` / `drift` / `sync` back to the candidate only
+    // inside this branch (`wsprd.c:1325-1343`), so a candidate that stays at or below `minsync1`
+    // keeps its *coarse* values and is judged by `minsync2` on the coarse sync. The scan
+    // (`refine_candidate`) does the same. The point decode (`decode_at_baseband_inner`) and the
+    // pass-2 ranking (`rank_pass2_candidates`) have no coarse sync to fall back on and still
+    // drop such a candidate on its refined sync.
     if best_sync > MINSYNC1 {
         #[cfg(feature = "instrument")]
         super::instrument::bump(&super::instrument::MINSYNC1_PASS);
@@ -1504,6 +1507,17 @@ fn refine_candidate(
         refine_drift,
         &mut isqs,
     );
+    if sync <= MINSYNC1 {
+        // `wsprd.c:1325-1343`: not above `minsync1`, so the candidate keeps what the coarse
+        // search gave it, sync included, and `minsync2` is tested on that.
+        return RefinedCandidate {
+            snr_db: c.snr_db,
+            freq: f0,
+            lag: c.start_sample as i32 / 32,
+            drift: c.drift_hz,
+            sync: c.sync,
+        };
+    }
     RefinedCandidate {
         snr_db: c.snr_db,
         freq,
