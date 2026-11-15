@@ -56,7 +56,7 @@ pub use slow::Jt9Extras;
 #[cfg(feature = "jt65")]
 pub use slow::Jt65Extras;
 #[cfg(feature = "wspr")]
-pub use slow::{WsprExtras, WsprState};
+pub use slow::{WsprExtras, WsprOsd, WsprState};
 
 #[cfg(all(
     feature = "fst4w",
@@ -666,6 +666,20 @@ impl<P: Decodable> Decoder<P> {
     /// hashed calls to resolve.
     pub fn learn_callsign(&mut self, call: &str) -> bool {
         P::__learn(&mut self.state, call)
+    }
+
+    /// The mode's state, which persists between periods (`Decodable::State`): WSPR's is
+    /// `wsprd`'s callsign table (`WsprState::table`). Generic over the mode on purpose, as the
+    /// least invasive accessor: the other modes' states are `()`, the Q65 / FST4W / JT65 ones
+    /// their own public types; none is meant to be built by hand.
+    pub fn state(&self) -> &P::State {
+        &self.state
+    }
+
+    /// Mutable [`Self::state`]: how a caller loads WSPR's `hashtable.txt` before the first
+    /// period and saves it after the last (`WsprState::table_mut`).
+    pub fn state_mut(&mut self) -> &mut P::State {
+        &mut self.state
     }
 
     /// Forget everything carried across periods (WSJT-X's "Clear Avg" and

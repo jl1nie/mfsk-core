@@ -42,12 +42,27 @@ impl ConvFano {
     pub const DEFAULT_MAX_CYCLES: u64 = 10_000;
     /// LLR → branch-metric quantisation scale.
     pub const METRIC_SCALE: f32 = 16.0;
-    /// Fano metric bias — `wsprd.c:823`'s `bias = 0.45`, applied
+    /// Fano metric bias — `wsprd.c:830`'s `bias = 0.45`, applied
     /// inside [`fano::build_branch_metrics_wsprd`] against the
     /// empirical table. The old value (1.0) belonged to the linear
     /// metric and was, per its own comment, capped by the lack of a
     /// normalisation pass; that pass now exists.
     pub const METRIC_BIAS: f32 = 0.45;
+}
+
+/// What one Fano search reports, as `wsprd` stores it (see
+/// [`ConvFano::decode_soft_detailed`]).
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct FanoDetail {
+    /// The 50 payload bits, one per byte.
+    pub info: alloc::vec::Vec<u8>,
+    /// Coded bits whose hard decision disagrees with the re-encoded payload.
+    pub hard_errors: u32,
+    /// `fano.c`'s `*cycles`; `wsprd` prints `cycles / 81`.
+    pub cycles: u32,
+    /// `fano.c`'s `*metric`, the final path metric (`wsprd` prints it as `%5d`).
+    pub metric: i32,
 }
 
 /// Pack the message bits + 31 zero tail into the 11-byte buffer that
@@ -83,7 +98,7 @@ impl FecCodec for ConvFano {
         let bm = fano::build_branch_metrics_wsprd(llr, Self::METRIC_BIAS);
         let max_cycles = opts.max_cycles_per_bit.unwrap_or(Self::DEFAULT_MAX_CYCLES);
         let res = fano::fano_decode(&bm, Self::NBITS, Self::DEFAULT_DELTA, max_cycles);
-        self.finish_decode(llr, res)
+        self.finish_decode(llr, &res)
     }
 }
 
@@ -109,13 +124,79 @@ impl ConvFano {
             Self::DEFAULT_DELTA,
             max_cycles,
         );
-        self.finish_decode(llr, res)
+        self.finish_decode(llr, &res)
+    }
+
+    /// [`Self::decode_soft_pooled`] with `wsprd`'s `-z` metric bias as an argument
+    /// (`bias`, default [`Self::METRIC_BIAS`]) and what `fano()` reports besides the
+    /// data: the path metric and the cycle count, as `wsprd` stores them
+    /// (`wsprd.c:1416`, `decodes[].metric` / `.cycles`).
+    ///
+    /// `cycles` is `fano.c`'s `*cycles = i + 1` (`fano.c:249`), one more than this crate's
+    /// loop counter, because the C loop variable has not been incremented when it breaks
+    /// out of a converged search. `wsprd` prints `cycles / 81`.
+    pub fn decode_soft_detailed(
+        &self,
+        llr: &[f32],
+        max_cycles_per_bit: u64,
+        bias: f32,
+        scratch: &mut fano::FanoScratch,
+    ) -> Option<FanoDetail> {
+        assert_eq!(llr.len(), Self::N);
+        let bm = fano::build_branch_metrics_wsprd(llr, bias);
+        let res = fano::fano_decode_with_scratch(
+            scratch,
+            &bm,
+            Self::NBITS,
+            Self::DEFAULT_DELTA,
+            max_cycles_per_bit,
+        );
+        let fec = self.finish_decode(llr, &res)?;
+        Some(FanoDetail {
+            info: fec.info,
+            hard_errors: fec.hard_errors,
+            cycles: res.cycles.saturating_add(1).min(u64::from(u32::MAX)) as u32,
+            metric: res.metric as i32,
+        })
+    }
+
+    /// `wsprd.c:1431`: `fano` on the OSD codeword, `symbols[i] = 255 * cw[i]`, whose result
+    /// is used whether or not the search converged (the C ignores `fano`'s return value
+    /// there). `cw` is one coded bit per byte, `0` or `1`, in the deinterleaved order the
+    /// soft symbols were in.
+    pub fn decode_codeword(
+        &self,
+        cw: &[u8],
+        max_cycles_per_bit: u64,
+        bias: f32,
+        scratch: &mut fano::FanoScratch,
+    ) -> FanoDetail {
+        assert_eq!(cw.len(), Self::N);
+        let symbols: alloc::vec::Vec<u8> = cw.iter().map(|&b| 255 * (b & 1)).collect();
+        let bm = fano::build_branch_metrics_symbols(&symbols, bias);
+        let res = fano::fano_decode_with_scratch(
+            scratch,
+            &bm,
+            Self::NBITS,
+            Self::DEFAULT_DELTA,
+            max_cycles_per_bit,
+        );
+        let mut info = vec![0u8; Self::K];
+        for (i, b) in info.iter_mut().enumerate() {
+            *b = (res.data[i / 8] >> (7 - (i % 8))) & 1;
+        }
+        FanoDetail {
+            info,
+            hard_errors: 0,
+            cycles: res.cycles.saturating_add(1).min(u64::from(u32::MAX)) as u32,
+            metric: res.metric as i32,
+        }
     }
 
     /// Shared post-processing for [`FecCodec::decode_soft`] /
     /// [`Self::decode_soft_pooled`]: recover the info vector, re-encode
     /// to count hard errors, and reject on non-convergence.
-    fn finish_decode(&self, llr: &[f32], res: fano::FanoDecodeResult) -> Option<FecResult> {
+    fn finish_decode(&self, llr: &[f32], res: &fano::FanoDecodeResult) -> Option<FecResult> {
         if !res.converged {
             return None;
         }

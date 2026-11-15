@@ -351,6 +351,11 @@ pub fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<Wspr
         let t = now_us();
         for (d, start_refined) in &this_pass {
             let symbols = mfsk_core::wspr::encode_channel_symbols(&d.info_bits);
+            // FOLLOW-UP (not changed here: embedded runtime code needs a flash and a log,
+            // `embedded-poc/CLAUDE.md`): this takes the signal centre through `1500 + f1` in
+            // `f32` (1.2e-4 Hz steps, up to 0.04 rad over the frame), which `wsprd` does not.
+            // The host scan subtracts with `subtract_signal_baseband_at(.., f1, ..)` since
+            // `docs/notes/WSPRD_PARITY.md`; see its "Follow-ups".
             let f0_audio = d.freq_hz + 1.5 * TONE_SPACING_HZ;
             let shift_baseband = (*start_refined as i32) / 32;
             subtract_signal_baseband(idat, qdat, f0_audio, shift_baseband, d.drift_hz, &symbols);

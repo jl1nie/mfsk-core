@@ -99,10 +99,31 @@ pub fn subtract_signal_baseband(
     drift_hz: f32,
     channel_symbols: &[u8; N_SYMBOLS],
 ) {
+    subtract_signal_baseband_at(
+        idat,
+        qdat,
+        f0_audio_hz - CENTER_HZ,
+        shift_baseband,
+        drift_hz,
+        channel_symbols,
+    );
+}
+
+/// [`subtract_signal_baseband`] with the signal centre as `wsprd` holds it, an offset from
+/// 1500 Hz (`f1`). The audio-frequency form rounds `1500 + f1` to a `float` (a step of 1.2e-4 Hz)
+/// and back, which over the 110 s frame is up to 0.04 rad of phase: on the golden's W5BIT a 0.3 %
+/// difference in the subtracted component from `wsprd`'s.
+pub fn subtract_signal_baseband_at(
+    idat: &mut [f32],
+    qdat: &mut [f32],
+    f0_baseband_hz: f32,
+    shift_baseband: i32,
+    drift_hz: f32,
+    channel_symbols: &[u8; N_SYMBOLS],
+) {
     debug_assert_eq!(idat.len(), qdat.len());
     let np = idat.len() as i32;
     let nsig = N_SYMBOLS * NSPS_BASEBAND; // 162 · 256 = 41472
-    let f0_baseband_hz = f0_audio_hz - CENTER_HZ;
 
     // Reference signal r(t) = exp(j·φ(t)), `wsprd.c:560-584`, ported with its
     // arithmetic rather than its mathematics. wsprd keeps the phase in a

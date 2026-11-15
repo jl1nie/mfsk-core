@@ -1,0 +1,2 @@
+0002  -8 -0.0  10.140085  0  K1ABC FN42 37 
+<DecodeFinished>

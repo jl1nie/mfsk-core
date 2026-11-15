@@ -221,7 +221,40 @@ fn build_spectro(idat: &[f32], qdat: &[f32]) -> Spectro {
 
 /// Local-maxima peak detection on `smspec`. Returns up to `max_peaks`
 /// peaks ranked by SNR in dB (descending). `(smspec_index, snr_db)`.
-fn find_peaks(spec: &Spectro, max_peaks: usize, more: bool) -> Vec<(usize, f32)> {
+///
+/// With a `window` it is `wsprd`'s selection instead (`wsprd.c:1148-1189`): the first
+/// `max_peaks` local maxima in frequency order, then (`more`) every third bin above the
+/// floor while room is left, **without** the `peaks.len()` ranking above, and only those whose
+/// frequency offset from 1500 Hz, `(j - 205) * df`, lies in `[fmin, fmax]`.
+fn find_peaks(
+    spec: &Spectro,
+    max_peaks: usize,
+    more: bool,
+    window: Option<(f32, f32)>,
+) -> Vec<(usize, f32)> {
+    if let Some((fmin, fmax)) = window {
+        let snr_of = |v: f32| 10.0 * v.max(1e-30).log10() - SNR_SCALING_DB;
+        let mut peaks: Vec<(usize, f32)> = Vec::new();
+        for j in 1..(WORKING_BINS - 1) {
+            let v = spec.smspec[j];
+            if v > spec.smspec[j - 1] && v > spec.smspec[j + 1] && peaks.len() < max_peaks {
+                peaks.push((j, snr_of(v)));
+            }
+        }
+        if more {
+            for j in (0..WORKING_BINS).step_by(3) {
+                let v = spec.smspec[j];
+                if v > MIN_SNR_LIN && peaks.len() < max_peaks {
+                    peaks.push((j, snr_of(v)));
+                }
+            }
+        }
+        peaks.retain(|&(j, _)| {
+            let f = (j as i32 - 205) as f32 * DF_BASEBAND;
+            f >= fmin && f <= fmax
+        });
+        return peaks;
+    }
     let mut peaks: Vec<(usize, f32)> = Vec::new();
     for j in 1..(WORKING_BINS - 1) {
         let v = spec.smspec[j];
@@ -385,6 +418,7 @@ pub fn coarse_baseband(
         max_peaks,
         max_drift_hz,
         false,
+        None,
     )
 }
 
@@ -398,6 +432,7 @@ pub(super) fn coarse_baseband_ext(
     max_peaks: usize,
     max_drift_hz: i32,
     more_candidates: bool,
+    window: Option<(f32, f32)>,
 ) -> Vec<BasebandCandidate> {
     // Split coarse into its two halves so the PSRAM-latency question
     // on `ps` can be asked at all — see `instrument::COARSE_SPECTRO_US`.
@@ -412,7 +447,7 @@ pub(super) fn coarse_baseband_ext(
     if spec.n_time == 0 {
         return Vec::new();
     }
-    let peaks = find_peaks(&spec, max_peaks, more_candidates);
+    let peaks = find_peaks(&spec, max_peaks, more_candidates, window);
 
     let pad_baseband = (pad_samples_audio as f32 / 32.0).round() as i32;
 

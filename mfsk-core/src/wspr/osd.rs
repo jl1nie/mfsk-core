@@ -1,7 +1,15 @@
-//! Ordered-Statistics Decoding (OSD) for the WSPR K=32 r=½
-//! convolutional code. Last-resort fallback when Fano fails to
-//! converge on weak signals (e.g. W3BI at -27 dB on the WSJT-X
-//! golden). Faithful port of `wsprd/osdwspr.f90` order-1 path.
+//! This crate's own Ordered-Statistics Decoding for the WSPR K=32 r=½ convolutional code:
+//! the last-resort fallback the [`Depth`](crate::decoder::Depth) mapping runs when Fano fails
+//! to converge on a weak signal (e.g. W3BI at -27 dB on the WSJT-X golden).
+//!
+//! **Not a port of `osdwspr.f90`, and a deliberate divergence from `wsprd -o n`** (CLAUDE.md
+//! §2.1). It shares the idea (reliability-sorted most-reliable basis, Gaussian elimination,
+//! re-encoding of low-weight error patterns) but sweeps **every** order-1 and order-2 pattern
+//! (50 + 1225 trials) with none of `osdwspr`'s `nt` / `ntheta` pruning or `npre` pattern boxes,
+//! sorts with Rust's sort, not `indexx.f90` (which decides the ties), and reads the float soft
+//! symbols, not `wsprd`'s quantised ones. Measured against `wsprd` on a preloaded callsign
+//! table it matches none of `-o 0..5` (`docs/notes/WSPRD_PARITY.md`);
+//! `wspr::osdwspr` is the line-for-line port, used for `WsprOsd::Wsprd`.
 //!
 //! Algorithm:
 //! 1. Hard-decision the received soft codeword; reliability = |LLR|.
@@ -10,14 +18,13 @@
 //!    K columns form the identity (the "most reliable basis", MRB).
 //! 4. Take the K hardest-decided bits as the order-0 message `m0`.
 //!    Encode → order-0 codeword `c0`, distance `d0 = Σ |LLR| · err`.
-//! 5. Order-1: flip each of the K MRB bits one at a time, re-encode,
+//! 5. Order-1, then order-2: flip each MRB bit, then each pair, re-encode,
 //!    keep the codeword with smallest distance.
 //! 6. Convert the recovered codeword's K-bit message back to the 50
 //!    info bits via re-running Fano on the hard codeword (zero hard
 //!    errors → trivial Fano convergence).
 //!
-//! We stop at order-1 (no preprocessing rules `npre1`/`npre2`).
-//! On the WSJT-X golden sample this is enough to recover W3BI at
+//! Order 3 (`osdwspr`'s `-o 5`) is not run. On the WSJT-X golden this recovers W3BI at
 //! -27 dB SNR while keeping per-call cost under a few ms.
 
 use alloc::vec;

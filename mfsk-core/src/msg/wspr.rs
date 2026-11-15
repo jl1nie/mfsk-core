@@ -441,6 +441,66 @@ pub fn unpack(bits: &[u8; 50]) -> Option<WsprMessage> {
     None
 }
 
+/// What `wsprd`'s OSD acceptance block makes of an OSD codeword before it consults the hash
+/// table (`wsprd.c:1437-1469`), which unpacks it its own way and not through `unpk_`.
+#[cfg(all(feature = "wspr", any(feature = "fft-rustfft", feature = "fft-extern")))]
+pub(crate) enum OsdProbe {
+    /// `unpackcall`, `unpackgrid` or `unpackpfx` failed: the C `break`s out of the DT
+    /// peak-up loop for this block size.
+    Break,
+    /// Not a Type 1 / Type 2 message (`ntype` outside `0..=62`): neither accepted nor a
+    /// reason to stop.
+    Skip,
+    /// What the table is asked about: a Type 1 call and grid, or a Type 2 call with its
+    /// prefix or suffix. The power is carried but not looked at.
+    Candidate(WsprMessage),
+}
+
+/// The C's unpacking in the OSD acceptance block, see [`OsdProbe`].
+#[cfg(all(feature = "wspr", any(feature = "fft-rustfft", feature = "fft-extern")))]
+pub(crate) fn osd_probe(bits: &[u8; 50]) -> OsdProbe {
+    let mut data = [0u8; 7];
+    for i in 0..50 {
+        if bits[i] & 1 != 0 {
+            data[i / 8] |= 1 << (7 - (i % 8));
+        }
+    }
+    let (n1, n2) = unpack50(&data);
+    let Some(call_buf) = unpackcall_wsprd(n1) else {
+        return OsdProbe::Break;
+    };
+    let Some((grid, ntype)) = unpack_grid(n2) else {
+        return OsdProbe::Break;
+    };
+    if !(0..=62).contains(&ntype) {
+        return OsdProbe::Skip;
+    }
+    let callsign = c_str(&call_buf);
+    let nu = ntype % 10;
+    if nu == 0 || nu == 3 || nu == 7 {
+        return OsdProbe::Candidate(WsprMessage::Type1 {
+            callsign: callsign.into(),
+            grid,
+            power_dbm: ntype,
+        });
+    }
+    let nadd = if nu > 7 {
+        nu - 7
+    } else if nu > 3 {
+        nu - 3
+    } else {
+        nu
+    };
+    let n3 = (n2 >> 7) + 32_768 * (nadd as u32 - 1);
+    match apply_prefix(n3, callsign) {
+        Some(full_call) => OsdProbe::Candidate(WsprMessage::Type2 {
+            callsign: full_call,
+            power_dbm: ntype - nadd,
+        }),
+        None => OsdProbe::Break,
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // pack_message: wqencode (types 1, 2 and 3)
 // ─────────────────────────────────────────────────────────────────────────

@@ -183,7 +183,7 @@ impl crate::wspr::WsprResult {
     pub fn to_decoded(&self) -> Decoded {
         Decoded {
             text: self.message.render(self.hashed_call.as_deref()),
-            // `wsprd` reports the centre of the four tones (`wsprd.c:1496`,
+            // `wsprd` reports the centre of the four tones (`wsprd.c:1522-1525`,
             // `1500 + f1`; its tone 0 is `f1 - 1.5 df`), 2.197 Hz above the
             // tone 0 `freq_hz` carries. Measured on the WSJT-X golden:
             // ND6P 1446 Hz in `wsprd`, 1444.04 Hz here before this.
@@ -329,6 +329,15 @@ mod tests {
             info_bits: [0u8; 50],
             snr_db: -20.0,
             hashed_call: None,
+            f1_hz: -100.0,
+            sync: 0.0,
+            pass: 0,
+            blocksize: 1,
+            jitter: 0,
+            decode_type: 0,
+            nhardmin: 0,
+            cycles: 0,
+            metric: 0,
         };
 
         let d = r.to_decoded();

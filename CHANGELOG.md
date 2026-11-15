@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added — `wsprd` v3.3.0-beta6 output through the public API
+
+- `WsprExtras::wsprd()` and `Option` fields per `wsprd` flag (`passes`, `subtraction`, `jitter`, `more_candidates`, `osd: WsprOsd`,
+  `freq_span_hz`, `dial_error_hz`, `fano_bias`, `replica_from_text`, `wsprd_gates`); new `WsprResult` fields (`sync`, `pass`, `blocksize`,
+  `jitter`, `decode_type`, `nhardmin`, `cycles`, `metric`, `f1_hz`); `hashtable.txt` read / write; `Decoder::state()`; `wspr::wsprd_fmt`.
+- Measured: 24 golden cases and 4 synthetic ones byte-equal to `wsprd` (`tests/wsprd_beta6_parity.rs`, `docs/notes/WSPRD_PARITY.md`).
+
+### Fixed — fidelity to `wsprd.c`; **default-path results can change**
+
+- `-s`, `-B` (pass 1 skipped only with `npasses > 2`), `-o n` (`osdwspr` ported, every rung of every pass), `fmin`/`fmax` with `-e` once per pass, `-z`.
+- Also on the `Depth` path, plainly: (a) subtraction takes `f1` itself, not `1500 + f1` rounded to `f32`; (b) a decode `unpk_` will not print
+  stops the ladder; (c) the callsign table is 32768 buckets, a colliding call evicts, the whole run's table is handed back; (d) `Depth::Fast`
+  runs pass 1 after an empty pass 0. Merge gate and snapshots unchanged; tier C (`wspr`) not run: its corpus is not on this machine.
+
 ## 0.16.1 — FT4 is sent where WSJT-X sends it: `tx_buffer_start` is `Modulator.cpp`'s `delay_ms` (3600 samples, 0.300 s), not the DT = 0 placement (#749)
 
 ### Changed — transmit
