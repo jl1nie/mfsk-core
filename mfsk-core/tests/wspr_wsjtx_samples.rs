@@ -1521,7 +1521,11 @@ fn wspr_ladder_budget_cuts_off_the_failing_candidate_without_losing_the_real_one
     const FREQ_DEDUP_HZ: f32 = 5.0;
     const TIME_DEDUP_SAMPLES: i64 = 8192;
 
-    let pad = (3.0 * sample_rate as f32) as usize;
+    // 9 * 4096 samples, a whole number of `wsprd`'s 128-sample coarse strides, so every lag the
+    // ladder tries is on `wsprd`'s lattice (`3bd712a3`). A 3.0 s pad here (36 000 samples, 27
+    // baseband samples off the lattice) is what made G8VDQ stop converging in pass 2 from
+    // 2026-10-03 on, and this test, which no CI job runs, failed unseen until #755.
+    let pad = mfsk_core::wspr::baseband::NEGATIVE_DT_PAD;
     let mut padded = vec![0.0f32; pad + audio.len()];
     padded[pad..].copy_from_slice(&audio);
     let (mut idat, mut qdat) = decimate_to_baseband(&padded);
@@ -1529,8 +1533,10 @@ fn wspr_ladder_budget_cuts_off_the_failing_candidate_without_losing_the_real_one
     let mut seen: Vec<WsprResult> = Vec::new();
     let mut confirmed = WsprCallsignTable::new();
 
-    // Reproduce pass 2's real residual: early passes 0/1 decode +
-    // subtract, exactly as decode_scan_inner does.
+    // An approximation of pass 2's residual: passes 0/1 decode each coarse candidate by a point
+    // decode and subtract it at that decode's own start. It is not `sic_pass` (which refines every
+    // candidate first, subtracts at the refined alignment and builds the replica from the printed
+    // text), and leaves pass 2 the two survivors this test needs: one that never converges and G8VDQ.
     for _ in 0..2 {
         let mut cands = coarse_baseband(&idat, &qdat, pad, params.max_candidates, 4);
         cands.truncate(params.max_candidates);

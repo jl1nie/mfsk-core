@@ -48,8 +48,9 @@ pub const CENTER_HZ: f32 = 1500.0;
 /// spectrogram row, which changed the coarse sync of the same alignment against `wsprd`'s
 /// (0.09791 vs 0.10070 on one -32 dB file) and with it which candidates passed `minsync2`; without
 /// it the decoded files of the WSPR AWGN sweep equal `wsprd`'s in every cell from -29 to -34 dB.
-/// No caller in this repository uses it any more (the embedded pipelines pad with their own
-/// `wspr_scan::PAD_AUDIO`, 3.0 s); kept `pub` because removing it would break source compatibility.
+/// Only a test that pads its own buffer on `wsprd`'s lattice uses it now; the embedded pipelines pad
+/// with their own `wspr_scan::PAD_AUDIO` (36 000 samples, 3.0 s), which is **not** a multiple of the
+/// stride (see `3bd712a3`). Kept `pub` because removing it would break source compatibility.
 pub const NEGATIVE_DT_PAD: usize = 9 * 4096;
 
 /// `wsprd`'s `npoints` (`readwavfile`, `wsprd.c:123`): the slot's first 114 s of the recording.
