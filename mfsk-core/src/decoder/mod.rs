@@ -668,6 +668,18 @@ impl<P: Decodable> Decoder<P> {
         P::__learn(&mut self.state, call)
     }
 
+    /// The mode's state, which persists between periods (`Decodable::State`): WSPR's is
+    /// `wsprd`'s callsign table (`WsprState::table`).
+    pub fn state(&self) -> &P::State {
+        &self.state
+    }
+
+    /// Mutable [`Self::state`]: how a caller loads WSPR's `hashtable.txt` before the first
+    /// period and saves it after the last (`WsprState::table_mut`).
+    pub fn state_mut(&mut self) -> &mut P::State {
+        &mut self.state
+    }
+
     /// Forget everything carried across periods (WSJT-X's "Clear Avg" and
     /// `ndepth & 128` auto-clear).
     pub fn clear(&mut self) {

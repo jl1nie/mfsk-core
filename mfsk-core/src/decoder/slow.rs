@@ -63,6 +63,14 @@ mod wspr_impl {
     use crate::wspr::{DecodeRequest, Wspr, WsprCallsignTable, WsprResult};
 
     /// WSPR's library options.
+    ///
+    /// **Precedence.** The decode is what [`Depth`] maps to (the arguments the WSJT-X GUI gives
+    /// `wsprd`: Fast `-qB`, Normal `-C 500 -o 4`, Deep `-C 500 -o 4 -d`, see `scan_depth`)
+    /// unless a field below is `Some`, which replaces that one setting and leaves the rest of
+    /// the mapping alone. [`WsprExtras::wsprd`] sets every field to `wsprd`'s own default, so
+    /// the depth no longer matters: the decode is what bare `wsprd` does, and each builder
+    /// method then changes one option as its command-line flag does. Each field names the
+    /// `wsprd.c` line it mirrors.
     #[derive(Clone, Debug, Default)]
     #[non_exhaustive]
     pub struct WsprExtras {
@@ -72,6 +80,106 @@ mod wspr_impl {
         /// lower to 500 for speed. Measured: on the WSJT-X golden 500 loses
         /// G8VDQ (-23 dB), which 10000 decodes.
         pub max_cycles_per_bit: Option<u64>,
+        /// `npasses` (`wsprd.c:825,889,900`): 3 by default, `-B` is 2 (no final pass with
+        /// the coherent-block ladder), `-s` is 1. Pass 1 is skipped when pass 0 found
+        /// nothing, only with `npasses > 2` (`wsprd.c:1065`).
+        pub passes: Option<u8>,
+        /// `subtraction` (`wsprd.c:827`): remove each decode from the data before the next
+        /// candidate. `-s` turns it off (and sets `passes` to 1).
+        pub subtraction: Option<bool>,
+        /// `!quickmode` (`wsprd.c:822,1473`): retry a candidate's demodulation at the 17 DT
+        /// offsets `shift + 8k`. `-q` is `false`.
+        pub jitter: Option<bool>,
+        /// `more_candidates` (`wsprd.c:891`, `-d`): every third spectrum bin above the SNR
+        /// floor is a candidate too.
+        pub more_candidates: Option<bool>,
+        /// `ndepth` (`wsprd -o n`, `wsprd.c:826,1422`): `Some(-1)` is `wsprd`'s default, no
+        /// OSD; `Some(n)` with `0 <= n <= 5` runs `osdwspr` at that depth on every rung of
+        /// every pass, gated on the callsign table (a Type 1 call and locator, or a Type 2
+        /// call, that an earlier decode stored, `wsprd.c:1462-1468`). `None` keeps the
+        /// depth's: this crate's own order-2 OSD on the final pass.
+        pub osd_depth: Option<i8>,
+        /// `fmin` / `fmax` (`wsprd.c:781`, `-w` is `(-150, 150)`): the audio-frequency
+        /// window around 1500 Hz that candidates are taken from, which also makes the
+        /// selection `wsprd`'s (the first 200 spectral peaks in frequency order). `None`
+        /// keeps this crate's: all of the baseband, the strongest `search.max_candidates`.
+        pub freq_span_hz: Option<(f32, f32)>,
+        /// `dialfreq_error` (`-e`, `wsprd.c:1172-1176`, Hz): added to `freq_span_hz` once per
+        /// pass the loop runs, as `wsprd` does (so it widens the shift every pass: the
+        /// window is `-110 + e`, `-110 + 2e`, ... ). The printed frequency's own correction,
+        /// `dialfreq - e * 1e-6`, is the caller's, in the dial it gives
+        /// `mfsk_core::wspr::wsprd_fmt`.
+        pub dial_error_hz: Option<f64>,
+        /// `bias` (`wsprd -z`, `wsprd.c:823,933-937`): the Fano metric table's bias,
+        /// 0.45 by default.
+        pub fano_bias: Option<f32>,
+    }
+
+    impl WsprExtras {
+        /// Bare `wsprd`'s defaults, every option explicit: three passes with subtraction, the
+        /// DT jitter, no extra candidates, no OSD (`-o -1`), candidates within +/-110 Hz of
+        /// 1500 Hz and no dial error, 10000 Fano cycles per bit, bias 0.45, and the 200
+        /// candidates of `wsprd.c:1088`.
+        pub fn wsprd() -> Self {
+            let mut e = Self::default();
+            e.search.max_candidates = Some(200);
+            e.max_cycles_per_bit = Some(10_000);
+            e.passes = Some(3);
+            e.subtraction = Some(true);
+            e.jitter = Some(true);
+            e.more_candidates = Some(false);
+            e.osd_depth = Some(-1);
+            e.freq_span_hz = Some((-110.0, 110.0));
+            e.dial_error_hz = Some(0.0);
+            e.fano_bias = Some(0.45);
+            e
+        }
+
+        /// `-C n`.
+        pub fn with_max_cycles_per_bit(mut self, n: u64) -> Self {
+            self.max_cycles_per_bit = Some(n);
+            self
+        }
+        /// `-B` is `with_passes(2)`; `-s` is `with_passes(1).with_subtraction(false)`.
+        pub fn with_passes(mut self, n: u8) -> Self {
+            self.passes = Some(n);
+            self
+        }
+        /// See [`Self::subtraction`].
+        pub fn with_subtraction(mut self, on: bool) -> Self {
+            self.subtraction = Some(on);
+            self
+        }
+        /// `-q` is `with_jitter(false)`.
+        pub fn with_jitter(mut self, on: bool) -> Self {
+            self.jitter = Some(on);
+            self
+        }
+        /// `-d`.
+        pub fn with_more_candidates(mut self, on: bool) -> Self {
+            self.more_candidates = Some(on);
+            self
+        }
+        /// `-o n`; `-1` is none.
+        pub fn with_osd_depth(mut self, n: i8) -> Self {
+            self.osd_depth = Some(n);
+            self
+        }
+        /// `fmin`, `fmax`; `-w` is `with_freq_span(-150.0, 150.0)`.
+        pub fn with_freq_span(mut self, fmin: f32, fmax: f32) -> Self {
+            self.freq_span_hz = Some((fmin, fmax));
+            self
+        }
+        /// `-e x`.
+        pub fn with_dial_error_hz(mut self, hz: f64) -> Self {
+            self.dial_error_hz = Some(hz);
+            self
+        }
+        /// `-z x`.
+        pub fn with_fano_bias(mut self, bias: f32) -> Self {
+            self.fano_bias = Some(bias);
+            self
+        }
     }
 
     /// WSPR's cross-period state: wsprd's callsign table.
@@ -90,6 +198,14 @@ mod wspr_impl {
         pub fn table(&self) -> &WsprCallsignTable {
             &self.table
         }
+
+        /// The table to load before a decode and save after (`wsprd`'s `hashtable.txt`,
+        /// [`WsprCallsignTable::from_hashtable_txt`] / [`WsprCallsignTable::to_hashtable_txt`]).
+        /// `wsprd -H` is a caller that does neither: the table still serves the one run, as
+        /// `wsprd`'s does.
+        pub fn table_mut(&mut self) -> &mut WsprCallsignTable {
+            &mut self.table
+        }
     }
 
     /// The arguments the WSJT-X GUI gives `wsprd` per decoding depth
@@ -107,16 +223,59 @@ mod wspr_impl {
                     ..Ladder::DEFAULT
                 },
                 more_candidates: false,
+                ..ScanDepth::DEFAULT
             },
             Depth::Normal | Depth::Deep => ScanDepth {
                 passes: 3,
                 ladder: Ladder {
                     jitter: true,
                     max_cycles_per_bit: 500,
+                    ..Ladder::DEFAULT
                 },
                 more_candidates: depth == Depth::Deep,
+                ..ScanDepth::DEFAULT
             },
         }
+    }
+
+    /// The depth's scan with `extras`' explicit settings laid over it.
+    fn apply_extras(
+        mut d: crate::wspr::decode::ScanDepth,
+        extras: &WsprExtras,
+    ) -> crate::wspr::decode::ScanDepth {
+        use crate::wspr::decode::OsdSel;
+        if let Some(c) = extras.max_cycles_per_bit {
+            d.ladder.max_cycles_per_bit = c;
+        }
+        if let Some(n) = extras.passes {
+            d.passes = n;
+        }
+        if let Some(on) = extras.subtraction {
+            d.ladder.subtraction = on;
+        }
+        if let Some(on) = extras.jitter {
+            d.ladder.jitter = on;
+        }
+        if let Some(on) = extras.more_candidates {
+            d.more_candidates = on;
+        }
+        if let Some(n) = extras.osd_depth {
+            d.ladder.osd = if n < 0 {
+                OsdSel::Off
+            } else {
+                OsdSel::Wsprd(n.min(5) as u8)
+            };
+        }
+        if let Some(w) = extras.freq_span_hz {
+            d.freq_window = Some(w);
+        }
+        if let Some(e) = extras.dial_error_hz {
+            d.dial_error_hz = e;
+        }
+        if let Some(b) = extras.fano_bias {
+            d.ladder.bias = b;
+        }
+        d
     }
 
     impl Decodable for Wspr {
@@ -154,13 +313,7 @@ mod wspr_impl {
             let mut req = DecodeRequest::new(audio, 12_000)
                 .nominal_start(nominal_start(crate::Mode::Wspr))
                 .params(search)
-                .scan_depth({
-                    let mut d = scan_depth(params.depth);
-                    if let Some(c) = extras.max_cycles_per_bit {
-                        d.ladder.max_cycles_per_bit = c;
-                    }
-                    d
-                })
+                .scan_depth(apply_extras(scan_depth(params.depth), extras))
                 .table(&mut state.table);
             if let Some(cb) = cb.as_ref() {
                 req = req.on_result(cb);

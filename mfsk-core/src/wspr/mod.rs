@@ -81,6 +81,8 @@ pub mod instrument;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod osd;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub(crate) mod osdwspr;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod rx;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod search;
@@ -90,6 +92,8 @@ pub mod spectrogram;
 pub mod subtract;
 pub mod sync_vector;
 pub mod tx;
+#[cfg(all(feature = "std", any(feature = "fft-rustfft", feature = "fft-extern")))]
+pub mod wsprd_fmt;
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use decode::{WsprCallsignTable, WsprResult};

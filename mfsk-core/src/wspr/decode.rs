@@ -4,6 +4,7 @@
 //! sample, runs demod → deinterleave → Fano → message unpack. No coarse
 //! search here; a later module will wrap this with a (freq × time) scan.
 
+use alloc::collections::BTreeMap;
 #[cfg(not(feature = "std"))]
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -67,6 +68,45 @@ pub struct WsprResult {
     /// and for a hash not heard, which prints `<...>`. Text:
     /// [`WsprMessage::render`].
     pub hashed_call: Option<String>,
+    /// `wsprd`'s `f1`: the centre of the four tones as an offset from 1500 Hz, the frequency
+    /// `wsprd` prints as `dialfreq + (1500 + f1) / 1e6` (`wsprd.c:1496`). The exact value
+    /// behind [`Self::freq_hz`] (tone 0, which is this less one and a half tone spacings,
+    /// plus 1500 Hz, rounded in single precision).
+    pub freq_offset_hz: f32,
+    /// `wsprd`'s `decodes[].sync` (`wsprd.c:1530`): the candidate's sync after the
+    /// refine cascade, the figure `minsync2` is compared with and `ALL_WSPR.TXT` prints
+    /// (`%5.2f`) and `wspr_spots.txt` prints as `(int)(10 * sync)`. `0.0` from
+    /// [`super::SniperRequest`], which reports none.
+    pub sync: f32,
+    /// The decode pass that found it, `wsprd`'s `ipass`: 0 and 1 are the early passes,
+    /// 2 the final one. `ALL_WSPR.TXT` prints it plus one. A skipped pass 1 (`wsprd.c:1065`)
+    /// leaves a final-pass decode at 2.
+    pub pass: u8,
+    /// `wsprd`'s `decodes[].blocksize` (`blocksize + 3 * bitmetric`): the rung of the
+    /// final pass's ladder that decoded, 1 to 3 coherent symbols, or 4 for the
+    /// bit-by-bit metric (this crate's `nblock` 0).
+    pub blocksize: u8,
+    /// `wsprd`'s `decodes[].jitter` (`ii`): how far, in 375 Hz baseband samples, the
+    /// successful demodulation was from the refined alignment, `iifac * k` with `k` in
+    /// -8..=8 (`wsprd.c:1366-1375`). The reported `dt` is the refined alignment's, not
+    /// this one's.
+    pub jitter: i32,
+    /// `wsprd`'s `decodes[].decodetype` (`osd_decode`): 0 for a Fano decode, 1 for one
+    /// OSD found and the callsign table confirmed.
+    pub decode_type: u8,
+    /// `wsprd`'s `decodes[].nhardmin` (`wsprd.c:1393,1427,1500`): hard-decision errors
+    /// of the accepted codeword against the soft symbols. OSD's own count for an OSD
+    /// decode. For a Fano decode `wsprd` counts it only while it subtracts
+    /// (`wsprd.c:1494-1500`), so `-s` leaves 0.
+    pub nhardmin: i32,
+    /// `wsprd`'s `decodes[].cycles`, `fano.c`'s `*cycles`: one more than the loop
+    /// iterations of the search that accepted the codeword. `ALL_WSPR.TXT` prints
+    /// `cycles / 81`.
+    pub cycles: u32,
+    /// `wsprd`'s `decodes[].metric`, `fano.c`'s final path metric (`%5d` in
+    /// `ALL_WSPR.TXT`). On an OSD decode it is the metric of the `fano` run on the OSD
+    /// codeword (`wsprd.c:1432`).
+    pub metric: i32,
 }
 
 /// Scan-dedup tolerances: the same real signal decoded twice by nearby
@@ -117,15 +157,39 @@ impl ScanRow for WsprResult {
 /// of one hard error. That gate let 8 phantoms through against 8 real
 /// decodes; real `wsprd` reports 9 real and 0 phantom on the same file.
 ///
-/// This crate stores callsign strings rather than `nhash` buckets:
-/// same semantics without wsprd's hash-collision risk. Type 1
-/// additionally requires the grid to match, mirroring wsprd's
-/// `loctab` check.
+/// The table is `wsprd`'s: 32768 buckets addressed by `nhash(call, len, 146) & 0x7fff`,
+/// held sparsely, a later store into a bucket replacing the earlier one (two calls that
+/// hash alike evict each other, as in the C; this crate used to keep both). Type 1
+/// additionally requires the grid to match, mirroring wsprd's `loctab` check. It reads and
+/// writes `wsprd`'s `hashtable.txt` ([`Self::from_hashtable_txt`],
+/// [`Self::to_hashtable_txt`]).
 #[derive(Debug, Clone, Default)]
 pub struct WsprCallsignTable {
-    /// `(callsign, grid)` — grid is `None` for Type 2 (compound call,
-    /// no grid transmitted).
-    entries: Vec<(String, Option<String>)>,
+    /// `wsprd`'s `hashtab` / `loctab`, kept sparsely: bucket index (`nhash(call, len, 146) &
+    /// 0x7fff`) to what the bucket holds. A later store into a bucket replaces the earlier
+    /// one, as in the C.
+    slots: BTreeMap<u16, Slot>,
+}
+
+/// One occupied bucket: `hashtab[i]` and `loctab[i]`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Slot {
+    call: String,
+    /// Empty for a bucket only a Type 2 call has been stored in (`wsprd_utils.c:370` stores
+    /// the call and leaves the locator slot as it was).
+    grid: String,
+}
+
+/// `WSPRD_CALLSIGN_SIZE` (`wsprd_utils.h`): a call is at most 12 characters.
+const CALL_MAX: usize = 12;
+/// `WSPRD_GRID4_SIZE`: a locator is at most 4 characters.
+const GRID_MAX: usize = 4;
+/// `WSPRD_HASH_COUNT`.
+const HASH_COUNT: u32 = 32_768;
+
+/// `nhash(call, strlen(call), 146)`, the bucket a call lives in.
+fn bucket(call: &str) -> u16 {
+    (crate::msg::wspr::hash15(call.as_bytes()) & 0x7fff) as u16
 }
 
 impl WsprCallsignTable {
@@ -134,48 +198,155 @@ impl WsprCallsignTable {
         Self::default()
     }
 
-    /// Record a Fano-confirmed decode. Type 3 is never recorded — it
-    /// carries a hash rather than a callsign, so it can confirm
-    /// nothing.
+    /// Record a Fano-confirmed decode, as `unpk_` stores it (`wsprd_utils.c:353-356,
+    /// 364-369`): a Type 1 call and locator, a Type 2 call alone. Type 3 is never recorded
+    /// — it carries a hash rather than a callsign, so it can confirm nothing.
     pub fn record(&mut self, msg: &crate::msg::WsprMessage) {
-        let entry = match msg {
+        match msg {
             crate::msg::WsprMessage::Type1 { callsign, grid, .. } => {
-                (callsign.clone(), Some(grid.clone()))
+                if callsign.len() <= CALL_MAX && grid.len() <= GRID_MAX {
+                    self.slots.insert(
+                        bucket(callsign),
+                        Slot {
+                            call: callsign.clone(),
+                            grid: grid.clone(),
+                        },
+                    );
+                }
             }
-            crate::msg::WsprMessage::Type2 { callsign, .. } => (callsign.clone(), None),
-            crate::msg::WsprMessage::Type3 { .. } => return,
-        };
-        if !self.entries.contains(&entry) {
-            self.entries.push(entry);
+            crate::msg::WsprMessage::Type2 { callsign, .. } => {
+                if callsign.len() <= CALL_MAX {
+                    self.slots.entry(bucket(callsign)).or_default().call = callsign.clone();
+                }
+            }
+            crate::msg::WsprMessage::Type3 { .. } => {}
         }
     }
 
-    /// The call this table holds for a Type 3 message's 15-bit hash: the
-    /// latest recorded one whose `nhash(call, len, 146) & 0x7fff` is
-    /// `hash` (`wsprd_utils.c:390`: `hashtab[ihash]`, a bucket the last
-    /// store wins). `None` when no such call has been decoded.
+    /// The call this table holds for a Type 3 message's 15-bit hash (`wsprd_utils.c:390`:
+    /// `hashtab[ihash]`). `None` when no such call has been decoded.
     pub fn resolve(&self, hash: u32) -> Option<&str> {
-        self.entries
-            .iter()
-            .rev()
-            .find(|(c, _)| !c.is_empty() && crate::msg::wspr::hash15(c.as_bytes()) == hash)
-            .map(|(c, _)| c.as_str())
+        let slot = self.slots.get(&u16::try_from(hash).ok()?)?;
+        (!slot.call.is_empty()).then_some(slot.call.as_str())
     }
 
-    /// Whether an OSD-derived message may be accepted.
+    /// Whether an OSD-derived message may be accepted: the gate at `wsprd.c:1462-1468`. The
+    /// call's bucket must hold that call and, for a Type 1, that locator as well.
     pub fn accepts(&self, msg: &crate::msg::WsprMessage) -> bool {
         match msg {
             crate::msg::WsprMessage::Type1 { callsign, grid, .. } => self
-                .entries
-                .iter()
-                .any(|(c, g)| c == callsign && g.as_deref() == Some(grid.as_str())),
-            crate::msg::WsprMessage::Type2 { callsign, .. } => {
-                self.entries.iter().any(|(c, _)| c == callsign)
-            }
+                .slots
+                .get(&bucket(callsign))
+                .is_some_and(|s| s.call == *callsign && s.grid == *grid),
+            crate::msg::WsprMessage::Type2 { callsign, .. } => self
+                .slots
+                .get(&bucket(callsign))
+                .is_some_and(|s| s.call == *callsign),
             // Type 3 is a hashed callsign with no table to resolve it
             // against — wsprd's own OSD path requires `itype` 1 or 2.
             crate::msg::WsprMessage::Type3 { .. } => false,
         }
+    }
+
+    /// Number of occupied buckets.
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// Whether no call has been stored.
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
+    /// The occupied buckets in index order, `(index, call, grid)`: the order and content
+    /// of `wsprd`'s `hashtable.txt` (`wsprd.c:1639-1645`). `grid` is empty for a bucket
+    /// only a Type 2 call was stored in.
+    pub fn iter(&self) -> impl Iterator<Item = (u16, &str, &str)> {
+        self.slots
+            .iter()
+            .map(|(&i, s)| (i, s.call.as_str(), s.grid.as_str()))
+    }
+
+    /// Load one `hashtable.txt` line, as `wsprd_load_hash_line` does
+    /// (`wsprd_utils.c:97-118`, called at `wsprd.c:1055`): an index below 32768, a call of
+    /// at most 12 characters and an optional locator of at most 4. A line without a locator
+    /// keeps the bucket's existing one. Returns whether the line was accepted.
+    pub fn load_hashtable_line(&mut self, line: &str) -> bool {
+        let b = line.as_bytes();
+        let is_space = |c: u8| matches!(c, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r');
+        let mut p = 0;
+        // strtol(base 10): leading space, optional sign, digits.
+        while p < b.len() && is_space(b[p]) {
+            p += 1;
+        }
+        let mut neg = false;
+        if p < b.len() && (b[p] == b'+' || b[p] == b'-') {
+            neg = b[p] == b'-';
+            p += 1;
+        }
+        let digits = p;
+        let mut index: i64 = 0;
+        while p < b.len() && b[p].is_ascii_digit() {
+            index = index
+                .saturating_mul(10)
+                .saturating_add(i64::from(b[p] - b'0'));
+            p += 1;
+        }
+        if p == digits {
+            return false;
+        }
+        if neg {
+            index = -index;
+        }
+        if !(0..i64::from(HASH_COUNT)).contains(&index) || p >= b.len() || !is_space(b[p]) {
+            return false;
+        }
+        let mut token = |required: bool, max: usize| -> Option<&str> {
+            while p < b.len() && is_space(b[p]) {
+                p += 1;
+            }
+            if p >= b.len() {
+                return if required { None } else { Some("") };
+            }
+            let start = p;
+            while p < b.len() && !is_space(b[p]) {
+                p += 1;
+            }
+            // `len >= dest_size` fails: room for the terminator.
+            (p - start <= max).then(|| &line[start..p])
+        };
+        let Some(call) = token(true, CALL_MAX) else {
+            return false;
+        };
+        let Some(grid) = token(false, GRID_MAX) else {
+            return false;
+        };
+        let slot = self.slots.entry(index as u16).or_default();
+        slot.call = call.into();
+        if !grid.is_empty() {
+            slot.grid = grid.into();
+        }
+        true
+    }
+
+    /// A table from the text of a `hashtable.txt`; lines `wsprd` would not load are skipped.
+    pub fn from_hashtable_txt(text: &str) -> Self {
+        let mut t = Self::new();
+        for line in text.lines() {
+            t.load_hashtable_line(line);
+        }
+        t
+    }
+
+    /// The text `wsprd` writes to `hashtable.txt` at the end of a run (`wsprd.c:1639-1645`,
+    /// `"%5d %s %s\n"` per occupied bucket in index order). Empty for an empty table.
+    pub fn to_hashtable_txt(&self) -> String {
+        use core::fmt::Write;
+        let mut out = String::new();
+        for (i, call, grid) in self.iter() {
+            let _ = writeln!(out, "{i:5} {call} {grid}");
+        }
+        out
     }
 }
 
@@ -491,7 +662,54 @@ fn decode_from_refined(
     budget: Option<&(dyn Fn() -> bool + Sync)>,
     ladder: Ladder,
 ) -> Option<WsprResult> {
-    use crate::engine::{FecOpts, MessageCodec};
+    match ladder_decode(
+        idat,
+        qdat,
+        sample_rate,
+        best_freq,
+        best_lag,
+        best_drift,
+        best_isqs,
+        nblocks,
+        confirmed,
+        budget,
+        ladder,
+    ) {
+        LadderOutcome::Decoded(r) => Some(r),
+        LadderOutcome::Failed | LadderOutcome::NoPrint => None,
+    }
+}
+
+/// How one candidate's decode ladder ended.
+#[derive(Debug)]
+enum LadderOutcome {
+    /// No rung and no DT position produced an accepted codeword.
+    Failed,
+    /// A codeword was accepted that `unpk_` will not print (`noprint`): a reserved or
+    /// implausible message. `wsprd` still stops the ladder there, counts it in
+    /// `ndecodes_pass` and skips the subtraction (`wsprd.c:1485-1490`).
+    NoPrint,
+    Decoded(WsprResult),
+}
+
+/// [`decode_from_refined`] with the ladder's outcome kept apart: `wsprd`'s
+/// `while (ib <= nblocksize && not_decoded)` / `while (not_decoded && idt <= ...)` loops
+/// stop on a decode whether or not it prints.
+#[allow(clippy::too_many_arguments)]
+fn ladder_decode(
+    idat: &[f32],
+    qdat: &[f32],
+    sample_rate: u32,
+    best_freq: f32,
+    best_lag: i32,
+    best_drift: f32,
+    best_isqs: Option<&super::demod::IsQs>,
+    nblocks: &[usize],
+    confirmed: Option<&WsprCallsignTable>,
+    budget: Option<&(dyn Fn() -> bool + Sync)>,
+    ladder: Ladder,
+) -> LadderOutcome {
+    use crate::engine::{FecCodec, MessageCodec};
     let codec = crate::fec::ConvFano;
     // Pooled across the whole `nblocks` sweep below (up to 3 values in
     // pass 2) instead of `fano_decode` allocating a fresh `Vec<Node>`
@@ -516,8 +734,6 @@ fn decode_from_refined(
     // `while (ib <= nblocksize && not_decoded)` /
     // `while (not_decoded && idt <= ...)` do, so the cost below is
     // what a *failing* candidate pays, not a succeeding one.
-    let mut best_type1: Option<(u32, WsprResult)> = None;
-    let mut best_other: Option<(u32, WsprResult)> = None;
     /// `iifac`, `wsprd.c:802` — step size in the final DT peak-up.
     const IIFAC: i32 = 8;
     /// `idt <= 128 / iifac`, `wsprd.c:1322`.
@@ -538,7 +754,7 @@ fn decode_from_refined(
     // `tone_amplitudes_into`'s doc comment.
     let mut jitter_isqs = super::demod::IsQs::zeroed();
     'rungs: for &nblock in nblocks {
-        for idt in 0..=if ladder.jitter { N_JITTER } else { 0 } {
+        'jitter: for idt in 0..=if ladder.jitter { N_JITTER } else { 0 } {
             if let Some(check) = budget
                 && !check()
             {
@@ -658,72 +874,133 @@ fn decode_from_refined(
             // `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`); it
             // stays phantom-free, it just hears less. Same split shape
             // as `wspr-pass2-topn`.
-            let fec_opts = FecOpts {
-                max_cycles_per_bit: Some(ladder.max_cycles_per_bit),
-                ..FecOpts::default()
-            };
             #[cfg(all(feature = "std", feature = "instrument"))]
             let t_fano = crate::clock::Tick::now();
-            let fano_res = codec.decode_soft_pooled(&llrs, &fec_opts, &mut fano_scratch);
+            let fano_res = codec.decode_soft_detailed(
+                &llrs,
+                ladder.max_cycles_per_bit,
+                ladder.bias,
+                &mut fano_scratch,
+            );
             #[cfg(all(feature = "std", feature = "instrument"))]
             super::instrument::add_us(&super::instrument::FANO_US, t_fano.elapsed_micros() as u32);
-            let (info_bits, hard_errors) = if let Some(fec_res) = fano_res {
+            // The accepted codeword: its 50 payload bits, what `nhardmin` will be, `fano`'s
+            // cycles and metric, and whether OSD found it.
+            let (info_bits, nhardmin, cycles, metric, decode_type) = if let Some(f) = fano_res {
                 #[cfg(feature = "instrument")]
                 super::instrument::bump(&super::instrument::FANO_OK);
                 let mut info = [0u8; 50];
-                info.copy_from_slice(&fec_res.info);
-                (info, fec_res.hard_errors)
-            } else if let Some((info, nhardmin)) = confirmed.and_then(|table| {
-                #[cfg(feature = "instrument")]
-                super::instrument::bump(&super::instrument::OSD_ATTEMPTS);
-                // Single lazy `and_then`, deliberately not `Option::zip`:
-                // `zip` evaluates its argument eagerly, which would run the
-                // (expensive) OSD decode on every candidate even when no
-                // table exists — i.e. on the whole of pass 1, which always
-                // passes `None`.
-                // `osd_decode_packed`: bit-packed GF(2) rows, verified
-                // bit-identical to `osd_decode` on 1626 real LLR
-                // vectors harvested from an AWGN sweep
-                // (`wspr_osd_packed_matches_unpacked`,
-                // `tests/wspr_sweep.rs`) — 8.5x faster on host, and
-                // the ~12.2 KB `osd_decode` stack frame this crate's
-                // embedded stack audit found (two-thirds of it one
-                // unpacked `[[u8;162];50]` matrix) drops to ~5 KB. See
-                // `osd_decode_packed`'s own doc comment for why each
-                // stage does or doesn't benefit from packing.
-                #[cfg(all(feature = "std", feature = "instrument"))]
-                let t_osd = crate::clock::Tick::now();
-                let osd_res = super::osd::osd_decode_packed(&llrs);
-                #[cfg(all(feature = "std", feature = "instrument"))]
-                super::instrument::add_us(
-                    &super::instrument::OSD_US,
-                    t_osd.elapsed_micros() as u32,
-                );
-                let (info, nhardmin) = osd_res?;
-                // wsprd's structural gate (`wsprd.c:1396`): an OSD result
-                // is accepted only for a callsign an earlier Fano decode
-                // already confirmed. Replaces an `nhardmin ≤ 44` threshold
-                // that measurement showed cannot separate the two
-                // populations — see `WsprCallsignTable`'s doc comment.
-                let msg = crate::msg::Wspr50Message
-                    .unpack(&info, &crate::engine::DecodeContext::default())?;
-                table.accepts(&msg).then_some((info, nhardmin))
-            }) {
-                #[cfg(feature = "instrument")]
-                super::instrument::bump(&super::instrument::OSD_OK);
-                (info, nhardmin)
+                info.copy_from_slice(&f.info);
+                // `wsprd.c:1494-1500`: a Fano decode's hard-error count is taken only
+                // while subtracting, against the re-encoded printed message.
+                let nh = if ladder.subtraction {
+                    f.hard_errors as i32
+                } else {
+                    0
+                };
+                (info, nh, f.cycles, f.metric, 0u8)
             } else {
-                continue;
+                match (ladder.osd, confirmed) {
+                    // This crate's own OSD (the `Depth` mapping): the final pass's, gated
+                    // on the callsign table, see `WsprCallsignTable`.
+                    (OsdSel::Legacy, Some(table)) => {
+                        #[cfg(feature = "instrument")]
+                        super::instrument::bump(&super::instrument::OSD_ATTEMPTS);
+                        // `osd_decode_packed`: bit-packed GF(2) rows, verified
+                        // bit-identical to `osd_decode` on 1626 real LLR
+                        // vectors harvested from an AWGN sweep
+                        // (`wspr_osd_packed_matches_unpacked`,
+                        // `tests/wspr_sweep.rs`) — 8.5x faster on host, and
+                        // the ~12.2 KB `osd_decode` stack frame this crate's
+                        // embedded stack audit found (two-thirds of it one
+                        // unpacked `[[u8;162];50]` matrix) drops to ~5 KB.
+                        #[cfg(all(feature = "std", feature = "instrument"))]
+                        let t_osd = crate::clock::Tick::now();
+                        let osd_res = super::osd::osd_decode_packed(&llrs);
+                        #[cfg(all(feature = "std", feature = "instrument"))]
+                        super::instrument::add_us(
+                            &super::instrument::OSD_US,
+                            t_osd.elapsed_micros() as u32,
+                        );
+                        let Some((info, nhardmin)) = osd_res else {
+                            continue;
+                        };
+                        // wsprd's structural gate (`wsprd.c:1462-1468`): an OSD result
+                        // is accepted only for a callsign an earlier decode already
+                        // confirmed. Replaces an `nhardmin <= 44` threshold that
+                        // measurement showed cannot separate the two populations.
+                        let Some(msg) = crate::msg::Wspr50Message
+                            .unpack(&info, &crate::engine::DecodeContext::default())
+                        else {
+                            continue;
+                        };
+                        if !table.accepts(&msg) {
+                            continue;
+                        }
+                        #[cfg(feature = "instrument")]
+                        super::instrument::bump(&super::instrument::OSD_OK);
+                        // What `fano` says of the codeword, for the result's fields.
+                        let mut cw = [0u8; 162];
+                        codec.encode(&info, &mut cw);
+                        let f = codec.decode_codeword(
+                            &cw,
+                            ladder.max_cycles_per_bit,
+                            ladder.bias,
+                            &mut fano_scratch,
+                        );
+                        (info, nhardmin as i32, f.cycles, f.metric, 1u8)
+                    }
+                    // `wsprd -o n` (`wsprd.c:1422-1469`): `osdwspr` on the quantised soft
+                    // symbols, `fano` on its codeword, then the table gate.
+                    (OsdSel::Wsprd(ndepth), Some(table)) => {
+                        #[cfg(feature = "instrument")]
+                        super::instrument::bump(&super::instrument::OSD_ATTEMPTS);
+                        let mut ss = [0f32; 162];
+                        for (o, q) in ss
+                            .iter_mut()
+                            .zip(crate::fec::conv::fano::wsprd_quantised_symbols(&llrs))
+                        {
+                            *o = f32::from(q) - 128.0;
+                        }
+                        let osd = super::osdwspr::osdwspr(&ss, i32::from(ndepth));
+                        let f = codec.decode_codeword(
+                            &osd.cw,
+                            ladder.max_cycles_per_bit,
+                            ladder.bias,
+                            &mut fano_scratch,
+                        );
+                        let mut info = [0u8; 50];
+                        info.copy_from_slice(&f.info);
+                        match crate::msg::wspr::osd_probe(&info) {
+                            crate::msg::wspr::OsdProbe::Break => break 'jitter,
+                            crate::msg::wspr::OsdProbe::Skip => continue,
+                            crate::msg::wspr::OsdProbe::Candidate(msg) => {
+                                if !table.accepts(&msg) {
+                                    continue;
+                                }
+                            }
+                        }
+                        #[cfg(feature = "instrument")]
+                        super::instrument::bump(&super::instrument::OSD_OK);
+                        (info, osd.nhardmin, f.cycles, f.metric, 1u8)
+                    }
+                    _ => continue,
+                }
             };
             let Some(message) = crate::msg::Wspr50Message
                 .unpack(&info_bits, &crate::engine::DecodeContext::default())
             else {
-                continue;
+                // `unpk_`'s `noprint`: accepted, then neither printed nor subtracted.
+                return LadderOutcome::NoPrint;
             };
             let lag_audio = lag * 32;
             let dt_sec = lag_audio as f32 / sample_rate as f32 - 1.0;
-            let candidate = WsprResult {
-                message: message.clone(),
+            // wsprd stops at the first success: its `while` conditions
+            // are `ib <= nblocksize && not_decoded` and
+            // `not_decoded && idt <= ...`, so neither loop keeps going
+            // once a codeword is accepted.
+            return LadderOutcome::Decoded(WsprResult {
+                message,
                 freq_hz: best_freq + super::baseband::CENTER_HZ
                     - 1.5 * super::demod::TONE_SPACING_HZ,
                 start_sample: lag_audio.max(0) as usize,
@@ -732,28 +1009,19 @@ fn decode_from_refined(
                 info_bits,
                 snr_db: 0.0,
                 hashed_call: None,
-            };
-            let he = hard_errors;
-            match message {
-                crate::msg::WsprMessage::Type1 { .. } | crate::msg::WsprMessage::Type2 { .. } => {
-                    if best_type1.as_ref().is_none_or(|(b, _)| he < *b) {
-                        best_type1 = Some((he, candidate));
-                    }
-                }
-                crate::msg::WsprMessage::Type3 { .. } => {
-                    if best_other.as_ref().is_none_or(|(b, _)| he < *b) {
-                        best_other = Some((he, candidate));
-                    }
-                }
-            }
-            // wsprd stops at the first success: its `while` conditions
-            // are `ib <= nblocksize && not_decoded` and
-            // `not_decoded && idt <= ...`, so neither loop keeps going
-            // once a codeword is accepted.
-            break 'rungs;
+                freq_offset_hz: best_freq,
+                sync: 0.0,
+                pass: 0,
+                blocksize: if nblock == 0 { 4 } else { nblock as u8 },
+                jitter: IIFAC * ii,
+                decode_type,
+                nhardmin,
+                cycles,
+                metric,
+            });
         }
     }
-    best_type1.map(|(_, d)| d).or(best_other.map(|(_, d)| d))
+    LadderOutcome::Failed
 }
 
 /// Fano's cycle budget per bit, `wsprd.c:819` `maxcycles = 10000` (the
@@ -764,35 +1032,67 @@ pub(crate) const WSPR_FANO_CYCLE_BUDGET: u64 = 10_000;
 #[cfg(feature = "wspr-fano-cap-fast")]
 pub(crate) const WSPR_FANO_CYCLE_BUDGET: u64 = 5_000;
 
-/// What a candidate's decode ladder tries: `wsprd`'s `-q` (no DT
-/// peak-up jitter) and `-C` (Fano cycles per bit).
+/// Which OSD a scan runs, `wsprd`'s `-o` (`wsprd.c:826,1422`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OsdSel {
+    /// This crate's own OSD, the one the [`Depth`](crate::decoder::Depth) mapping has always
+    /// run: the final pass only, an order-2 sweep (`wspr::osd`), gated on the callsign
+    /// table.
+    Legacy,
+    /// `-o -1`, `wsprd`'s default: none.
+    Off,
+    /// `-o n`: `osdwspr` (`wspr::osdwspr`) at `ndepth = n` on every rung of every pass,
+    /// gated on the callsign table.
+    Wsprd(u8),
+}
+
+/// What a candidate's decode ladder tries: `wsprd`'s `-q` (no DT
+/// peak-up jitter), `-C` (Fano cycles per bit), `-z` (Fano metric bias), `-o`
+/// (OSD) and whether decodes are subtracted (`-s` turns it off).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Ladder {
     /// Retry the demodulation at `shift ± 8k` baseband samples
     /// (`wsprd.c:1366-1475`); `-q` (`quickmode`) tries position 0 only.
     pub jitter: bool,
     pub max_cycles_per_bit: u64,
+    /// `bias` (`wsprd.c:823`, `-z`): subtracted from `metric_tables[2]` to build `mettab`
+    /// (`wsprd.c:933-937`).
+    pub bias: f32,
+    pub osd: OsdSel,
+    /// `subtraction` (`wsprd.c:827`): a decode is subtracted from the data, and only then
+    /// does `wsprd` count its hard errors (`wsprd.c:1494-1500`).
+    pub subtraction: bool,
 }
 
 impl Ladder {
     pub(crate) const DEFAULT: Ladder = Ladder {
         jitter: true,
         max_cycles_per_bit: WSPR_FANO_CYCLE_BUDGET,
+        bias: crate::fec::ConvFano::METRIC_BIAS,
+        osd: OsdSel::Legacy,
+        subtraction: true,
     };
 }
 
 /// What a scan does, after the arguments the WSJT-X GUI gives `wsprd` per
 /// decoding depth (`mainwindow.cpp:2824-2826`): Fast `-qB`, Normal
 /// `-C 500 -o 4`, Deep `-C 500 -o 4 -d`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ScanDepth {
-    /// `npasses` (`wsprd.c:825`): 2 stops after the two early passes, 3
-    /// adds the final one with the coherent-block ladder and OSD.
+    /// `npasses` (`wsprd.c:825`): 1 is `-s`, 2 is `-B` and stops after the two early
+    /// passes, 3 adds the final one with the coherent-block ladder.
     pub passes: u8,
     pub ladder: Ladder,
     /// `-d`: also take every third spectrum bin above the SNR floor as a
     /// candidate (`wsprd.c:1161-1169`).
     pub more_candidates: bool,
+    /// `wsprd`'s candidate selection: `Some((fmin, fmax))` keeps the candidates whose
+    /// frequency offset from 1500 Hz is inside the window (`wsprd.c:781,1172-1183`), taking
+    /// them in `wsprd`'s order (the first 200 local maxima, then `-d`'s). `None` is this
+    /// crate's own (the strongest `max_candidates`, no window).
+    pub freq_window: Option<(f32, f32)>,
+    /// `-e` (`wsprd.c:1172-1176`): added to the window, once per pass the loop runs.
+    pub dial_error_hz: f64,
 }
 
 impl ScanDepth {
@@ -801,6 +1101,8 @@ impl ScanDepth {
         passes: 3,
         ladder: Ladder::DEFAULT,
         more_candidates: false,
+        freq_window: None,
+        dial_error_hz: 0.0,
     };
 }
 
@@ -1075,7 +1377,9 @@ struct SicPass<'a> {
     /// The block sizes the pass's ladder tries, in order (`0` is the
     /// bit-by-bit rung).
     nblocks: &'a [usize],
-    /// Whether OSD may rescue a candidate Fano gave up on (final pass only).
+    /// `wsprd`'s `ipass`.
+    index: u8,
+    /// Whether OSD may rescue a candidate Fano gave up on.
     use_osd: bool,
 }
 
@@ -1196,7 +1500,7 @@ fn sic_pass(
             break;
         }
         let osd = pass.use_osd.then_some(&*confirmed);
-        let Some(mut d) = decode_from_refined(
+        let mut d = match ladder_decode(
             idat,
             qdat,
             sample_rate,
@@ -1208,19 +1512,25 @@ fn sic_pass(
             osd,
             budget,
             ladder,
-        ) else {
-            continue;
+        ) {
+            LadderOutcome::Decoded(d) => d,
+            LadderOutcome::NoPrint => {
+                // Counted, as `ndecodes_pass++` (`wsprd.c:1479`) is; not subtracted
+                // (`subtraction && !noprint`), not listed.
+                ndecodes += 1;
+                continue;
+            }
+            LadderOutcome::Failed => continue,
         };
         ndecodes += 1;
-        let symbols = super::encode_channel_symbols(&d.info_bits);
-        super::subtract::subtract_signal_baseband(
-            idat,
-            qdat,
-            r.freq + super::baseband::CENTER_HZ,
-            r.lag,
-            d.drift_hz,
-            &symbols,
-        );
+        if ladder.subtraction {
+            let symbols = super::encode_channel_symbols(&d.info_bits);
+            super::subtract::subtract_signal_baseband_at(
+                idat, qdat, r.freq, r.lag, d.drift_hz, &symbols,
+            );
+        }
+        d.sync = r.sync;
+        d.pass = pass.index;
         // wsprd prints `dt = shift1 * dt - 1.0` (`wsprd.c:1473`): the refined
         // alignment, not the jittered one the decode succeeded at (up to
         // +-64 baseband samples, 0.17 s, away).
@@ -1313,6 +1623,18 @@ pub(super) fn decode_scan_inner(
     // at the right (freq, dt) for weak signals next to strong ones
     // (W5BIT, W3BI). See `coarse_baseband.rs`.
     let max_drift = 4i32;
+    // `wsprd.c:1172-1176`: `fmin += dialfreq_error; fmax += dialfreq_error;` runs **once per
+    // pass the loop executes**, inside it, so with `-e` the window drifts by `-e` more every
+    // pass: ported as it is (a faithful port; it is why `-e 60` loses G8VDQ, which only the
+    // final pass finds, on the golden).
+    let mut window = depth.freq_window;
+    let shift_window = |w: &mut Option<(f32, f32)>| {
+        if let Some((lo, hi)) = w {
+            *lo = (f64::from(*lo) + depth.dial_error_hz) as f32;
+            *hi = (f64::from(*hi) + depth.dial_error_hz) as f32;
+        }
+    };
+    shift_window(&mut window);
     let bb_cands = super::coarse_baseband::coarse_baseband_ext(
         &idat,
         &qdat,
@@ -1320,6 +1642,7 @@ pub(super) fn decode_scan_inner(
         params.max_candidates,
         max_drift,
         depth.more_candidates,
+        window,
     );
     // Use the wsprd-equivalent coarse only. Legacy `coarse_search`
     // (12 kHz spectrogram) costs ~30 s of recall-test runtime on a
@@ -1433,42 +1756,80 @@ pub(super) fn decode_scan_inner(
     // upstream, differed from `wsprd`'s by 2.6 levels of 256, and G8VDQ (which
     // `wsprd` decodes at 8080 Fano cycles/bit, this crate needed 13318) was
     // lost.
-    let mut ndecodes_pass0 = 0usize;
-    for early_pass in 0..2 {
-        // `wsprd.c:1064`.
-        if early_pass == 1 && ndecodes_pass0 == 0 {
-            break;
+    // `wsprd.c:1063-1077`: `for (ipass = 0; ipass < npasses; ipass++)`, and pass 1 is
+    // skipped (`ipass = 2`) only when pass 0 decoded nothing **and** `npasses > 2`: with `-B`
+    // (`npasses = 2`) pass 1 always runs, with `-s` (1) it does not exist. A skipped pass 1
+    // is not a pass 2 (`maxdrift = 0`, `minsync2 = 0.10`, the coherent-block ladder) that was
+    // moved: the loop still ends at `npasses`.
+    //
+    // Passes 0 and 1: `nblocksize = 1`, `maxdrift = 4`, `minsync2 = 0.12`; pass 2: all four
+    // rungs, `maxdrift = 0`, `minsync2 = 0.10` ("no drift for smaller frequency estimator
+    // variance"). Each pass searches the data as the one before left it.
+    let mut first_pass_cands = Some(core::mem::take(&mut cands));
+    let mut ndecodes_pass = 0usize;
+    let mut ipass = 0u8;
+    while ipass < depth.passes {
+        if ipass == 1 && ndecodes_pass == 0 && depth.passes > 2 {
+            ipass = 2;
         }
         if spent() {
             break;
         }
-        // Pass 0 works on the coarse candidates computed above; pass 1
-        // re-runs the coarse over the residual left by pass 0's
-        // subtraction.
-        let pass_cands = if early_pass == 0 {
-            core::mem::take(&mut cands)
-        } else {
-            let mut c = super::coarse_baseband::coarse_baseband_ext(
+        let early = ipass < 2;
+        let pass_cands = match first_pass_cands.take() {
+            Some(c) => c,
+            None => {
+                shift_window(&mut window);
+                let mut c = super::coarse_baseband::coarse_baseband_ext(
+                    &idat,
+                    &qdat,
+                    pad,
+                    params.max_candidates,
+                    if early { max_drift } else { 0 },
+                    depth.more_candidates,
+                    window,
+                );
+                c.truncate(params.max_candidates);
+                c
+            }
+        };
+        // Feature `wspr-pass2-topn` (embedded targets only — see `decode_pass2_top_n`)
+        // swaps the final pass's sequential, wsprd-faithful loop for one that refines and
+        // `minsync2`-filters every candidate first, then runs the expensive ladder only on
+        // the top `PASS2_DEEP_LADDER_TOP_N` by refined sync, in parallel; it does not
+        // subtract inside the pass.
+        #[cfg(feature = "wspr-pass2-topn")]
+        if !early {
+            let raw2: Vec<WsprResult> = decode_pass2_top_n(
                 &idat,
                 &qdat,
+                sample_rate,
                 pad,
-                params.max_candidates,
-                max_drift,
-                depth.more_candidates,
+                &pass_cands,
+                &confirmed,
+                budget,
             );
-            c.truncate(params.max_candidates);
-            c
-        };
-        let n = sic_pass(
+            for d in raw2 {
+                push_unique(&mut seen, d, FREQ_DEDUP_HZ, TIME_DEDUP_SAMPLES, on_result);
+            }
+            ipass += 1;
+            continue;
+        }
+        ndecodes_pass = sic_pass(
             &mut idat,
             &mut qdat,
             &pass_cands,
             sample_rate,
             pad,
             SicPass {
-                early: true,
-                nblocks: &[1],
-                use_osd: false,
+                early,
+                index: ipass,
+                nblocks: if early { &[1] } else { &[1, 2, 3, 0] },
+                use_osd: match ladder.osd {
+                    OsdSel::Legacy => !early,
+                    OsdSel::Off => false,
+                    OsdSel::Wsprd(_) => true,
+                },
             },
             &mut confirmed,
             ladder,
@@ -1476,90 +1837,18 @@ pub(super) fn decode_scan_inner(
             budget,
             on_result,
         );
-        if early_pass == 0 {
-            ndecodes_pass0 = n;
-        }
+        ipass += 1;
     }
 
-    // Pass 2 — wsprd's final pass. The residual now has both earlier
-    // passes' decodes removed; what is left are the signals that were
-    // buried under stronger neighbours.
-    //
-    // It runs unconditionally. `wsprd.c:1064` skips **pass 1** when pass
-    // 0 decoded nothing (`ipass = 2`), never pass 2 — a slot where the
-    // early passes found nothing is exactly the one that most needs the
-    // final pass's coherent-block ladder and zero-drift estimate.
-    // `-B` (npasses = 2) stops after the two early passes.
-    if depth.passes >= 3 && !spent() {
-        // wsprd's pass 2 sets `maxdrift = 0` — "no drift for smaller
-        // frequency estimator variance" (`wsprd.c:1070-1073`). Passes 0
-        // and 1 search ±4; the final pass deliberately does not, because
-        // by then the strong signals have been subtracted and the
-        // remaining weak ones are better served by a lower-variance
-        // frequency estimate than by a wider search.
-        const PASS2_MAX_DRIFT: i32 = 0;
-        let bb_cands2 = super::coarse_baseband::coarse_baseband_ext(
-            &idat,
-            &qdat,
-            pad,
-            params.max_candidates,
-            PASS2_MAX_DRIFT,
-            depth.more_candidates,
-        );
-        // Pass 2 uses nblock = 1, 2, 3 and the bit-by-bit rung (coherent block
-        // detection) for the +3..+4.8 dB margin needed to decode signals like
-        // W3BI at -27 dB SNR, with OSD gated on `confirmed`.
-        //
-        // Feature `wspr-pass2-topn` (embedded targets only — see
-        // `decode_pass2_top_n`) swaps the sequential, wsprd-faithful loop for
-        // one that refines and `minsync2`-filters every candidate first, then
-        // runs the expensive ladder only on the top `PASS2_DEEP_LADDER_TOP_N`
-        // by refined sync, in parallel; it does not subtract inside the pass.
-        #[cfg(feature = "wspr-pass2-topn")]
-        {
-            let raw2: Vec<WsprResult> = decode_pass2_top_n(
-                &idat,
-                &qdat,
-                sample_rate,
-                pad,
-                &bb_cands2,
-                &confirmed,
-                budget,
-            );
-            for d in raw2 {
-                push_unique(&mut seen, d, FREQ_DEDUP_HZ, TIME_DEDUP_SAMPLES, on_result);
-            }
-        }
-        #[cfg(not(feature = "wspr-pass2-topn"))]
-        {
-            sic_pass(
-                &mut idat,
-                &mut qdat,
-                &bb_cands2,
-                sample_rate,
-                pad,
-                SicPass {
-                    early: false,
-                    nblocks: &[1, 2, 3, 0],
-                    use_osd: true,
-                },
-                &mut confirmed,
-                ladder,
-                &mut seen,
-                budget,
-                on_result,
-            );
-        }
-    }
-
-    // Hand this slot's confirmations back to the caller's cross-slot
-    // table. `seen` holds OSD-derived results too, but recording them
-    // cannot widen the table: `WsprCallsignTable::accepts` only
-    // admits an OSD result whose callsign is *already* an entry, so
-    // re-recording it is a no-op. No OSD decode can therefore
-    // bootstrap a new callsign into the table for the next slot —
-    // every entry still traces back to a Fano decode.
+    // Hand this slot's table back to the caller's cross-slot one: what it held and
+    // every decode of the slot stored, in `wsprd`'s order (`unpk_` stores at once,
+    // duplicates included, `wsprd.c:1479`), which is what `hashtable.txt` is made of.
+    // An OSD decode cannot widen it: `WsprCallsignTable::accepts` only admits a call
+    // that is *already* an entry, so every entry still traces back to a Fano decode.
     if let Some(t) = carried {
+        *t = confirmed;
+        // The embedded final pass (`decode_pass2_top_n`) decodes without storing.
+        #[cfg(feature = "wspr-pass2-topn")]
         for d in &seen {
             t.record(&d.message);
         }

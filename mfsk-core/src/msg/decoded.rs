@@ -329,6 +329,15 @@ mod tests {
             info_bits: [0u8; 50],
             snr_db: -20.0,
             hashed_call: None,
+            freq_offset_hz: -100.0,
+            sync: 0.0,
+            pass: 0,
+            blocksize: 1,
+            jitter: 0,
+            decode_type: 0,
+            nhardmin: 0,
+            cycles: 0,
+            metric: 0,
         };
 
         let d = r.to_decoded();

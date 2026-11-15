@@ -29,7 +29,7 @@ pub mod qra;
 #[cfg(feature = "q65")]
 pub mod qra15_65_64;
 
-pub use conv::{ConvFano, ConvFano232};
+pub use conv::{ConvFano, ConvFano232, FanoDetail};
 pub use ldpc::Ldpc174_91;
 pub use ldpc_128_90::Ldpc128_90;
 pub use ldpc240_74::Ldpc240_74;

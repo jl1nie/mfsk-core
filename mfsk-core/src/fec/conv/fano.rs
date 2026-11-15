@@ -113,15 +113,38 @@ pub fn build_branch_metrics(llrs: &[f32], bias: f32, scale: f32) -> Vec<[i32; 2]
 /// matching `wspr::demod`'s `p0 − p1`); wsprd's `fsymb` is `xm1 − xm0`,
 /// the opposite, so the sign flips on the way in.
 pub fn build_branch_metrics_wsprd(llrs: &[f32], bias: f32) -> Vec<[i32; 2]> {
-    use super::metric_table::WSPRD_METRIC_TABLE as T;
     wsprd_normalised_symbols(llrs)
-        .map(|v| {
-            let sym = ((v + 128.0) as usize).min(255);
-            let m0 = (10.0 * (T[sym] - bias)).round() as i32;
-            let m1 = (10.0 * (T[255 - sym] - bias)).round() as i32;
-            [m0, m1]
-        })
+        .map(|v| wsprd_mettab(((v + 128.0) as usize).min(255), bias))
         .collect()
+}
+
+/// One column of wsprd's `mettab` for the quantised soft symbol `sym`
+/// (`wsprd.c:933-937`): `mettab[0][i] = round(10 * (T[i] - bias))`,
+/// `mettab[1][i] = round(10 * (T[255 - i] - bias))`, where `T` is `metric_tables[2]`
+/// and `bias` a C `float` (`-z`, default 0.45). Single precision throughout, as the C
+/// (`float` table, `float` bias, `round` on the promoted product).
+pub fn wsprd_mettab(sym: usize, bias: f32) -> [i32; 2] {
+    use super::metric_table::WSPRD_METRIC_TABLE as T;
+    let m0 = (10.0 * (T[sym] - bias)).round() as i32;
+    let m1 = (10.0 * (T[255 - sym] - bias)).round() as i32;
+    [m0, m1]
+}
+
+/// [`build_branch_metrics_wsprd`] for symbols already quantised to `0..=255`, as
+/// `wsprd.c:1431` hands the OSD codeword to `fano` (`symbols[i] = 255 * cw[i]`).
+pub fn build_branch_metrics_symbols(symbols: &[u8], bias: f32) -> Vec<[i32; 2]> {
+    symbols
+        .iter()
+        .map(|&s| wsprd_mettab(usize::from(s), bias))
+        .collect()
+}
+
+/// The soft symbols `wsprd`'s `symbols[]` holds after `noncoherent_sequence_detection`
+/// (`wsprd.c:497`: `symbols[i] = fsymb[i] + 128`, a float truncated into an
+/// `unsigned char`), from this crate's LLRs. The quantisation `osdwspr` and the RMS gate
+/// see, which the float soft symbols of [`wsprd_normalised_symbols`] do not carry.
+pub fn wsprd_quantised_symbols(llrs: &[f32]) -> impl Iterator<Item = u8> + '_ {
+    wsprd_normalised_symbols(llrs).map(|v| (v + 128.0) as u8)
 }
 
 /// `symfac`, `wsprd.c:816`.
