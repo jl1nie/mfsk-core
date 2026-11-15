@@ -4,7 +4,7 @@
 //!
 //! One test per case of `tests/fixtures/wsprd_beta6/` (regenerate with
 //! `scripts/wsprd/gen_fixtures.sh`). Each reads the case's `args` (a `wsprd` command line), turns
-//! it into [`WsprExtras`] the way the C parses it (`wsprd.c:853-940`), decodes through
+//! it into [`WsprExtras`] the way the C parses it (`wsprd.c:859-918`), decodes through
 //! `Decoder<Wspr>`, formats through [`mfsk_core::wspr::wsprd_fmt`] and asserts the three text
 //! outputs and the saved `hashtable.txt` **byte-equal** to the fixture:
 //!
@@ -16,6 +16,13 @@
 //!
 //! Equality of the whole file is also the precision assertion: a decode `wsprd` does not make is a
 //! line the fixture lacks, and the test fails on it exactly as on a missing one.
+//!
+//! `t3*` and `far*` run on synthetic recordings (`common/wspr_t3.rs`, integer noise and the crate's
+//! own synthesiser) instead of the golden, so that `wsprd`'s behaviour on a Type 3 whose call is not
+//! in the table (it subtracts the codeword of `nhash("...")`, counts its hard errors against that,
+//! and so never sees the weak W1AW beside it) and on the 13-byte callsign buffer is vendored
+//! without a 2.9 MB WAV. The `Depth` path is tested not to do the same
+//! (`depth_path_subtracts_the_decoded_codeword`).
 //!
 //! The fixtures were made in a directory with no `hashtable.txt`, so the decoder starts with an
 //! empty table too, except the `pre*` cases, which start from the table `f` saved
@@ -33,8 +40,38 @@ use mfsk_core::Wspr;
 use mfsk_core::decoder::{DecodeParams, Decoder, SlotInput, WsprExtras};
 use mfsk_core::wspr::{WsprCallsignTable, WsprResult, wsprd_fmt};
 
-const DATE: &str = "150426";
-const TIME: &str = "0918";
+#[allow(dead_code)]
+#[path = "common/wspr_t3.rs"]
+mod wspr_t3;
+
+/// Where a case's audio comes from, and the date and time `wsprd` read from its file name: the
+/// golden, or one of the synthetic recordings of `common/wspr_t3.rs` (`t3*`, `far*`), which
+/// `gen_fixtures.sh` writes through `examples/gen_wsprd_t3_wav.rs` and this rebuilds in memory.
+enum Audio {
+    Golden(Vec<f32>),
+    Synthetic(Vec<i16>),
+}
+
+fn source(case: &str) -> Option<(Audio, &'static str, &'static str)> {
+    if case.starts_with("t3") {
+        return Some((Audio::Synthetic(wspr_t3::build()), "250101", "0000"));
+    }
+    if case.starts_with("far") {
+        return Some((Audio::Synthetic(wspr_t3::build_far()), "250101", "0002"));
+    }
+    let Some(path) = common::corpus::golden_path_or_upstream(
+        "wspr/150426_0918.wav",
+        Some("WSPR/150426_0918.wav"),
+    ) else {
+        common::skip_or_fail("WSPR golden");
+        return None;
+    };
+    Some((
+        Audio::Golden(common::load_wav_f32_opt(&path).expect("wav")),
+        "150426",
+        "0918",
+    ))
+}
 
 fn fixture(case: &str, file: &str) -> PathBuf {
     PathBuf::from(concat!(
@@ -58,7 +95,7 @@ struct Cli {
     no_table: bool,
 }
 
-/// `wsprd.c:853-940`'s `getopt("a:BcC:de:f:HJmo:qstwvz:0")`, for the options the fixtures use.
+/// `wsprd.c:859-918`'s `getopt("a:BcC:de:f:HJmo:qstwvz:0")`, for the options the fixtures use.
 fn parse(args: &str) -> Cli {
     let mut extras = WsprExtras::wsprd();
     let mut dial_cmdline = 0.0f64;
@@ -117,7 +154,7 @@ fn parse(args: &str) -> Cli {
     }
     Cli {
         extras,
-        // `wsprd.c:1002`.
+        // `wsprd.c:1003`.
         dial_mhz: dial_cmdline - dial_error * 1.0e-6,
         no_table,
     }
@@ -127,31 +164,30 @@ fn parse(args: &str) -> Cli {
 fn run(case: &str, table_in: Option<&str>) -> (String, String, String, Option<String>) {
     let args = read(case, "args").expect("args");
     let cli = parse(args.trim());
-    let Some(path) = common::corpus::golden_path_or_upstream(
-        "wspr/150426_0918.wav",
-        Some("WSPR/150426_0918.wav"),
-    ) else {
-        common::skip_or_fail("WSPR golden");
+    let Some((audio, date, time)) = source(case) else {
         return Default::default();
     };
-    let audio = common::load_wav_f32_opt(&path).expect("wav");
     let mut d = Decoder::<Wspr>::new(DecodeParams::for_band((1400.0, 1620.0)))
         .with_extras(cli.extras.clone());
-    // `wsprd.c:1050-1062`: without `-H` the table is loaded from `hashtable.txt` first.
+    // `wsprd.c:1051-1060`: without `-H` the table is loaded from `hashtable.txt` first.
     if let (false, Some(t)) = (cli.no_table, table_in) {
         *d.state_mut().table_mut() = WsprCallsignTable::from_hashtable_txt(t);
     }
-    let rows = d.decode(&SlotInput::f32(&audio)).rows;
+    let rows = match &audio {
+        Audio::Golden(a) => d.decode(&SlotInput::f32(a)),
+        Audio::Synthetic(a) => d.decode(&SlotInput::i16(a)),
+    }
+    .rows;
     let results: Vec<WsprResult> = rows.into_iter().map(|r| r.native).collect();
 
     let (mut out, mut all, mut spots) = (String::new(), String::new(), String::new());
     for r in wsprd_fmt::in_wsprd_order(&results, cli.dial_mhz) {
-        out += &wsprd_fmt::stdout_line(r, TIME, cli.dial_mhz);
-        all += &wsprd_fmt::all_wspr_line(r, DATE, TIME, cli.dial_mhz);
-        spots += &wsprd_fmt::spots_line(r, DATE, TIME, cli.dial_mhz);
+        out += &wsprd_fmt::stdout_line(r, time, cli.dial_mhz);
+        all += &wsprd_fmt::all_wspr_line(r, date, time, cli.dial_mhz);
+        spots += &wsprd_fmt::spots_line(r, date, time, cli.dial_mhz);
     }
     out += wsprd_fmt::DECODE_FINISHED;
-    // `wsprd.c:1636-1645`: saved at the end unless `-H`.
+    // `wsprd.c:1637-1645`: saved at the end unless `-H`.
     let table = (!cli.no_table).then(|| d.state().table().to_hashtable_txt());
     (out, all, spots, table)
 }
@@ -202,6 +238,13 @@ cases! {
     f_b => "f_B",
     f_q => "f_q",
     f_e45 => "f_e45",
+    // Synthetic: a Type 3 whose call is not in the table (`<...>`) with a -27 dB W1AW beside it;
+    // the same with an 11-character call in the Type 3's bucket; a call outside the window that
+    // `-e -10` moves into it on the second pass, with and without `-B`.
+    t3 => "t3",
+    t3_long => "t3_long",
+    far_b_e10 => "far_B_e10",
+    far_e10 => "far_e10",
     // Started from the table `f` saved: OSD now has calls to accept.
     pre => "pre",
     pre_o0 => "pre_o0",
@@ -214,7 +257,7 @@ cases! {
     pre_o4_s => "pre_o4_s",
 }
 
-/// `hashtable.txt` read and written as `wsprd` does (`wsprd.c:1053-1060`, `1636-1645`,
+/// `hashtable.txt` read and written as `wsprd` does (`wsprd.c:1051-1060`, `1636-1645`,
 /// `wsprd_load_hash_line`): every case's saved table loads and saves back byte-identically.
 #[test]
 fn hashtable_round_trip() {
@@ -230,4 +273,54 @@ fn hashtable_round_trip() {
         n += 1;
     }
     assert!(n >= 11, "only {n} hashtables found");
+}
+
+/// The `Depth` path subtracts the codeword it decoded, not the one `wsprd` rebuilds from the
+/// printed `<...>` text (a deliberate divergence, CLAUDE.md §2.1), so on the `t3` recording it
+/// decodes the weak W1AW beside the Type 3 that `wsprd` never hears, and with `wsprd`'s replica
+/// switched on it does not.
+#[test]
+fn depth_path_subtracts_the_decoded_codeword() {
+    let samples = wspr_t3::build();
+    let texts = |e: WsprExtras| -> Vec<String> {
+        let mut d = Decoder::<Wspr>::new(DecodeParams::for_band((1400.0, 1620.0))).with_extras(e);
+        d.decode(&SlotInput::i16(&samples))
+            .rows
+            .into_iter()
+            .map(|r| r.decoded.text)
+            .collect()
+    };
+    let wsprd = texts(WsprExtras::wsprd());
+    assert_eq!(wsprd, ["<...> FN42AB 37"], "wsprd's replica");
+    let depth = texts(WsprExtras::default());
+    assert!(
+        depth.iter().any(|t| t.starts_with("W1AW FN31")),
+        "{depth:?}"
+    );
+    let right = texts(WsprExtras::wsprd().with_replica_from_text(false));
+    assert!(
+        right.iter().any(|t| t.starts_with("W1AW FN31")),
+        "{right:?}"
+    );
+}
+
+/// `dial_error_hz` moves a window, and `wsprd` always has one, so without `freq_span_hz` it brings
+/// `wsprd`'s +/-110 Hz: the same decodes as the explicit span.
+#[test]
+fn dial_error_implies_the_span() {
+    let Some((Audio::Golden(a), _, _)) = source("f") else {
+        return;
+    };
+    let texts = |e: WsprExtras| -> Vec<String> {
+        let mut d = Decoder::<Wspr>::new(DecodeParams::for_band((1400.0, 1620.0))).with_extras(e);
+        d.decode(&SlotInput::f32(&a))
+            .rows
+            .into_iter()
+            .map(|r| r.decoded.text)
+            .collect()
+    };
+    let mut implied = WsprExtras::wsprd().with_dial_error_hz(60.0);
+    implied.freq_span_hz = None;
+    let explicit = WsprExtras::wsprd().with_dial_error_hz(60.0);
+    assert_eq!(texts(implied), texts(explicit));
 }

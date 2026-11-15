@@ -20,7 +20,7 @@
 //! | 4 | 2 | 1 | 1 | 22 |
 //! | 5 | 3 | 1 | 1 | 22 |
 //!
-//! `apmask` is all zero in `wsprd` (`wsprd.c:802`, `calloc`), so the `apmaskr` tests are
+//! `apmask` is all zero in `wsprd` (`wsprd.c:804`, `calloc`), so the `apmaskr` tests are
 //! not ported.
 
 use alloc::vec;

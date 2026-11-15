@@ -36,6 +36,10 @@ CASES=(
   "f_B|-f 10.1387 -B"
   "f_q|-f 10.1387 -q"
   "f_e45|-f 10.1387 -e 45"
+  "t3|-f 10.1387"
+  "t3_long|-f 10.1387"
+  "far_B_e10|-f 10.1387 -B -e -10"
+  "far_e10|-f 10.1387 -e -10"
   "pre|-f 10.1387|f"
   "pre_o0|-f 10.1387 -o 0|f"
   "pre_o1|-f 10.1387 -o 1|f"
@@ -46,11 +50,25 @@ CASES=(
   "pre_C500_o4_d|-f 10.1387 -C 500 -o 4 -d|f"
   "pre_o4_s|-f 10.1387 -o 4 -s|f"
 )
+# The `t3*` cases run on a synthetic recording (a Type 3 whose call is not in the table, and a
+# -27 dB W1AW beside it), written byte-identically by tests/common/wspr_t3.rs through an example
+# so that no 2.9 MB WAV is vendored; the test rebuilds it in memory.
+T3WAV="$TMP/250101_0000.wav"
+(cd "$REPO_ROOT" && cargo run -q --release -p mfsk-core --example gen_wsprd_t3_wav \
+   --features full,internal-testing -- "$T3WAV")
+# `far*`: one strong call at f1 -126 Hz, outside the +/-110 Hz window until -e -10 moves it twice.
+FARWAV="$TMP/far/250101_0002.wav"; mkdir -p "$TMP/far"
+(cd "$REPO_ROOT" && cargo run -q --release -p mfsk-core --example gen_wsprd_t3_wav \
+   --features full,internal-testing -- "$FARWAV" far)
 run() { # dir, seed hashtable ('' for none), options...
   local d=$1 seed=$2; shift 2
-  mkdir -p "$d"; cp "$WAV" "$d/150426_0918.wav"
+  local wavsrc=$WAV
+  [[ "$(basename "$d")" == t3* ]] && wavsrc=$T3WAV
+  [[ "$(basename "$d")" == far* ]] && wavsrc=$FARWAV
+  local wavname; wavname=$(basename "$wavsrc")
+  mkdir -p "$d"; cp "$wavsrc" "$d/$wavname"
   if [[ -n "$seed" ]]; then cp "$seed" "$d/hashtable.txt"; fi
-  ( cd "$d" && set +e; "$WSPRD" -a . "$@" 150426_0918.wav > stdout.txt 2> stderr.txt; echo $? > exit )
+  ( cd "$d" && set +e; "$WSPRD" -a . "$@" "$wavname" > stdout.txt 2> stderr.txt; echo $? > exit )
   [[ -s "$d/stderr.txt" ]] && { echo "error: wsprd wrote to stderr in $d" >&2; exit 1; }
   return 0
 }
@@ -59,6 +77,9 @@ for c in "${CASES[@]}"; do
   IFS='|' read -r name opts seedcase <<< "$c"
   seed=""
   if [[ -n "${seedcase:-}" ]]; then seed="$OUT/$seedcase/hashtable.txt"; fi
+  # An 11-character call in the bucket of K1ABC (6521): `<RYEEUQHAFKK>` does not fit unpk_'s
+  # 13-byte callsign buffer, so wsprd does not print or subtract that decode (wsprd_utils.c:392).
+  if [[ "$name" == t3_long ]]; then seed="$TMP/t3_long.hashtable"; printf ' 6521 RYEEUQHAFKK FN42\n' > "$seed"; fi
   # shellcheck disable=SC2086 # options are split on purpose
   run "$TMP/$name.a" "$seed" $opts; run "$TMP/$name.b" "$seed" $opts
   mkdir -p "$OUT/$name"; printf '%s\n' "$opts" > "$OUT/$name/args"

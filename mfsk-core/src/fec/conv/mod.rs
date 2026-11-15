@@ -42,7 +42,7 @@ impl ConvFano {
     pub const DEFAULT_MAX_CYCLES: u64 = 10_000;
     /// LLR → branch-metric quantisation scale.
     pub const METRIC_SCALE: f32 = 16.0;
-    /// Fano metric bias — `wsprd.c:823`'s `bias = 0.45`, applied
+    /// Fano metric bias — `wsprd.c:830`'s `bias = 0.45`, applied
     /// inside [`fano::build_branch_metrics_wsprd`] against the
     /// empirical table. The old value (1.0) belonged to the linear
     /// metric and was, per its own comment, capped by the lack of a
@@ -130,7 +130,7 @@ impl ConvFano {
     /// [`Self::decode_soft_pooled`] with `wsprd`'s `-z` metric bias as an argument
     /// (`bias`, default [`Self::METRIC_BIAS`]) and what `fano()` reports besides the
     /// data: the path metric and the cycle count, as `wsprd` stores them
-    /// (`wsprd.c:1413`, `decodes[].metric` / `.cycles`).
+    /// (`wsprd.c:1416`, `decodes[].metric` / `.cycles`).
     ///
     /// `cycles` is `fano.c`'s `*cycles = i + 1` (`fano.c:249`), one more than this crate's
     /// loop counter, because the C loop variable has not been incremented when it breaks

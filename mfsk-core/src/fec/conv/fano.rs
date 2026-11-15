@@ -119,7 +119,7 @@ pub fn build_branch_metrics_wsprd(llrs: &[f32], bias: f32) -> Vec<[i32; 2]> {
 }
 
 /// One column of wsprd's `mettab` for the quantised soft symbol `sym`
-/// (`wsprd.c:933-937`): `mettab[0][i] = round(10 * (T[i] - bias))`,
+/// (`wsprd.c:944-945`): `mettab[0][i] = round(10 * (T[i] - bias))`,
 /// `mettab[1][i] = round(10 * (T[255 - i] - bias))`, where `T` is `metric_tables[2]`
 /// and `bias` a C `float` (`-z`, default 0.45). Single precision throughout, as the C
 /// (`float` table, `float` bias, `round` on the promoted product).
@@ -141,8 +141,10 @@ pub fn build_branch_metrics_symbols(symbols: &[u8], bias: f32) -> Vec<[i32; 2]> 
 
 /// The soft symbols `wsprd`'s `symbols[]` holds after `noncoherent_sequence_detection`
 /// (`wsprd.c:497`: `symbols[i] = fsymb[i] + 128`, a float truncated into an
-/// `unsigned char`), from this crate's LLRs. The quantisation `osdwspr` and the RMS gate
-/// see, which the float soft symbols of [`wsprd_normalised_symbols`] do not carry.
+/// `unsigned char`), from this crate's LLRs. The quantisation `osdwspr` and `wsprd`'s RMS
+/// gate (`wsprd.c:1400-1408`) see, which the float soft symbols of
+/// [`wsprd_normalised_symbols`] do not carry. The crate's own gate ([`wsprd_soft_symbol_rms`],
+/// the default path) reads those floats; [`wsprd_quantised_rms`] is the one `wsprd` computes.
 pub fn wsprd_quantised_symbols(llrs: &[f32]) -> impl Iterator<Item = u8> + '_ {
     wsprd_normalised_symbols(llrs).map(|v| (v + 128.0) as u8)
 }
@@ -172,6 +174,17 @@ pub fn wsprd_normalised_symbols(llrs: &[f32]) -> impl Iterator<Item = f32> + '_ 
             0.0
         }
     })
+}
+
+/// `wsprd.c:1400-1408`: `rms = sqrt(sum((symbols[i] - 128)^2) / 162)` on the quantised
+/// symbols, summed in single precision in index order.
+pub fn wsprd_quantised_rms(llrs: &[f32]) -> f32 {
+    let mut sq = 0.0f32;
+    for q in wsprd_quantised_symbols(llrs) {
+        let y = f32::from(q) - 128.0;
+        sq += y * y;
+    }
+    (sq / 162.0).sqrt()
 }
 
 /// RMS of the normalised soft symbols — `wsprd.c:1338-1345`'s `rms`.

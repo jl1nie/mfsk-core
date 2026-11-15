@@ -45,7 +45,7 @@ use crate::engine::search::{SearchWindow, rank_and_truncate};
 /// `8 × SYMBOL_DT` is the same window to the row (WSPR's spectrogram
 /// steps at NSPS/4, so 8 symbols is exactly 32 rows either way).
 ///
-/// `max_candidates` is wsprd's own cap (`wsprd.c:1088`, `npk < 200`).
+/// `max_candidates` is wsprd's own cap (`wsprd.c:1154`, `npk < 200`).
 /// 16 was far too tight for a busy band: the coarse search ranks by
 /// sync, and on an 8-signal recording the strong stations plus noise
 /// peaks fill the list long before a -23 dB signal gets a look in.

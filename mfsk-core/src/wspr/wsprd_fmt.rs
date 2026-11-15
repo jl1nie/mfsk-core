@@ -1,12 +1,12 @@
 //! `wsprd`'s output lines, byte for byte, from a [`WsprResult`]: what a `wsprd`-compatible
 //! program prints on stdout, appends to `ALL_WSPR.TXT` and writes to `wspr_spots.txt`
-//! (`wsprd.c:1572-1595`, v3.3.0-beta6). `std` only: the formats go through `format!`, whose
+//! (`wsprd.c:1577-1594`, v3.3.0-beta6). `std` only: the formats go through `format!`, whose
 //! float output is C's (`printf` rounds the exact binary value, to nearest even on a tie;
 //! `-0` prints as `-0` in both).
 //!
 //! The caller supplies what the result does not know: the file's date (`150426`) and time
 //! (`0918`), parsed from its name, and the dial frequency in MHz, which with `-e x` is
-//! `dialfreq - x * 1e-6` (`wsprd.c:1002`). `wsprd` lists its decodes in order of increasing
+//! `dialfreq - x * 1e-6` (`wsprd.c:1003`). `wsprd` lists its decodes in order of increasing
 //! printed frequency ([`in_wsprd_order`]).
 //!
 //! Measured against the vendored `wsprd` v3.3.0-beta6 output on the golden by
@@ -18,13 +18,13 @@ use alloc::vec::Vec;
 
 use super::decode::WsprResult;
 
-/// `wsprd.c:1590`, printed once after the decodes.
+/// `wsprd.c:1600`, printed once after the decodes.
 pub const DECODE_FINISHED: &str = "<DecodeFinished>\n";
 
-/// `freq_print` (`wsprd.c:1496`): `dialfreq + (1500 + f1) / 1e6`, in MHz. `1500 + f1` is a
+/// `freq_print` (`wsprd.c:1522-1525`): `dialfreq + (1500 + f1) / 1e6`, in MHz. `1500 + f1` is a
 /// single-precision sum in the C (`int + float`), then widened.
 pub fn freq_mhz(r: &WsprResult, dial_mhz: f64) -> f64 {
-    dial_mhz + f64::from(1500.0f32 + r.freq_offset_hz) / 1e6
+    dial_mhz + f64::from(1500.0f32 + r.f1_hz) / 1e6
 }
 
 /// The message as `wsprd` prints it (`call_loc_pow`, with a Type 3 call resolved from the
@@ -34,7 +34,7 @@ pub fn message_text(r: &WsprResult) -> String {
 }
 
 /// `r` in the order `wsprd` lists decodes: increasing printed frequency, ties in decode
-/// order (`wsprd.c:1556-1565`, a bubble sort that swaps only on `>`).
+/// order (`wsprd.c:1559-1566`, a bubble sort that swaps only on `>`).
 pub fn in_wsprd_order(results: &[WsprResult], dial_mhz: f64) -> Vec<&WsprResult> {
     let mut v: Vec<&WsprResult> = results.iter().collect();
     v.sort_by(|a, b| {

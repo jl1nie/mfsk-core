@@ -442,7 +442,7 @@ pub fn unpack(bits: &[u8; 50]) -> Option<WsprMessage> {
 }
 
 /// What `wsprd`'s OSD acceptance block makes of an OSD codeword before it consults the hash
-/// table (`wsprd.c:1437-1468`), which unpacks it its own way and not through `unpk_`.
+/// table (`wsprd.c:1437-1469`), which unpacks it its own way and not through `unpk_`.
 #[cfg(all(feature = "wspr", any(feature = "fft-rustfft", feature = "fft-extern")))]
 pub(crate) enum OsdProbe {
     /// `unpackcall`, `unpackgrid` or `unpackpfx` failed: the C `break`s out of the DT
