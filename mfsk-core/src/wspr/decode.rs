@@ -1625,8 +1625,9 @@ pub(super) fn decode_scan_inner(
     let max_drift = 4i32;
     // `wsprd.c:1172-1176`: `fmin += dialfreq_error; fmax += dialfreq_error;` runs **once per
     // pass the loop executes**, inside it, so with `-e` the window drifts by `-e` more every
-    // pass: ported as it is (a faithful port; it is why `-e 60` loses G8VDQ, which only the
-    // final pass finds, on the golden).
+    // pass: ported as it is (a deliberate faithful port of what looks like an upstream
+    // oversight). On the golden `-e 45` shows it: the final pass's window starts at +25 Hz
+    // and so loses G8VDQ (-35 Hz), where shifting once would keep it (fixture `f_e45`).
     let mut window = depth.freq_window;
     let shift_window = |w: &mut Option<(f32, f32)>| {
         if let Some((lo, hi)) = w {

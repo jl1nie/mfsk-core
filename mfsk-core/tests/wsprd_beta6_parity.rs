@@ -199,6 +199,9 @@ cases! {
     f_o1 => "f_o1",
     f_e60 => "f_e60",
     f_h => "f_H",
+    f_b => "f_B",
+    f_q => "f_q",
+    f_e45 => "f_e45",
     // Started from the table `f` saved: OSD now has calls to accept.
     pre => "pre",
     pre_o0 => "pre_o0",
