@@ -91,8 +91,9 @@ those three places and marks each at the code (CLAUDE.md §2.1):
   and never hears W1AW; the `Depth` path subtracts the right codeword and hears both (`depth_path_subtracts_the_decoded_codeword`).
   Fixtures `t3` and `t3_long` (an 11-character call in the same bucket: nothing printed). The recording is made by
   `tests/common/wspr_t3.rs` (integer xorshift noise, the crate's synthesiser), written by `examples/gen_wsprd_t3_wav.rs` for
-  `gen_fixtures.sh` and rebuilt in memory by the test: only `wsprd`'s outputs are vendored, no WAV. Its `sin` is the one platform
-  dependence (a last-bit difference in a sample).
+  `gen_fixtures.sh` and rebuilt in memory by the test: only `wsprd`'s outputs are vendored, no WAV. The one libm call is the
+  envelope ramp's `cos` (`engine/dsp/envelope.rs:98`); the test pins a hash of the samples, so a synthesiser change asks for a
+  fixture rerun instead of looking like a decoder regression.
 - **RMS gate** (`wsprd.c:1400-1408`) on the quantised symbols (the Depth path reads the floats), and the **duplicate rule**
   (`wsprd.c:1506-1516`: same call text within 4 Hz, no time test, at most 50), under `wsprd_gates`.
 - **OSD**: the crate's own order-2 sweep (final pass) versus `osdwspr` (`WsprOsd::Wsprd`).
@@ -105,8 +106,15 @@ those three places and marks each at the code (CLAUDE.md §2.1):
 - OSD acceptance: the C's probe (`unpackcall` / `unpackgrid` / `unpackpfx` failing breaks the DT loop; `ntype` outside 0..62 is
   skipped) is `msg::wspr::osd_probe`; a Type 2 with an implausible power is accepted by the gate and then `NoPrint`, as in the C.
   The Break path is tested by `ladder_tests::an_unpackable_osd_codeword_ends_the_dt_loop`.
-- The grid half of the replica of a Type 3 (`pack_call` of the rotated six-character grid) is taken to round-trip; it does for any
-  grid `unpk_` prints (two letters, two digits).
+- The replica (`replica_from_text`) keeps the decoded bits for Types 1 and 2 and for the grid half of a Type 3, assuming the
+  printed text re-packs to them. It does not always: `unpackcall` turns blanks into NULs (`wsprd_utils.c:191-195`), so a call
+  field with an inner blank (`AB1C D` prints `AB1C`; a Type 3 grid slot `N42A F` prints `FN42A`) re-packs to a different
+  codeword in `get_wspr_channel_symbols` (`wsprsim_utils.c:165-262`), as does a Type 2 prefix with an inner blank or a short base
+  call misread by `pack_prefix` (`:86-111`). Only false decodes have such fields; on one, `wsprd`'s residual, `nhardmin` and
+  `hashtable.txt` (`unpk_` of the replica's check data, `wsprsim_utils.c:~292`, not ported) can differ from the crate's.
+  Follow-up: port `get_wspr_channel_symbols` as a function of the text.
+- The replica-refusal `break` (`decode.rs`, `None => break`) is covered by the unit test of `replica_info_from_text` only;
+  no fixture reaches it (documented debt).
 - The `wspr-pass2-topn` embedded final pass fills `sync` (its refined sync) and `pass` (2) but none of the other new fields beyond
   what its ladder gives, and it neither subtracts nor deduplicates in `wsprd`'s way.
 

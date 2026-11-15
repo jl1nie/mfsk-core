@@ -324,3 +324,26 @@ fn dial_error_implies_the_span() {
     let explicit = WsprExtras::wsprd().with_dial_error_hz(60.0);
     assert_eq!(texts(implied), texts(explicit));
 }
+
+/// FNV-1a over the little-endian samples.
+fn fnv1a(samples: &[i16]) -> u64 {
+    samples
+        .iter()
+        .flat_map(|s| s.to_le_bytes())
+        .fold(0xcbf2_9ce4_8422_2325, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+}
+
+/// The vendored `t3*` / `far*` outputs are `wsprd` on these exact samples. A change to the
+/// synthesiser or the envelope changes them; this says so instead of the parity cases failing
+/// as if the decoder had regressed.
+#[test]
+fn synthetic_recordings_are_the_ones_wsprd_heard() {
+    let got = (fnv1a(&wspr_t3::build()), fnv1a(&wspr_t3::build_far()));
+    assert_eq!(
+        got,
+        (12_864_293_375_669_491_345, 5_199_722_312_786_770_393),
+        "synthetic WAV changed: rerun scripts/wsprd/gen_fixtures.sh (needs beta6 wsprd) and update these hashes"
+    );
+}

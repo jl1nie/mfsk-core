@@ -64,6 +64,7 @@ mod wspr_impl {
 
     /// Which OSD a WSPR decode runs (`wsprd -o`).
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[non_exhaustive]
     pub enum WsprOsd {
         /// This crate's own OSD, the [`Depth`] mapping's: the final pass only, an order-2
         /// sweep over the float soft symbols, gated on the callsign table. **Not `wsprd`'s**:

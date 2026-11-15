@@ -795,7 +795,7 @@ fn ladder_decode(
     // `while (ib <= nblocksize && not_decoded)` /
     // `while (not_decoded && idt <= ...)` do, so the cost below is
     // what a *failing* candidate pays, not a succeeding one.
-    /// `iifac`, `wsprd.c:804` — step size in the final DT peak-up.
+    /// `iifac`, `wsprd.c:822` — step size in the final DT peak-up.
     const IIFAC: i32 = 8;
     /// `idt <= 128 / iifac`, `wsprd.c:1322`.
     const N_JITTER: i32 = 128 / IIFAC;
@@ -1533,7 +1533,7 @@ fn survivors(refined: Vec<RefinedCandidate>, minsync2: f32) -> Vec<RefinedCandid
     out
 }
 
-/// `decodes[50]` (`wsprd.c:773`): the most decodes `wsprd` lists.
+/// `decodes[50]` (`wsprd.c:797`): the most decodes `wsprd` lists.
 const WSPRD_MAX_DECODES: usize = 50;
 /// A hashed call that still prints: `<call>` in a 13-byte buffer (`wsprd_utils.c:392-393`).
 const HASHED_CALL_MAX: usize = 10;
@@ -1566,6 +1566,11 @@ fn wsprd_duplicate(seen: &[WsprResult], d: &WsprResult) -> bool {
 /// in the table. Types 1 and 2 repack to the decoded bits, bar the two texts it refuses: a
 /// Type 1 call that is not 3 to 6 characters (`i1 >= 3 && i1 < 7`) and a Type 2 that begins
 /// with `/` (`i2 == 0`).
+///
+/// DIVERGENCE (known gap, `docs/notes/WSPRD_PARITY.md`): keeping the decoded bits assumes the
+/// text re-packs to them. A field with an inner blank (`unpackcall` NULs blanks,
+/// `wsprd_utils.c:191-195`) or a short Type 2 base call re-packs differently in the C; only
+/// false decodes carry such fields. Faithful fix: port `get_wspr_channel_symbols` on the text.
 fn replica_info_from_text(
     msg: &WsprMessage,
     hashed: Option<&str>,

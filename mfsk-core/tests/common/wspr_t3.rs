@@ -9,7 +9,10 @@
 //! `<...>`) at about -5 dB in 2500 Hz, and `W1AW FN31 30` at about -27 dB. The noise is the sum of
 //! twelve integer uniform draws from an integer xorshift (Irwin-Hall, near Gaussian), so no
 //! platform's libm touches it; the two waveforms are the crate's own synthesiser, rounded to `i16`
-//! (which does use `sin`: a platform whose libm differs in the last bit could move a sample by one).
+//! (its oscillator is the crate's own f32 polynomial, `engine/dsp/nco.rs`; the one libm call is the
+//! ramp's `cos`, `engine/dsp/envelope.rs:98`, on a few hundred samples). Any change to the synthesiser
+//! or the envelope changes these samples: `tests/wsprd_beta6_parity.rs` pins their hash, so that
+//! shows up as "rerun gen_fixtures.sh", not as a decoder regression.
 
 use mfsk_core::engine::tx::synthesize;
 use mfsk_core::msg::wspr::pack_message;
