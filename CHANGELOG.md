@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed — the `black_box` on FT8's Costas phasor table is gone
+
+- `ft8::refine_fine::build_costas_ref_table` no longer has the `black_box` that kept rustc 1.99.0's `loop-vectorize` off it (rust-lang/rust#163626,
+  fixed upstream, in 1.100.0). The table is bit-identical. **A downstream build of this crate on rustc 1.99.x for aarch64 at opt-level 3 hangs again**
+  (1.98.x and 1.100+ are fine); the 1.99 series is superseded by 1.100.0.
+
 ### Changed — host toolchain pin 1.98.1 → 1.100.0
 
 - `rust-toolchain.toml` and every `dtolnay/rust-toolchain@` pin. Reason: rust-lang/rust#163626 (the 1.99.0 aarch64 `loop-vectorize` hang) is fixed
