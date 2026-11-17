@@ -100,7 +100,7 @@ asserting the DLL exports its symbols and the `.so` is 16 KB aligned),
 `docs`, and `publish-dry-run`. `RUSTFLAGS: -D warnings` is set globally.
 
 **The host toolchain is pinned** in the root `rust-toolchain.toml`
-(1.98.1 as of 2026-10-02), and every `dtolnay/rust-toolchain@` in
+(1.100.0 as of 2026-11-17), and every `dtolnay/rust-toolchain@` in
 `ci.yml` / `release.yml` names that version — the `lint` job fails if
 one doesn't. It was `@stable` until rustc 1.99.0's aarch64
 loop-vectorizer hang (rust-lang/rust#163626) held two jobs for six
