@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed — host toolchain pin 1.98.1 → 1.100.0
+
+- `rust-toolchain.toml` and every `dtolnay/rust-toolchain@` pin. Reason: rust-lang/rust#163626 (the 1.99.0 aarch64 `loop-vectorize` hang) is fixed
+  upstream; the loop without its `black_box` compiles in ~0.1 s on 1.100.0, ~30 s+ (killed) on 1.99.0. The `black_box` stays in this change.
+
 ### Added — `wsprd` v3.3.0-beta6 output through the public API
 
 - `WsprExtras::wsprd()` and `Option` fields per `wsprd` flag (`passes`, `subtraction`, `jitter`, `more_candidates`, `osd: WsprOsd`,

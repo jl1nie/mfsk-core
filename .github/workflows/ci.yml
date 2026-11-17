@@ -259,7 +259,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust (stable, with rustfmt + clippy)
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: rustfmt, clippy
 
@@ -524,7 +524,7 @@ jobs:
 
       - name: Install Rust (pinned, rust-toolchain.toml)
         if: steps.gate.outputs.should_run == 'true'
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Cache cargo
         if: steps.gate.outputs.should_run == 'true'
@@ -640,7 +640,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust (pinned, rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -686,7 +686,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust (pinned, rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -781,7 +781,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           targets: x86_64-pc-windows-gnu, aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
@@ -913,7 +913,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@1.100.0
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-java@v4
         with:
@@ -966,7 +966,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust (stable, with the iOS target)
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
           targets: aarch64-apple-ios
 
@@ -1005,7 +1005,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust (pinned, rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -1093,7 +1093,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
@@ -1122,7 +1122,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust (pinned, rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
