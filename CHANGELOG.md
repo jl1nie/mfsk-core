@@ -2,16 +2,13 @@
 
 ## Unreleased
 
-### Changed — the `black_box` on FT8's Costas phasor table is gone
+### Changed — rustc 1.100.0; the 1.99.0 `black_box` workaround is gone (#757, #758)
 
-- `ft8::refine_fine::build_costas_ref_table` no longer has the `black_box` that kept rustc 1.99.0's `loop-vectorize` off it (rust-lang/rust#163626,
-  fixed upstream, in 1.100.0). The table is bit-identical. **A downstream build of this crate on rustc 1.99.x for aarch64 at opt-level 3 hangs again**
-  (1.98.x and 1.100+ are fine); the 1.99 series is superseded by 1.100.0.
-
-### Changed — host toolchain pin 1.98.1 → 1.100.0
-
-- `rust-toolchain.toml` and every `dtolnay/rust-toolchain@` pin. Reason: rust-lang/rust#163626 (the 1.99.0 aarch64 `loop-vectorize` hang) is fixed
-  upstream; the loop without its `black_box` compiles in ~0.1 s on 1.100.0, ~30 s+ (killed) on 1.99.0. The `black_box` stays in this change.
+- rust-lang/rust#163626 (1.99.0's aarch64 `loop-vectorize` hang on FT8's Costas phasor table) is fixed upstream and ships in 1.100.0. The host pin
+  (`rust-toolchain.toml`, every `dtolnay/rust-toolchain@`) moves 1.98.1 → 1.100.0, and the `black_box` in `ft8::refine_fine` is removed; the table is bit-identical.
+- Measured on 1.100.0 without the workaround: the standalone loop compiles in ~0.1 s (1.99.0: killed at 30 s); `--features full` release builds for aarch64
+  apple-darwin / apple-ios / linux-gnu take 15-17 s; merge gate 1395 passed; CI green incl. Android, iOS, Swift, Kotlin.
+- **A downstream build on rustc 1.99.x for aarch64 at opt-level 3 hangs again** (1.98.x and 1.100+ are fine). Use 1.100.0 or later.
 
 ### Added — `wsprd` v3.3.0-beta6 output through the public API
 
