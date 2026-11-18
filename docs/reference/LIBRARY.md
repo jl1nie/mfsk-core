@@ -1437,9 +1437,7 @@ against a different channel pathology:
 -1.0 .. +1.0 s around the nominal start, as WSJT-X's GUI does
 (`q65.f90`'s `lag1`/`lag2`). `eme_delay` is its "Decode at 52 s" EME delay:
 the late edge moves to +5.5 s (+4.0 s on Q65-15) for the Earth-Moon-Earth
-round trip. `dt_sec` is measured from the nominal start. A known gap: with
-the delay off, `jt9` still decodes a Q65-120D frame 2.0 s late, where this
-crate stops at +1.5 s.
+round trip. `dt_sec` is measured from the nominal start.
 
 ```rust
 # #[cfg(feature = "q65")] {
