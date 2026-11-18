@@ -269,8 +269,7 @@ read from the tracker, not from memory.
   #496 (expose FT8's `previous_cycle` through `mfsk-ffi`; design first).
 - **Q65 leftovers:** the averaged q3 on
   `MultiPeriodRequest` (its `.ap_list()` is unchanged) and on
-  `SniperRequest.ap_list`; Q65-120D's late edge (`jt9` still decodes a
-  frame 2.0 s late at the edge where this crate reaches +1.5 s); the FST4
+  `SniperRequest.ap_list`; the FST4
   and FT8 `emedelay` branches.
 - **Then:** 0.12.0 release prep (`scripts/release-status.sh`, tier-C
   sweeps for what it names, CHANGELOG/version already in place).

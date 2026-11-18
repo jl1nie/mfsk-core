@@ -103,7 +103,7 @@ every FST4 sub-mode, while FT8 — which does not implement
 `GenericPipelineProtocol` — runs its own in
 `ft8::decode_block::process_one_candidate_inner`, with an inline copy of
 the hypothesis list (#415; unifying them is #423). Full writeup in
-`docs/notes/DESIGN_RATIONALE.md` §3.
+`docs/notes/DESIGN_RATIONALE.md` §6 (why), `docs/historical/CHANGELOG-0.11.md` (the account).
 
 **JTTY is outside the `Protocol` trait too, for a different reason: it has
 no slot.** Frames start whenever the sender likes and a message is several

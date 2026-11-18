@@ -473,7 +473,7 @@ missed signals sit below coarse_sync rank 100 entirely and need
 iterative subtraction rather than more BP effort — and because the FT8
 turnaround budget is ~2 s post-SlotEnd, not the full slot. The numbers
 are in [`DESIGN_RATIONALE.md`
-§5](../notes/DESIGN_RATIONALE.md#5-why-the-embedded-path-doesnt-widen-pass1-or-enable-osd).
+§9](../notes/DESIGN_RATIONALE.md#9-why-the-embedded-path-doesnt-widen-pass1-or-enable-osd).
 
 ### Per-stage breakdown on `qso3_busy.wav`
 

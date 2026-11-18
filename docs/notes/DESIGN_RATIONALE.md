@@ -1,284 +1,320 @@
 # Design rationale
 
-Why some of this crate's decisions went the way they did, with the
-measurements that decided them.
+Why `mfsk-core` is built the way it is. Part I is the design itself: what the crate is for, the constraints that
+follow, and how each of the principles in `CLAUDE.md` §2 comes out of them. Part II keeps the few later decisions
+that are still load-bearing and that someone would otherwise make again.
 
-This file exists so the reference manuals can state *what* is true
-without also arguing *why*. `LIBRARY.md`, `EMBEDDED.md` and
-`BINDINGS.md` carry conclusions; this carries the evidence behind the
-ones that are repeatedly re-litigated, re-derived, or misread.
-
-It is not a changelog. `CHANGELOG.md` and `docs/historical/` record
-what changed and when; this records reasoning that is still load-bearing
-for a decision someone might otherwise make again.
+The reference manuals (`LIBRARY.md`, `EMBEDDED.md`, `BINDINGS.md`) say *what* is true; this says *why*. It is not a
+history: what changed and when, with the measurements of the day, is in `CHANGELOG.md` and `docs/historical/`, and
+this file links there rather than retelling it.
 
 ## Contents
 
-- [1. Sniper mode is a roofing-filter mode](#1-sniper-mode-is-a-roofing-filter-mode)
-- [2. Equalisation is a property of the input audio](#2-equalisation-is-a-property-of-the-input-audio)
-- [3. A-priori decoding was coupled to the sniper by accident](#3-a-priori-decoding-was-coupled-to-the-sniper-by-accident)
-- [4. Q65's decoder strategies, and what each is for](#4-q65s-decoder-strategies-and-what-each-is-for)
-- [5. Why the embedded path doesn't widen PASS1 or enable OSD](#5-why-the-embedded-path-doesnt-widen-pass1-or-enable-osd)
-- [6. The decode API follows WSJT-X's decoder (0.13)](#6-the-decode-api-follows-wsjt-xs-decoder-013)
-- [7. Why a `Protocol` trait, and why Rust](#7-why-a-protocol-trait-and-why-rust)
+**Part I — the design**
+
+- [1. What the crate is for](#1-what-the-crate-is-for)
+- [2. WSJT-X is the reference](#2-wsjt-x-is-the-reference)
+- [3. One source, many targets: the `Protocol` trait](#3-one-source-many-targets-the-protocol-trait)
+- [4. The decode API is `jt9`'s shape](#4-the-decode-api-is-jt9s-shape)
+- [5. A wide public surface, in three tiers](#5-a-wide-public-surface-in-three-tiers)
+- [6. Wide-band is the main path](#6-wide-band-is-the-main-path)
+- [7. Measure, and never recall without precision](#7-measure-and-never-recall-without-precision)
+- [8. Why Rust](#8-why-rust)
+
+**Part II — decisions still load-bearing**
+
+- [9. Why the embedded path doesn't widen PASS1 or enable OSD](#9-why-the-embedded-path-doesnt-widen-pass1-or-enable-osd)
+- [10. What is deliberately not ported](#10-what-is-deliberately-not-ported)
 
 ---
 
-## 1. Sniper mode is a roofing-filter mode
+# Part I — the design
 
-**The ±250 Hz window is hardware, not cleverness.** Sniper mode is the
-software half of narrowing the *analogue* roofing filter on a
-transceiver that has one at that width — the Yaesu FTDX101MP and FTDX10
-are the usual examples. The operator selects a ~500 Hz analogue filter,
-points it at a DX station whose carrier is already known, and the audio
-reaching the decoder is already band-limited to that slice. Searching
-±250 Hz is the decoder matching what the hardware left in the passband.
-It is a special-purpose path for specific radios, **not** the natural
-shape for "any mode where you know who you are working".
+## 1. What the crate is for
 
-**It is FT8-only, and that is the design.** `SupportsSniper` is
-implemented for `Ft8` and nothing else. The wide-band path is the main
-path for every mode in this crate — if it is not WSJT-X-faithful
-without a sniper, that is a bug in the wide-band path, not a reason to
-reach for this one.
+WSJT-X is the reference implementation of FT8, FT4, FST4, FST4W, WSPR, JT9, JT65, Q65 and MSK144, and the source of
+every protocol constant here. It is also a Fortran / C / Qt desktop application, and that makes its decoders hard to
+run anywhere else:
 
-- **FT4** is a contest protocol whose entire premise is working a full
-  band, so a roofing filter is against its purpose.
-- **FST4** narrows through its own DDC channelizer
-  (`docs/notes/FST4_DDC_DESIGN.md`), which is the same benefit without
-  a second decode engine.
+- in a browser (`wasm32`), where there is no Fortran runtime;
+- on Android and iOS, where there is none to link either;
+- inside a headless application — a skimmer, a monitoring station, a remote SDR front end, a `wsprd`-style daemon —
+  that wants a library, not a process to drive;
+- on a microcontroller (`no_std + alloc`: ESP32-S3, RP2350), with no OS, a few hundred kilobytes of RAM and, on the
+  shipped boards, fixed-point arithmetic;
+- as the core of a new protocol experiment that wants FT8's LDPC and sync machinery without forking a desktop app.
 
-FT4 and FST4 sniper entry points existed until 2026-09-13 and were
-removed. The C ABI has never exposed a sniper call of its own — the
-capability is published as `MFSK_CAP_SNIPER` and driven through
-`MfskDecodeParams::search_hz`.
+The crate exists to make the decoders and synthesisers available in all of those places **without changing what they
+decode**. Two constraints follow, and the rest of Part I is how the design meets both at once:
 
-## 2. Equalisation is a property of the input audio
+1. **Results must be WSJT-X's.** A user moving from WSJT-X, or comparing against it, must get the same decodes, the
+   same SNR and the same files. A decoder that is "about as good" is a different decoder (§2).
+2. **One body of code must serve every target.** Five ports, one per platform, would drift apart within a release;
+   the fidelity in (1) would then hold on at most one of them (§3).
 
-`.eq_mode(EqMode::Local)` sits beside the sniper for the same reason an
-analogue filter's skirt tilts the passband: local equalisation flattens
-it again.
+## 2. WSJT-X is the reference
 
-Because it describes the *audio* rather than the *search*,
-`DecodeRequest` carries it too — filtered audio can be fed to a
-wide-band decode, and FT8's `eq_mode_recovers_bpf_edge_signal` pins a
-band-pass-edge signal that decodes with `Local` and not with `Off`
-through the wide-band SIC engine.
+**The port is 1:1, not an improvement.** The value of the crate is that its output can be checked against WSJT-X and
+found equal. An "improved" decoder cannot be checked: every difference would have to be argued as better or worse,
+and a user could no longer tell a regression from a feature. So the algorithm is ported as it is, constants and quirks
+included, and a test compares against the real program (`jt9`, `wsprd`) on the same input.
 
-**On flat synthetic input, EQ can only cost.** The `ft4sim`-generated
-FT4 golden has no receiver filter, and `Local` loses two decodes of
-fourteen there. Default `Off` is right for recordings and simulations,
-and wrong for a narrowed receiver.
+**Every algorithm file names what it ports.** A `Ported from lib/…f90:line` note sits at the top of each algorithm
+file. Changing a decoder internal means reading the Fortran, making the matching change and keeping that pointer
+valid; the pointer is what lets the next reader, or the next upstream release, be compared line for line.
 
-## 3. A-priori decoding was coupled to the sniper by accident
+**A divergence is allowed, and must be visible.** Some differences are deliberate: an option WSJT-X lacks, a bug that
+upstream has and this crate does not copy, a platform limit. Each is marked in a comment at the code, and in the API
+they are kept apart by type (everything upstream has is in `DecodeParams`, everything this crate adds is in a mode's
+`Extras`; §4). Where both behaviours are useful, the faithful one is selectable: `WsprExtras::wsprd()` reproduces
+`wsprd`'s output byte for byte, including the places where the crate's default path deliberately differs
+(`WSPRD_PARITY.md`).
 
-AP locks high-confidence bits and lowers the threshold by 1–3 dB.
-Nothing about it is narrow-band.
+**The reference moves with upstream's development line.** The reference is v3.2.0-rc1 plus the results-changing parts
+of v3.3.0-beta1 to beta6, tracked on `release/3.3`, never `master`. Upstream changes are classified A (alters
+results), B (real bug fix) or C (refactor); A and B are ported, C is not (`CLAUDE.md` §5, `scripts/upstream-diff.sh`).
+Following a moving reference is the price of being comparable to the WSJT-X people actually run.
 
-**This section is about provenance, not availability.**
-`SniperRequest::ap_hint()` works today and is passed through to the
-decoder; so does `DecodeRequest::ap_hint()`, for FT8, FT4 and every FST4
-sub-mode. What was removed was the *coupling* below, not AP's presence
-on the sniper builder.
+## 3. One source, many targets: the `Protocol` trait
 
-But AP used to live in a parallel engine
-(`msg::pipeline_ap::decode_sniper_ap`) that the sniper was the only
-caller of, and that engine broke out of its candidate loop on
-`if has_ap` — **the presence of a hint was what made the search
-single-target**, not the width of the search. FT8 escaped only because
-it has its own AP path and never entered that engine, which was the
-whole content of `SupportsWideBandAp` being FT8-only.
+### What is shared and what is not
 
-**Removing the coupling was not enough, and the measurement is worth
-recording because "it is one line" was asserted twice and was wrong
-both times.** Routing a wide-band FT4 decode through that engine
-returned **4 decodes where the plain path returns 11**, lost the hinted
-station itself, and returned the *identical* set whether the hint named
-a present or an absent station — so AP was changing nothing and the loss
-was entirely the ladder: `process_candidate_ap` offered OSD at depth 2
-with no depth-3/4 escalation and no Top-K rescue, and most of that
-recording's decodes come from exactly those.
+The protocols differ in their FEC (LDPC, convolutional + Fano, Reed-Solomon, QRA over GF(64)), their message width
+(77, 72, 50 bits) and their frame (tones, symbol rate, sync layout, slot length). They share most of the receive and
+transmit machinery around that: coarse and fine sync, symbol spectra and LLRs, equalisation, subtraction, GFSK
+synthesis, resampling, the hash table, the 77-bit message codec. WSJT-X expresses that commonality by copying code
+between per-mode source files. Here it is traits, split by what varies:
 
-**The engine is now gone.** AP is a rung at the end of the
-per-candidate ladder — everything above it has already run and failed,
-so it can only add decodes. For FT4 and every FST4 sub-mode that ladder
-is `engine::pipeline::process_candidate_basic`. FT8 does not implement
-`GenericPipelineProtocol` and never reaches it: its AP rung sits at the
-end of its own ladder, `ft8::decode_block::process_one_candidate_inner`,
-which builds the same hypotheses inline rather than calling
-`ap_passes` (#415; unifying the two ladders is #423).
-`msg::pipeline_ap` is what remains: `ap_passes` (the hypothesis set,
-WSJT-X's `iaptype` equivalents) and `ap_bits_for`, 103 lines with no
-engine of its own.
+- **Per protocol**, as `const` associated items on a zero-sized type: tone count, symbol rate, Gray map, GFSK shaping
+  (`ModulationParams`); total symbols, sync / data layout, slot length (`FrameLayout`); which FEC (`Protocol::Fec`)
+  and which message codec (`Protocol::Msg`).
+- **Shared**, generic over `P: Protocol`: `engine` (sync, LLR, equalisation, the pipeline driver, TX synthesis, DSP),
+  `fec`, `msg`.
 
-Two bugs were found while wiring it, both shipped:
+```text
+     ┌──────────────────────────────────────────────────────────────┐
+     │  ft8  ft4  fst4  fst4w  wspr  jt9  jt65  q65                 │  per-protocol ZSTs
+     │       (each implements Protocol + FrameLayout)               │  (feature-gated)
+     └────────────┬──────────────────────┬──────────────────────────┘
+                  │                      │
+         ┌────────▼─────────┐    ┌───────▼────────┐
+         │       msg        │    │      fec       │  shared codecs
+         │ Wsjt77 · Jt72    │    │ LDPC · RS      │  behind traits
+         │ Wspr50 · Q65     │    │ ConvFano · QRA │
+         │ · hash table     │    │                │
+         └────────┬─────────┘    └───────┬────────┘
+                  │                      │
+              ┌───▼──────────────────────▼───┐
+              │            engine            │  Protocol trait, DSP
+              │  sync · llr · equalize ·     │  (resample / GFSK /
+              │  pipeline · tx · dsp         │   downsample / subtract)
+              └──────────────────────────────┘
+```
 
-* **FT4/FST4 AP was locking half its bits to the opposite of the
-  truth.** Those protocols XOR the 77-bit message with their own RVEC
-  before CRC and FEC (`ModulationParams::INFO_SCRAMBLE_RVEC`), so the
-  info bits inside the codeword are the *scrambled* message, while an
-  `ApHint` describes the message. `ap_bits_for` now scrambles. At
-  −17 / −18 / −19 dB on 12 trials each: **3→12, 0→11, 0→8**. FT8 has no
-  RVEC and was never affected — which is why this survived: the protocol
-  where AP is most used is the one where it worked.
-  (`tests/ft4_ap_scramble.rs`.)
-* **A blind-CQ hypothesis was missing** (upstream `iaptype 1`, locking
-  the message type and the `CQ` prefix with no callsign knowledge). It
-  is the pass that applies with no station knowledge at all, so it
-  changes the *baseline* rather than a hinted case. FT4's AWGN
-  threshold moved **−16.89 → −18.00 dB**, from 0.6 dB behind WSJT-X's
-  published −17.5 dB to 0.5 dB ahead. Caveat recorded in
-  `FT4_BENCHMARK_LOG.md` §48: the sweep corpus is CQ-only, so this is the
-  best case for that pass.
+Measured (`wc -l` over `mfsk-core/src`, test modules included, `uvpacket` excluded, at `f0e8dcc6`, 2026-11-18): of
+108.0k lines, the shared modules `engine`, `fec` and `msg` are 47.2k (44 %), and the ten protocol directories 50.3k
+(47 %); the rest is the public API (`decoder`, `encoder`, `iq`, `slotgrid`, `registry`). The per-protocol share is
+protocol-specific by necessity (each mode's search, its subtraction, its own corners of upstream); the split of what
+each protocol takes from the shared part is `LIBRARY.md` §3.1.
 
-AP's risk is manufactured decodes, so wide-band AP ships with precision
-guards in the same file as the gain assertion: a hint naming a station
-that is not transmitting must not produce it, and a confident hint over
-pure noise must decode nothing.
+### Zero-cost: monomorphised, not dispatched
 
-**Where the WSJT-X 3.2 port moved the AP rung (#456, 2026-09-26).** Two
-things were taken from upstream, measured in `FT8_BENCHMARK_LOG.md` §15. The
-accept bound is `ft8b.f90`'s: `DecodeStrictness::Normal`'s `ap_max_errors`
-is 36, not 30 (25 from 55 locked bits) — right-hint FT8 8771 → 9315 hits,
-at the price of a few more phantoms with a wrong hint, which carry an AP
-pass id so a UI can mark them. And the heavy hypotheses (`iaptype >= 3`,
-both callsigns locked) are tried only within `napwid` of the QSO frequency
-(`freq_hint`) or, on FT8, of the transmit frequency (`tx_freq`, WSJT-X's
-`nftx`): FT4 had been running them on every candidate, where
-`ft4_decode.f90` and `ft8b.f90` do not, and without a `freq_hint` a heavy
-hypothesis is now not tried at all, as upstream always has an `nfqso`.
+Because the per-protocol part is `const` items on zero-sized types, the generic receive path — `engine::sync` →
+`engine::llr` → `engine::equalize` → `engine::pipeline`, free functions generic over `P` — is monomorphised per
+protocol. The compiler sees a specialised function for each `P`, inlines the constants and autovectorises the hot
+loops on native targets (SSE/AVX on x86_64, NEON on aarch64). There is no trait object and no vtable on the hot path,
+so sharing the code costs nothing at run time; that is what lets the same code be the embedded path and the desktop
+path.
 
-## 4. Q65's decoder strategies, and what each is for
+The crate has no hand-written SIMD, by design: it keeps the code `no_std` and portable. On `wasm32-unknown-unknown`
+the vectorisation therefore needs `-C target-feature=+simd128` in the consuming build (about 20 % on FT8,
+`BENCHMARKS.md`, "WASM: `+simd128`").
 
-Q65 is the one wired protocol where a single FEC frame can be
-approached through several legitimately different receiver chains, each
-trading runtime cost against a different channel pathology. The
-selection table lives in `LIBRARY.md`; this is what each front end
-actually does.
+### The same code on a microcontroller
 
-**A point worth flagging first.** `SniperRequest::decode()` with no
-capability set really is the plain Bessel-I0 metric — the
-point-decode-only baseline. But `DecodeRequest::decode()` with no
-capability set — the shape nearly every real caller uses — routes each
-coarse-search candidate through a WSJT-X-faithful `(Δf, Δt, b90)` grid
-search using the fast-fading metric with `FadingModel::Lorentzian`,
-ported from `q65_loops.f90` / `q65_dec_q012`. That mirrors WSJT-X's own
-automatic decoder, which never runs a plain-AWGN-only Bessel pass for
-its default scan either.
+The targets differ in what they can afford, not in the algorithm, so the differences are confined to a few seams
+rather than a second implementation:
 
-So "AWGN" and "fast-fading" are best read as two distinct *entry-point
-families* (sniper vs. scan), **not** two cleanly separate front ends
-picked by channel type. The scan path already assumes some fading by
-default, and `.fading()` exists for when the caller wants a specific
-`(b90_ts, model)` explicitly instead.
+- **FFT** is a trait (`engine::fft::FftPlanner`): `rustfft` on a host, `esp-dsp` or CMSIS-DSP behind `fft-extern` on a
+  board.
+- **Parallelism** is `rayon` where `std` is, sequential where it is not, over the same loops.
+- **Arithmetic**: the `fixed-point` feature swaps the scalar types of the hot path (`engine::scalar`) for Q-format
+  integers, which is what the shipped boards run (`EMBEDDED.md`, "how f32 and fixed-point share one codebase").
+  Embedded work is therefore measured on that path, not on `f32`.
 
-**AWGN Bessel + BP** — the textbook single-shot path: per-symbol FFT
-energies become probability vectors via the Bessel-I0 metric, then
-non-binary belief propagation runs on the QRA code. Falls back
-gracefully on any channel reasonably close to additive Gaussian noise.
+### A static set of protocols
 
-**AP-hint BP** (`.ap_hint(&ap)`) clamps the intrinsic probability
-vectors at known information-bit positions before BP. A correct hint
-shifts the BP fixed-point closer to the truth; a wrong hint typically
-fails to converge rather than misdecoding, and the CRC catches what is
-left. ~2 dB.
+`PROTOCOLS` is a `const` slice fixed at compile time by Cargo features. There is no runtime `register_protocol()`:
+every wired ZST is checked by `tests/protocol_invariants.rs` against the trait surface, and that guarantee cannot
+extend to types unknown at compile time. The pay-off is in adding a protocol: FST4-60A joined as a trait impl on one
+ZST plus a Costas table, with no change to shared pipeline code, and later sub-modes are one `fst4_submode!` /
+`q65_submode!` line. A new protocol is a ZST, a `protocol_meta!` line and a rebuild (`CONTRIBUTING.md`, "Adding a new
+protocol").
 
-**Fast-fading metric** (`.fading(model, b90_ts)`) replaces the Bessel
-front end with a spread-aware alternative, calibrated against a
-caller-chosen `Gaussian` or `Lorentzian` shape. Required for microwave
-EME, where lunar libration spreads each tone over 10–60 Hz: the 10 GHz
-EME reference recording in `samples/Q65/60D_EME_10GHz/` decodes via
-this path and produces **zero** hits with the plain Bessel front end.
-`b90_ts` is spread bandwidth × symbol period — typical values 0.05
-(near-AWGN), 1.0 (moderate), 5.0+ (severe). 5–8 dB on spread channels.
+### What stays outside the trait
 
-**AP-list template matching** (`.ap_list(&candidates)`) does *not* run
-BP. The generator `q65::ap_list::standard_qso_codewords(my_call,
-his_call, his_grid)` pre-encodes the WSJT-X "full AP list" — 206
-standard exchanges a known callsign pair can legally produce
-(`MYCALL HISCALL`, `… RRR/RR73/73`, `CQ HISCALL grid`, plus the
-200-entry SNR ladder). The decoder picks the candidate whose
-log-likelihood under the soft observations exceeds a size-adjusted
-threshold, or returns `None`. Useful when the application has a known
-callsign pair but no QSO state: at −25 dB (1 dB below the published
-Q65-30A threshold) the test sweep shows AP-list decoding **6/6** frames
-where plain BP fails **0/6**. ~3 dB.
+MSK144 and JTTY sit outside `Protocol` on purpose, and it is not a gap to close. MSK144 is continuous-phase MSK in
+transient meteor bursts, scanned across the whole period; JTTY has no slot (frames start whenever the sender likes,
+and a message is several of them). Neither fits the static-slot model the trait describes, and forcing them in would
+make the trait describe nothing.
 
-That describes `.ap_list()` **without an Rx frequency**, which is the
-old per-candidate match and is kept for callers that have none. With
-`.rx_freq(hz)` (and `.ftol(hz)`, default 10 Hz) `.ap_list()` is WSJT-X's
-**q3** decode instead, and it does run the fast-fading intrinsics: first
-`q65_ccf_85` synchronises on all 85 symbols of every list message within
-F Tol of the Rx frequency, and where one message leads the runner-up by
-1.10 it list-decodes at that alignment over the `b90` sweep
-(`q65_dec_q3` → `q65_dec1`); then the normal scan runs for the rest of
-the band, as `q65_decode.f90` orders it (`q65/decode_request.rs`,
-`q65/q3.rs`). A list decode is accepted only when `plog > PLOG_MIN`
-(−242) and the message is not all zeros; the size-adjusted threshold
-alone (about −256) let a wrong codeword through on the Q65-60B
-troposcatter golden once the metric was corrected, so every list decode
-in the crate (`.ap_list()` scans, sniper, multi-period) now applies both.
-q3 at -24 / -26 / -28 / -30 dB on 20 `q65sim` files each decoded
-20 / 20 / 7 / 2, the same files `jt9 -3` decodes.
+## 4. The decode API is `jt9`'s shape
 
-The rest of WSJT-X 3.2's Q65 settings are options on the same request
-(`CHANGELOG.md`, 0.12.0 has the measurements):
+### The decision
 
-* **Max Drift** (`.max_drift(bins)`, 0..=50) searches a linear tone drift
-  across the frame (`q65_ccf_22`'s `idrift` loop) and takes it out before
-  the symbol spectra. The undrifted sweep runs first, as upstream; off by
-  default. At 50, when nothing decoded near the Rx frequency, the q3 decode
-  runs again on spectra shifted by the drift found (the "w3sz" stage 5).
-* **EME delay and the ±1 s default.** `q65.f90` searches −1.0 to +1.0 s and
-  reaches +5.5 s (+4.0 s for Q65-15) only when `emedelay > 0`, which the GUI
-  sets for "Decode at 52 s". `default_search_params()` had been late by
-  +5.5 s for every sub-mode, from measuring against the `jt9` CLI, which
-  switches the delay on for TR 60 s itself. The default is now ±1 s and
-  `.eme_delay(true)` restores the reach. Recorded, not closed: `jt9` with
-  the delay off still decodes a Q65-120D frame 2.0 s late where this crate
-  stops at +1.5 s.
-* **Pileup** (`.pileup(true)`, with an `ap_hint` naming both callsigns)
-  leaves the spare 78th bit free so a reply with the "copied last Tx"
-  flag still matches; the row carries `copied_last_tx` (WSJT-X's `#`).
-* **The contest list.** WSJT-X remembers up to 50 stations that called with
-  a grid (`q65_hist2`) and builds its full-AP list from them
-  (`q65_set_list2`). `q65::Q65Callers` is the list, held by the
-  application because the library reads no clock, and
-  `q65::contest_codewords` is the codeword list; it goes through
-  `.ap_list()` like the standard one. `q65_hist` (the DX call and grid
-  from earlier decodes) is likewise application-owned.
-* **The decoder metric uses the punctured code rate 13/63**, not 15/65
-  (`q65_init`'s `decoderEsNoMetric = nm * R * EbNoMetric`, with `R` the rate
-  after puncturing). 15/65 made every Q65 intrinsic 12 % high; the
-  winning codeword's log-likelihood was −242.78 against WSJT-X's −241.92 on
-  identical spectra, 0.78 under `PLOG_MIN`, and is now equal to the
-  hundredth.
+The public decode API copies how WSJT-X runs its decoders, one to one (since 0.13):
 
-**FST4's noise blanker** (`DecodeRequest::noise_blanker`, sub-modes
-implementing `SupportsNoiseBlanker`) is not a Q65 matter but the same kind
-of setting: WSJT-X runs the whole FST4 decode on samples passed through
-`blanker.f90` at the GUI's **NB** level. `Percent(n)` blanks the loudest
-`n` % of samples; `Sweep` decodes at 0, step, … 20 %. Off by default, as NB
-0 % is. On 50 slots with 20 clicks a second: 0 decodes without it, 29 at
-NB 2 % (`jt9 -7`: 27).
+| WSJT-X | this crate |
+|---|---|
+| one decoder process per mode | `Decoder<P>` |
+| the `params` block the GUI fills before each period (`jt9com`) | `DecodeParams` |
+| SAVE and module variables | `P::State`, owned by the decoder |
+| `ndepth` | `Depth`, deciding every search setting per mode, with the upstream lines cited |
+| — | `P::Extras`: what this crate adds, typed per mode |
 
-`.ap_list()` and `.fading()` are mutually exclusive in the underlying
-engine; `.decode()` resolves precedence as
-`ap_list > fading (+ ap_hint) > ap_hint > plain`.
+Transmit is the same idea in one call: `encoder::encode(mode, text)`.
 
-**Multi-period EMA averaging** (`MultiPeriodRequest`) mirrors WSJT-X's
-`iavg=1`/`iavg=2` averaged decode from `q65_decode.f90` — the strategy
-that lets ionoscatter and weak EME signals decode when no
-single-period strategy can. Takes `&[&[f32]]` (one buffer per T/R
-slot). It maintains an exponential moving average of the per-slot
-spectrogram (time constant `min(navg, 4)`) across consecutive T/R
-periods and, at each slot, tries a 3-stage ladder against the averaged
-energies: AP-list when `.ap_list()` was set, then fast-fading BP
-sweeping `b90·Ts ∈ {3, 8, 15}` × `{Gaussian, Lorentzian}`, then plain
-Bessel BP as an AWGN fallback. At most one decode per slot, deduped by
-`(message, ±4 Hz)`.
+Three things follow from that shape, and they are the reason for it:
 
-## 5. Why the embedded path doesn't widen PASS1 or enable OSD
+1. **Comparing against upstream becomes a definition, not a translation.** A task in `scripts/upstream_tasks.json`
+   is the same parameter block on both sides, which is what lets `UPSTREAM_EVALUATION.md` pair trials one to one
+   and what §2's "same output" means in practice.
+2. **State is correct by construction.** It lives where upstream keeps it — the hash table, FT8's previous cycle,
+   WSPR's call table, Q65's average — one per decoder as one per process. A multi-channel caller cannot mix two
+   channels' tables or forget to pass one. Before 0.13 the caller carried that state, and the crate's own
+   `IqReceiver` got it wrong (0.12.0 was yanked for it: `docs/historical/CHANGELOG-0.13.md`).
+3. **Divergence is visible in the types.** Everything upstream has is in `DecodeParams`; everything this crate adds
+   is in `Extras`, so the rule of §2 that a deliberate divergence is called out holds by construction, and an option
+   a mode lacks does not compile.
+
+### What it costs, accepted
+
+- **A field a mode does not read is ignored, not rejected**, as `jt9` ignores it (`tol_hz` on FT8). The "read by"
+  column of `LIBRARY.md` §2.2 is the only guard.
+- **The public block follows upstream's.** `averaging` and `deep_search` are `ndepth & 16` and `& 32`; a change to
+  `jt9com` upstream is a reason to change this API.
+- **No table shared between decoders.** Two channels of one mode learn callsigns separately, as two WSJT-X instances
+  do.
+- **`MessageFilter` takes a function pointer, not a closure**, so the extras stay `Clone + 'static`; a predicate that
+  needs data reads a `static`.
+- **Heavier defaults** (FT8 `Deep`: sync 1.3, 1000 candidates), because they are upstream's. Measured, this costs
+  nothing that matters: at `Deep` the crate is 3.8–4.0× `jt9 -8 -d 3`'s speed on the same files, and decodes the same
+  21 messages on `qso3_busy.wav` (`BENCHMARKS.md`).
+
+### What it bought, measured
+
+- QSO-context AP for FT8, FT4 and FST4 from upstream's `naptypes`: weak replies on FT8, 0 of 30 decoded with AP off
+  and 20 of 30 on.
+- Sensitivity "the same" as WSJT-X v3.2.0-rc1 on every mode but legacy JT65, on tasks defined identically on both
+  sides (`BENCHMARKS.md`, 2026-10-04).
+- One C handle for every mode (`mfsk_decoder_*`) and one shape for the Kotlin and Swift bindings, because the Rust
+  side has one shape to expose.
+
+The 0.12 API it replaced, and the migration, are in `LIBRARY.md` §1.2 and `docs/historical/CHANGELOG-0.13.md`.
+
+## 5. A wide public surface, in three tiers
+
+The crate serves two kinds of user: people building **applications** (receive, decode, transmit) and people building
+**protocols** (a new mode on the existing traits, codecs and DSP — the fifth use in §1). Hiding the internals would
+serve the first and lock out the second, and splitting them into two crates would make every shared fix a
+cross-crate release. So the surface is wide on purpose, and three tiers say where to look (`LIBRARY.md` §4):
+
+| tier | for | what |
+|---|---|---|
+| **A: application** | receive, decode, transmit | `prelude`, `decoder`, `encoder`, `iq`, `slotgrid`, `registry`, the message codecs, the protocol ZSTs |
+| **P: protocol building** | a new mode | the root traits, `decoder::Decodable`, `engine::tx`, `fec::*` |
+| **B: building blocks** | replace a stage, embedded | `engine::{dsp, sync, llr, …}`, protocol internals |
+
+Two things are deliberately *not* public: the decode pipeline driver (`engine::pipeline`, `pub(crate)`), whose shape
+changes whenever upstream's ladder does, and everything behind `internal-testing` (`mfsk_core::__internal`, no semver),
+which is the tests' and the embedded crates' way in. No other public path depends on a feature.
+
+## 6. Wide-band is the main path
+
+WSJT-X decodes a whole passband for every mode. The crate's main path does the same, for every mode, and that path is
+where fidelity is owed: **if a mode is not WSJT-X-faithful without a special mode, that is a bug in the wide-band
+path**, not a reason to reach for the special mode. Three features that look like alternatives to it are, by this
+rule, something narrower.
+
+### Sniper is a roofing-filter mode, for FT8
+
+The ±250 Hz window is hardware, not cleverness. Sniper mode is the software half of narrowing the *analogue* roofing
+filter on a transceiver that has one at that width — the Yaesu FTDX101MP and FTDX10 are the usual examples. The
+operator selects a ~500 Hz analogue filter and points it at a DX station whose carrier is already known; the audio
+reaching the decoder is already band-limited to that slice, and searching ±250 Hz matches what the hardware left. It
+is a special-purpose path for specific radios, not the natural shape for "any mode where you know who you are
+working".
+
+It is FT8-only, and that is the design: `SupportsSniper` is implemented for `Ft8` alone. FT4 is a contest protocol
+whose premise is working a full band, so a roofing filter is against its purpose; FST4 narrows through its own DDC
+channelizer (`FST4_DDC_DESIGN.md`), the same benefit without a second decode engine. The C ABI has no sniper call of
+its own: the capability is `MFSK_CAP_SNIPER`, driven through `MfskDecodeParams::search_hz`.
+
+### Equalisation is a property of the input audio
+
+Local equalisation (`eq: EqMode::Local`) flattens the passband tilt that an analogue filter's skirt puts in. It
+therefore describes the *audio*, not the search, and is available on the wide-band decode too: filtered audio can be
+fed to a wide-band decode, and FT8's `eq_mode_recovers_bpf_edge_signal` pins a band-pass-edge signal that decodes with
+`Local` and not with `Off` through the wide-band SIC engine.
+
+On flat input, EQ can only cost: the `ft4sim`-generated FT4 golden has no receiver filter, and `Local` loses two
+decodes of fourteen there. So the default is `Off`, right for recordings and simulations and wrong for a narrowed
+receiver.
+
+### A-priori decoding is a general option
+
+AP locks high-confidence bits and lowers the threshold by 1–3 dB; nothing about it is narrow-band. It is the last rung
+of the per-candidate ladder — `engine::pipeline::process_candidate_basic` for FT4 and every FST4 sub-mode, FT8's own
+`ft8::decode_block::process_one_candidate_inner` for FT8 — so everything above it has already run and failed, and it
+can only add decodes. `msg::pipeline_ap` is hypothesis generation (upstream's `iaptype`) with no engine of its own.
+
+It was once coupled to the sniper by accident, through a separate engine whose candidate loop stopped on "a hint is
+present"; on the WSJT-X golden that engine returned 4 decodes where the plain path returns 11. The account, and the
+two AP bugs found while removing it (FT4 / FST4 locking scrambled bits; the missing blind-CQ hypothesis, FT4 AWGN
+−16.89 → −18.00 dB), are in `docs/historical/CHANGELOG-0.11.md`; the move of the accept bound and the heavy
+hypotheses to `ft8b.f90`'s rules is in `docs/historical/CHANGELOG-0.12.md` (#456).
+
+AP's risk is manufactured decodes, so every AP path ships with precision guards next to its gain assertion (§7).
+
+## 7. Measure, and never recall without precision
+
+**Measure, don't assert.** Comments and docs carry what was measured, on what corpus, not what was intended. A
+bottleneck is named only after it is measured; hypotheses are ranked by measurement. Embedded work is measured on the
+shipped numeric path (`fixed-point`, §3), because that is what runs.
+
+**Recall without precision is not a result.** A decoder can always find more by accepting more, and every decode it
+manufactures is a station that was never there, sent on to a spot network or a log. So every decode path — not only
+`decode()`, but each non-default strategy (SIC rounds, `sic_early`, AP, list decoders), where phantoms actually come
+from — is guarded: golden tests go through `assert_golden`, recall floor and phantom ceiling together, with a
+target of `max_extra: 0`, and a nonzero budget is documented debt. A new strategy ships with its precision guard in
+the same change.
+
+**Tests are organised by the property they assert**, because that is what says when to run them:
+
+| tier | asserts | when |
+|---|---|---|
+| A | invariants: unit, round trip, bit-exact parity, TX waveform | every change |
+| B | golden fidelity against a reference decoder: recall **and** phantoms **and** SNR, on vendored data (missing = failure) | every change |
+| C | sensitivity: AWGN / fading threshold curves, unexpected decodes per SNR cell, ~17 GB generated | before a release, after a sensitivity-moving change |
+
+A test must pass on a clean checkout, must not depend on wall clock or device speed, and must be able to fail; one
+that cannot is deleted (`TESTING_GUIDE.md`).
+
+## 8. Why Rust
+
+- **Safety**: LDPC belief propagation, Berlekamp-Massey + Forney for RS and Fano sequential decoding are index-heavy
+  code; safe Rust removes the memory-corruption class of bug from them.
+- **Generics and trait bounds** describe a protocol family as data plus traits (§3); in C++ that is template
+  metaprogramming, in Fortran it is not available.
+- **Targets**: one source tree builds for `wasm32-unknown-unknown`, Android `arm64-v8a`, iOS, `no_std + alloc`
+  microcontrollers and any host — the five places in §1.
+- **Ecosystem**: `rustfft`, `num-complex`, `crc`, `rayon` keep the dependency graph small and reviewable.
+
+---
+
+# Part II — decisions still load-bearing
+
+## 9. Why the embedded path doesn't widen PASS1 or enable OSD
 
 Tested against the WSJT-X reference busy band on real S3 LX7 silicon
 (`logs/s3_pass100_max30_2026-05-04.log`):
@@ -316,168 +352,14 @@ subtraction to the embedded path (open question on cost — see
 late-arrival "spotter mode" decodes that land too late for QSO
 turnaround.
 
----
+## 10. What is deliberately not ported
 
-## 6. The decode API follows WSJT-X's decoder (0.13)
+Each of these was evaluated and declined; read the record before re-deriving it.
 
-0.13 replaced the decode API with one modelled on how WSJT-X runs its
-decoders: a `Decoder<P>` per mode, driven by `jt9com`'s parameter block.
-`LIBRARY.md` §2 says what the API is and §1.1 how to use it by use case, §1.2 how to move to it; this
-section is why.
+| what | why not | record |
+|---|---|---|
+| SuperFox | its code table is licensed for WSJT-X only | #436 |
+| FT2 | not part of WSJT-X; no specification of record, and the two implementations dispute each other. `ProtocolId::Ft2` stays reserved | #437, `FT2_INVESTIGATION.md` |
+| WS's 77-bit extension | at the bit level it changes nothing: the same layouts as WSJT-X, only the text each QSO step builds differs, which is outside what this crate ports | #568, `WS_77BIT_EXTENSION.md` |
 
-### What 0.12 looked like, and what went wrong
-
-- **Four families of request builders** (`msg::decode_request` for FT8 /
-  FT4 / FST4, and one each under `wspr::`, `jt9::`, `jt65::`, `q65::`), each
-  with its own option methods (#419 counts the duplication).
-- **The caller carried what upstream keeps between periods**: the hash table
-  (`.hash_table(Arc)`), FT8's previous cycle (`.previous_cycle()`), WSPR's
-  call table (`.table(&mut)`), Q65 averaging (`MultiPeriodRequest`). Getting
-  that right was each caller's job, and the crate's own `IqReceiver` got it
-  wrong: it never resolved a hashed (`<...>`) callsign, and with a real-clock
-  time anchor it lost every other slot. That is why 0.12.0 was yanked
-  (CHANGELOG, 0.13.0).
-- **The defaults were this crate's own** (FT8: sync 0.8, 60 candidates,
-  100–3000 Hz, AP on whenever a hint was given), so "the same as WSJT-X"
-  meant translating every knob first. The first Q65 comparisons against
-  `jt9` differed in band, Rx frequency and AP sequencing, and measured
-  nothing (`CLAUDE.md`, tier C).
-- **AP was a free-form hint only.** WSJT-X derives its hypotheses from the
-  QSO in progress (`naptypes`); a caller had to reproduce that by hand.
-
-### The decision
-
-Copy `jt9`'s shape, one to one:
-
-| WSJT-X | 0.13 |
-|---|---|
-| one decoder process per mode | `Decoder<P>` |
-| the `params` block the GUI fills before each period | `DecodeParams` |
-| SAVE and module variables | `P::State`, owned by the decoder |
-| `ndepth` | `Depth`, deciding every search setting per mode, with the upstream lines cited |
-| — | `P::Extras`: what this crate adds, typed per mode |
-
-Three things follow from it, and they are the reason:
-
-1. **Comparing against upstream becomes a definition, not a translation.** A
-   task in `scripts/upstream_tasks.json` is the same parameter block on both
-   sides, which is what lets `UPSTREAM_EVALUATION.md` pair trials one to one.
-2. **State is correct by construction.** It lives where upstream keeps it,
-   one table per decoder as one table per process, so a multi-channel caller
-   cannot mix two channels' tables or forget to pass one.
-3. **Divergence is visible in the types.** Everything upstream has is in
-   `DecodeParams`; everything this crate adds is in `Extras`, so the house
-   rule that a deliberate divergence must be called out holds by
-   construction, and an option a mode lacks does not compile.
-
-### What it cost, accepted
-
-- **A field a mode does not read is ignored, not rejected**, as `jt9`
-  ignores it (`tol_hz` on FT8). The "read by" column of `LIBRARY.md` §2.2 is
-  the only guard.
-- **The public block follows upstream's.** `averaging` and `deep_search` are
-  `ndepth & 16` and `& 32`; `deep_search` runs JT65's `hint65` (#648). A
-  change to `jt9com` upstream is a reason to change this API.
-- **No table shared between decoders.** Two channels of one mode learn
-  callsigns separately, as two WSJT-X instances do.
-- **`MessageFilter` takes a function pointer, not a closure**, so the extras
-  stay `Clone + 'static`; a predicate that needs data reads a `static`.
-- **No early decode and no second pass over a decoded slot.** `SlotInput` is
-  a whole period; `.known()` and `.fft_cache()` went with the old requests.
-  WSJT-X's own form of this is the nzhsym 41/47 early decode, now #572.
-- **Heavier defaults** (FT8 `Deep`: sync 1.3, 1000 candidates). Measured,
-  this costs nothing that matters: at `Deep` the crate is 3.8–4.0× `jt9 -8
-  -d 3`'s speed on the same files, and decodes the same 21 messages on
-  `qso3_busy.wav` (`BENCHMARKS.md`).
-
-### What it bought, measured
-
-- QSO-context AP for FT8, FT4 and FST4 from `naptypes`: weak replies on FT8,
-  0 of 30 decoded with AP off and 20 of 30 on.
-- Sensitivity "the same" as WSJT-X v3.2.0-rc1 on every mode but legacy JT65,
-  on tasks defined identically on both sides (`BENCHMARKS.md`, 2026-10-04).
-- One C handle for every mode (`mfsk_decoder_*`) in place of a session
-  handle and per-family functions, because the Rust side now has one shape
-  to expose.
-
----
-
-## 7. Why a `Protocol` trait, and why Rust
-
-Moved from `README.md` when it was shortened (2026-11-04); the measurements keep their own dates.
-
-### Why this crate exists
-
-WSJT-X is the reference implementation of these modes and the source of every protocol constant here. It is also a
-Fortran / C / Qt desktop application, which makes it a poor fit for running the decoders anywhere else: in a browser
-(WASM), on Android or iOS (no Fortran runtime to link), in a headless Rust application (skimmer, monitoring station,
-remote SDR front end), on `no_std + alloc` microcontrollers (ESP32-S3 with esp-dsp, RP2350 with CMSIS-DSP), or as the
-core of a new protocol experiment that reuses FT8's LDPC and sync machinery.
-
-### Why a `Protocol` trait
-
-Measured (`wc -l`, excluding the experimental `uvpacket`, 2026-08-14): about a third of `src/` (18.7k of 58.9k lines)
-was generic over `P: Protocol` — the LDPC BP/OSD kernel, the `wsjt77` / `jt72` message codecs, FFT / resample / GFSK
-DSP. The rest is protocol-specific by necessity (different FEC: LDPC, convolutional + Fano, Reed-Solomon, QRA over
-GF(64); different message widths: 77, 72, 50 bits). Not re-measured since; the per-protocol split of what is shared is
-`LIBRARY.md` §3.1. WSJT-X expresses the possible commonality by copying between per-mode source files; here it is
-traits, split by what varies per protocol:
-
-- **Shared** (`engine`, generic over `P: Protocol`): coarse and fine sync, LLR computation, equalisation, the decode
-  pipeline driver, GFSK synthesis.
-- **Per protocol** (`const` associated items on a zero-sized type): tone count, symbol rate, Gray map, GFSK shaping
-  (`ModulationParams`); total symbols, sync / data layout, slot length (`FrameLayout`); which FEC (`Protocol::Fec`) and
-  which message codec (`Protocol::Msg`).
-
-```text
-     ┌──────────────────────────────────────────────────────────────┐
-     │  ft8  ft4  fst4  fst4w  wspr  jt9  jt65  q65                 │  per-protocol ZSTs
-     │       (each implements Protocol + FrameLayout)               │  (feature-gated)
-     └────────────┬──────────────────────┬──────────────────────────┘
-                  │                      │
-         ┌────────▼─────────┐    ┌───────▼────────┐
-         │       msg        │    │      fec       │  shared codecs
-         │ Wsjt77 · Jt72    │    │ LDPC · RS      │  behind traits
-         │ Wspr50 · Q65     │    │ ConvFano · QRA │
-         │ · hash table     │    │                │
-         └────────┬─────────┘    └───────┬────────┘
-                  │                      │
-              ┌───▼──────────────────────▼───┐
-              │            engine            │  Protocol trait, DSP
-              │  sync · llr · equalize ·     │  (resample / GFSK /
-              │  pipeline · tx · dsp         │   downsample / subtract)
-              └──────────────────────────────┘
-```
-
-MSK144 and JTTY sit outside the trait on purpose: MSK144 is continuous-phase MSK in transient meteor bursts, and JTTY
-has no slot (frames start whenever the sender likes, and a message is several of them). Neither fits the static-slot
-model the trait describes.
-
-### Zero-cost: monomorphised, not dispatched
-
-Because the per-protocol part is `const` items on zero-sized types, the generic receive path — `engine::sync` →
-`engine::llr` → `engine::equalize` → `engine::pipeline`, free functions generic over `P` — is monomorphised per
-protocol. LLVM sees a specialised function for each `P`, inlines the constants and autovectorises the hot loops on
-native targets (SSE/AVX on x86_64, NEON on aarch64). There is no `Demodulator` trait object and no vtable on the hot
-path. The crate has no hand-written SIMD, by design (it keeps the code `no_std` and portable), so on
-`wasm32-unknown-unknown` the vectorisation needs `-C target-feature=+simd128` in the consuming build; measured effect
-about 20 % on FT8 (`BENCHMARKS.md`, "WASM: `+simd128`").
-
-The pay-off is adding a protocol: FST4-60A joined as a trait impl on one ZST plus a Costas table, with no change to
-shared pipeline code, and later sub-modes are one `fst4_submode!` / `q65_submode!` line.
-
-### A static set of protocols
-
-`PROTOCOLS` is a `const` slice fixed at compile time by Cargo features. There is no runtime `register_protocol()`:
-every wired ZST is checked by `tests/protocol_invariants.rs` against the trait surface, and that guarantee cannot
-extend to types unknown at compile time. A new protocol is a ZST, a `protocol_meta!` line and a rebuild.
-
-### Why Rust
-
-- **Safety**: LDPC belief propagation, Berlekamp-Massey + Forney for RS and Fano sequential decoding are index-heavy
-  code; safe Rust removes the memory-corruption class of bug from them.
-- **Generics and trait bounds** describe a protocol family as data plus traits; in C++ that is template
-  metaprogramming, in Fortran it is not available.
-- **Targets**: one source tree builds for `wasm32-unknown-unknown`, Android `arm64-v8a`, `no_std + alloc`
-  microcontrollers and any host.
-- **Ecosystem**: `rustfft`, `num-complex`, `crc`, `rayon` keep the dependency graph small and reviewable.
+Something tempting from outside WSJT-X: `UPSTREAM_EVALUATION.md` and these records first, then ask.

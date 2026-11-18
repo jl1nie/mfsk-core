@@ -341,7 +341,7 @@ API は無い。一発の呼び出しにしかできないことが無いから�
 無くなり、WSJT-X 自身のパラメータブロックで動く、モードごとに 1 つのデコーダがその代わりに
 なった（[§2](#2-デコード-api)）。0.12.0 は yank 済みで、0.12.1 は無い。なぜこの形にしたのか、
 そのために何を手放したのかは
-[`DESIGN_RATIONALE.md` §6](../notes/DESIGN_RATIONALE.md#6-the-decode-api-follows-wsjt-xs-decoder-013)
+[`DESIGN_RATIONALE.md` §4](../notes/DESIGN_RATIONALE.md#4-the-decode-api-is-jt9s-shape)
 にある。
 
 **変わるのはコードだけでなく結果も。** 既定値が WSJT-X の GUI のものになった
@@ -1085,7 +1085,7 @@ C では、デコーダを持つ全モードが `MFSK_CAP_BUDGET` を公開し�
 広帯域経路の `ap_hint` で、FT8・FT4・全 FST4 サブモードが持つ。FT4 と FST4 の sniper
 エントリポイントは 2026-09-13 まで存在したが削除した: 広帯域経路がここでの全モードの
 主経路であり、sniper 無しで WSJT-X に忠実でないなら、それは広帯域経路のバグである。
-計測を含む全経緯は [`DESIGN_RATIONALE.md`](../notes/DESIGN_RATIONALE.md)。
+理由は [`DESIGN_RATIONALE.md` §6](../notes/DESIGN_RATIONALE.md#6-wide-band-is-the-main-path)。
 
 ```rust
 use mfsk_core::decoder::{Decoder, DecodeParams, Sniper};
@@ -1313,9 +1313,34 @@ extras（`Q65Extras`）を持つ:
 （`q65_hist2` / `q65_set_list2`）。グリッド付きで呼んできた局を最大 50 局、
 アプリケーションが保持する（`record(freq, msg, now)`、`expire(now)`）。
 そこから、各局について `MyCall Caller Grid` / `R Grid` / `RRR` / `RR73` /
-`73` を 78 ビット目なしとありの両方で作ったフル AP リストを作る。各フロントエンドが実際に何をして
-いるか、既定のスキャンがなぜ素の Bessel パスではないのかは
-[`DESIGN_RATIONALE.md` §4](../notes/DESIGN_RATIONALE.md#4-q65s-decoder-strategies-and-what-each-is-for)。
+`73` を 78 ビット目なしとありの両方で作ったフル AP リストを作る。
+
+**Q65 の各フロントエンドが何をするか。** Q65 は、1 つの FEC フレームに複数の受信系統で
+迫れる唯一のモードで、各系統は実行時間と、それぞれ別の伝搬路の病理とを引き換えにする:
+
+- **既定のスキャンは素の Bessel パスではない。** 何も設定しないと、各粗探索候補は
+  fast-fading メトリックと `FadingModel::Lorentzian` による `(Δf, Δt, b90)` グリッド探索を
+  通る（`q65_loops.f90`、`q65_dec_q012`）。WSJT-X の自動デコーダと同じで、あちらもスキャンで
+  素の AWGN パスは走らせない。素の Bessel-I0 メトリックに続けて QRA 符号上で確率伝搬を行うのは、
+  既知の位置でのデコードである `q65::SniperRequest` を何も設定せずに呼んだときである。
+  つまり「AWGN」と「fast-fading」は 2 つの入口（既知の位置かスキャンか）の名前であって、
+  伝搬路で選ぶ 2 つのフロントエンドではない。`fading` は `(model, b90_ts)` を明示的に選ぶためにある。
+- **`ap_hint`** は BP の前に、既知のビット位置で内在確率を固定する。正しいヒントは BP の
+  固定点を真に近づけ、誤ったヒントは誤デコードよりも収束しないことが多く、残りは CRC が捕まえる。
+  約 2 dB。
+- **`fading`** は Bessel のフロントエンドを、広がりを考慮したもの（`Gaussian` か
+  `Lorentzian`）に置き換える。`b90_ts` は広がりの帯域幅とシンボル周期の積で、AWGN に近ければ
+  約 0.05、中程度で 1.0、厳しければ 5.0 以上。マイクロ波 EME には必須である（月の秤動で各トーンが
+  10–60 Hz に広がる）: WSJT-X の `samples/Q65/60D_EME_10GHz/` はこれでデコードでき、Bessel の
+  フロントエンドでは 1 つもデコードできない。広がった伝搬路で 5–8 dB。
+- **`rx_freq_hz` なしの `ap_list`** は BP を走らせない: 候補符号語（フル AP リスト、
+  `standard_qso_codewords`）をそれぞれ軟判定観測に照らして採点し、サイズ補正した閾値を超える
+  最良のものを採るか、何も採らない。QSO の状態がなく既知のコール対だけがある場合のためで、
+  −25 dB（公表されている Q65-30A の閾値より 1 dB 下）で 6 フレーム中 6、素の BP は 6 中 0。
+  約 3 dB。この形はこのクレート独自である（上記）。
+- **すべてのリストデコード**（スキャン、sniper、平均化、q3）は、`plog > PLOG_MIN`（−242）かつ
+  メッセージが全ゼロでないときだけ受理する。`q65_dec1` と同じである。サイズ補正した閾値
+  （約 −256）だけでは、Q65-60B の対流圏散乱ゴールデンで誤った符号語を通していた。
 
 **Q65 の時間窓と EME 遅延。** `default_search_params()` は公称開始の
 -1.0 .. +1.0 s を探索する。WSJT-X の GUI と同じである（`q65.f90` の
@@ -2061,8 +2086,9 @@ Q65-120D と -300A について同じことを確認します。C ABI は
 AP は候補ごとの ladder の最後の一段である — FT4 と FST4 全サブモードでは
 `process_candidate_basic` の、FT8 では FT8 自身の ladder の。
 `msg::pipeline_ap` は仮説生成だけで自前のエンジンを持たない。かつて偶然 sniper と結合しており、それがデコードの
-大半を失わせていた — 実測は
-[`DESIGN_RATIONALE.md`](../notes/DESIGN_RATIONALE.md) にある。
+大半を失わせていた — 一般の選択肢である理由は
+[`DESIGN_RATIONALE.md` §6](../notes/DESIGN_RATIONALE.md#6-wide-band-is-the-main-path)、実測は
+[`CHANGELOG-0.11.md`](../historical/CHANGELOG-0.11.md) にある。
 
 **Q65 の戦略** — どのブロックでどれが走るか、q3 リスト復号、平均、Pileup、Max Drift、時間窓と
 EME 遅延、履歴とコーラーのヘルパ — は
