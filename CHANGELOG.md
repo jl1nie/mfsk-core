@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Docs — `DESIGN_RATIONALE.md` leads with the design, history goes to the changelogs
+
+- Part I explains why the crate is built as it is (purpose, WSJT-X as reference, the `Protocol` trait, the `jt9`-shaped API, the
+  three tiers, wide-band as the main path, measurement and precision, Rust); Part II keeps the embedded PASS1 decision and the not-ported list.
+- The AP-coupling and 0.12 accounts now live only in `docs/historical/`; Q65's front-end notes moved to `LIBRARY.md` §2.5 (and `.ja.md`).
+- Shared-code share re-measured at `f0e8dcc6`: `engine` + `fec` + `msg` are 47.2k of 108.0k lines (44 %). No code change.
+
 ### Changed — rustc 1.100.0; the 1.99.0 `black_box` workaround is gone (#757, #758)
 
 - rust-lang/rust#163626 (1.99.0's aarch64 `loop-vectorize` hang on FT8's Costas phasor table) is fixed upstream and ships in 1.100.0. The host pin

@@ -353,7 +353,7 @@ holds. Up to 0.13.0 a buffer shorter than an FT8 or FT4 frame could panic
 request builders are gone, and one decoder per mode, driven by WSJT-X's own
 parameter block, took their place ([§2](#2-the-decode-api)). 0.12.0 is
 yanked and there is no 0.12.1. Why the API went this way, and what it gave
-up to get there, is [`DESIGN_RATIONALE.md` §6](../notes/DESIGN_RATIONALE.md#6-the-decode-api-follows-wsjt-xs-decoder-013).
+up to get there, is [`DESIGN_RATIONALE.md` §4](../notes/DESIGN_RATIONALE.md#4-the-decode-api-is-jt9s-shape).
 
 **What changes in your results, not only in your code.** The defaults are
 now the WSJT-X GUI's ([§2.2](#22-decodeparams-and-depth)), so the same audio
@@ -1152,8 +1152,8 @@ that is `ap_hint` on the wide-band path, which FT8, FT4 and every FST4
 sub-mode have. FT4 and FST4 sniper entry points existed until 2026-09-13 and
 were removed: the wide-band path is the main path for every mode here, and if
 it is not WSJT-X-faithful without a sniper, that is a bug in the wide-band
-path. Full reasoning, with the measurements, in
-[`DESIGN_RATIONALE.md`](../notes/DESIGN_RATIONALE.md).
+path. Full reasoning in
+[`DESIGN_RATIONALE.md` §6](../notes/DESIGN_RATIONALE.md#6-wide-band-is-the-main-path).
 
 ```rust
 use mfsk_core::decoder::{Decoder, DecodeParams, Sniper};
@@ -1396,15 +1396,50 @@ list (`standard_qso_codewords`, to pass as `extras.ap_list`) without the operato
 (`q65_hist2` / `q65_set_list2`): up to 50 stations that called with a
 grid, kept by the application (`record(freq, msg, now)`, `expire(now)`),
 and a full-AP list of every `MyCall Caller Grid` / `R Grid` / `RRR` /
-`RR73` / `73` with the 78th bit clear and set. What each front end actually
-does, and why the default scan is not the plain Bessel path, is in
-[`DESIGN_RATIONALE.md` §4](../notes/DESIGN_RATIONALE.md#4-q65s-decoder-strategies-and-what-each-is-for).
+`RR73` / `73` with the 78th bit clear and set.
+
+**What each Q65 front end does.** Q65 is the one mode where one FEC frame
+can be approached through several receiver chains, each trading run time
+against a different channel pathology:
+
+- **The default scan is not the plain Bessel path.** With nothing set,
+  each coarse candidate goes through the `(Δf, Δt, b90)` grid search with
+  the fast-fading metric and `FadingModel::Lorentzian` (`q65_loops.f90`,
+  `q65_dec_q012`), as WSJT-X's automatic decoder does: it never runs a
+  plain-AWGN pass for its scan either. The plain Bessel-I0 metric followed
+  by belief propagation on the QRA code is what `q65::SniperRequest`, a
+  decode at a known alignment, runs with nothing set. So "AWGN" and
+  "fast-fading" name two entry points (known alignment vs scan), not two
+  front ends picked by channel; `fading` is for choosing `(model, b90_ts)`
+  explicitly.
+- **`ap_hint`** clamps the intrinsic probabilities at the known bit
+  positions before BP. A right hint moves BP's fixed point toward the
+  truth; a wrong one usually fails to converge rather than misdecoding,
+  and the CRC catches the rest. About 2 dB.
+- **`fading`** replaces the Bessel front end with a spread-aware one,
+  `Gaussian` or `Lorentzian`. `b90_ts` is the spread bandwidth times the
+  symbol period: about 0.05 near-AWGN, 1.0 moderate, 5.0 and up severe.
+  Microwave EME needs it (lunar libration spreads each tone over
+  10–60 Hz): WSJT-X's `samples/Q65/60D_EME_10GHz/` decodes through it and
+  gives no decode with the Bessel front end. 5–8 dB on spread channels.
+- **`ap_list` without `rx_freq_hz`** runs no BP: it scores every
+  candidate codeword (the full-AP list, `standard_qso_codewords`) against
+  the soft observations and takes the best above a size-adjusted
+  threshold, or none. For a known call pair with no QSO state: at −25 dB,
+  1 dB below the published Q65-30A threshold, 6 of 6 frames against 0 of
+  6 for plain BP. About 3 dB. This form is this crate's own (above).
+- **Every list decode** (scan, sniper, averaged, q3) is accepted only when
+  `plog > PLOG_MIN` (−242) and the message is not all zeros, as `q65_dec1`
+  does. The size-adjusted threshold alone (about −256) let a wrong
+  codeword through on the Q65-60B troposcatter golden.
 
 **Q65 time window and EME delay.** `default_search_params()` searches
 -1.0 .. +1.0 s around the nominal start, as WSJT-X's GUI does
 (`q65.f90`'s `lag1`/`lag2`). `eme_delay` is its "Decode at 52 s" EME delay:
 the late edge moves to +5.5 s (+4.0 s on Q65-15) for the Earth-Moon-Earth
-round trip. `dt_sec` is measured from the nominal start.
+round trip. `dt_sec` is measured from the nominal start. A known gap: with
+the delay off, `jt9` still decodes a Q65-120D frame 2.0 s late, where this
+crate stops at +1.5 s.
 
 ```rust
 # #[cfg(feature = "q65")] {
@@ -2210,8 +2245,9 @@ slot model with a burst scan, and JTTY with an incremental receiver.
 the last rung of the per-candidate ladder — `process_candidate_basic`'s
 for FT4 and every FST4 sub-mode, FT8's own for FT8 — and
 `msg::pipeline_ap` is hypothesis generation with no engine of its own. It used to be coupled to the sniper by accident
-and that cost most of the decodes — the measurement is in
-[`DESIGN_RATIONALE.md`](../notes/DESIGN_RATIONALE.md).
+and that cost most of the decodes — why it is a general option is
+[`DESIGN_RATIONALE.md` §6](../notes/DESIGN_RATIONALE.md#6-wide-band-is-the-main-path), the measurement
+[`CHANGELOG-0.11.md`](../historical/CHANGELOG-0.11.md).
 
 **Q65's strategies** — which one runs for which block, the q3 list decode,
 averaging, Pileup, Max Drift, the time window and EME delay, and the history

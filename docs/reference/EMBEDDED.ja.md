@@ -455,7 +455,7 @@ OSD を有効化する案は実測のうえ却下されている — 取りこ�
 coarse_sync のランク 100 より下に居て、BP の努力ではなく反復減算を要する
 から。そして FT8 のターンアラウンド予算はスロット全体ではなく
 post-SlotEnd ~2 秒だから。数値は
-[`DESIGN_RATIONALE.md` §5](../notes/DESIGN_RATIONALE.md#5-why-the-embedded-path-doesnt-widen-pass1-or-enable-osd)
+[`DESIGN_RATIONALE.md` §9](../notes/DESIGN_RATIONALE.md#9-why-the-embedded-path-doesnt-widen-pass1-or-enable-osd)
 にある。
 
 ### `qso3_busy.wav` の per-stage 分解

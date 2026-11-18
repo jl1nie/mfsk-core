@@ -732,7 +732,7 @@ pub trait SupportsSicEarly: FrameDecodable {
 /// search, was what made a decode single-target, and FT8 escaped only by
 /// having its own AP path that never entered that engine. AP is now a
 /// rung on `process_candidate_basic`'s own ladder and that engine is
-/// gone; see `docs/notes/DESIGN_RATIONALE.md` §3 for the measurements.
+/// gone; see `docs/historical/CHANGELOG-0.11.md` (0.11.0) for the measurements.
 ///
 /// [`SniperRequest::ap_hint`] does not need this trait: it is gated on
 /// [`SupportsSniper`] plus `P::Msg: WsjtApCompatible`, and since the
@@ -1312,7 +1312,7 @@ impl<'a, P: SupportsWideBandAp, Pol: MessagePolicy> DecodeRequest<'a, P, Pol> {
     /// `process_candidate_basic`'s own ladder — everything above it has
     /// already run and failed, so it can only add decodes — and
     /// `msg::pipeline_ap` is hypothesis generation with no engine of its
-    /// own. `docs/notes/DESIGN_RATIONALE.md` §3 has the full account,
+    /// own. `docs/historical/CHANGELOG-0.11.md` (0.11.0) has the full account,
     /// including the two bugs found while wiring it.
     pub fn ap_hint(mut self, ap: &'a ApHint) -> Self {
         self.ap_hint = Some(ap);

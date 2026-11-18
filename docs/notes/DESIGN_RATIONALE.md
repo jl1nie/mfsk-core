@@ -359,7 +359,7 @@ Each of these was evaluated and declined; read the record before re-deriving it.
 | what | why not | record |
 |---|---|---|
 | SuperFox | its code table is licensed for WSJT-X only | #436 |
-| FT2 | | #437 |
-| WS's 77-bit extension | | #568 |
+| FT2 | not part of WSJT-X; no specification of record, and the two implementations dispute each other. `ProtocolId::Ft2` stays reserved | #437, `FT2_INVESTIGATION.md` |
+| WS's 77-bit extension | at the bit level it changes nothing: the same layouts as WSJT-X, only the text each QSO step builds differs, which is outside what this crate ports | #568, `WS_77BIT_EXTENSION.md` |
 
 Something tempting from outside WSJT-X: `UPSTREAM_EVALUATION.md` and these records first, then ask.
