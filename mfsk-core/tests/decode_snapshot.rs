@@ -92,6 +92,12 @@
 //! (up to 7.7 dB; on `qso3_busy.wav` every row is now within 0.4 dB of beta6's `jt9 -8 -d 3`, was up to 7.3) and in the
 //! last bits of `sync_score`; no message appears or goes, and `freq_hz`, `dt_sec`, `hard_errors` and `pass` are unchanged.
 //!
+//! A ninth (#755, 2026-11-15): WSPR's scan no longer prepends 3.072 s of zeros (`wsprd` has no pad) and keeps a
+//! candidate's coarse values at or below `minsync1`. The four `wspr_*` fixtures move in `snr_db` only (all nine rows of
+//! each); messages, order, `freq_hz` and `dt_sec` are unchanged. On this recording all nine SNRs now equal `wsprd` v3.3.0-beta6's own float SNR (a copy of
+//! `wsprd.c` printing `decodes[i].snr`) to four decimals; before they were 0.010-0.121 dB off (`G8VDQ IO91 37`
+//! -23.149 -> -23.270, `wsprd` -23.2695). Why the pad moved them is not measured (it also cut the recording's last 3 s).
+//!
 //! Row format, one per line, sorted. Frame family (FT8/FT4/FST4): text,
 //! then `freq_hz`, `dt_sec`, `snr_db`, `sync_score` as f32 bit patterns in
 //! hex, then `hard_errors` and `pass`. Other families and the IQ path: the

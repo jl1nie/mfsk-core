@@ -29,7 +29,19 @@
 - `-s`, `-B` (pass 1 skipped only with `npasses > 2`), `-o n` (`osdwspr` ported, every rung of every pass), `fmin`/`fmax` with `-e` once per pass, `-z`.
 - Also on the `Depth` path, plainly: (a) subtraction takes `f1` itself, not `1500 + f1` rounded to `f32`; (b) a decode `unpk_` will not print
   stops the ladder; (c) the callsign table is 32768 buckets, a colliding call evicts, the whole run's table is handed back; (d) `Depth::Fast`
-  runs pass 1 after an empty pass 0. Merge gate and snapshots unchanged; tier C (`wspr`) not run: its corpus is not on this machine.
+  runs pass 1 after an empty pass 0. Merge gate and snapshots unchanged; tier C (`wspr`) on `main` at `4b4d5ac0` (that change included): -31.40 dB, +0.00 dB against the baseline.
+
+### Fixed — WSPR scan matches `wsprd`'s candidates: coarse values kept at or below `minsync1`, no front padding; **default-path results can change**
+
+- `refine_candidate` keeps the coarse frequency, shift, drift **and sync** of a candidate whose refined sync is at or below `minsync1`, and
+  `minsync2` is tested on the coarse sync (`wsprd.c:1325-1343`); the crate dropped it. And `decode_scan` no longer prepends 3.072 s of zeros
+  (`wsprd` has none; it reaches a negative shift directly, `wsprd.c:278,1250`): the pad changed the coarse sync of the same alignment.
+- Measured (WSPR AWGN sweep, 260 files): the decoded files equal `wsprd` v3.3.0-beta6's on all 260 (0.16.1 missed one at -32); crossing
+  -31.40 → -31.44 dB (`wsprd` -31.44). The reported SNR of all 9 golden decodes now equals `wsprd`'s to 4 decimals (was 0.01-0.12 dB off with the pad; why
+  is not measured); DJ6OL still at dt -1.94 s, parity 32/32. The four `wspr_*` snapshots move in `snr_db` only. Detail: `docs/notes/WSPRD_PARITY.md`.
+- **Breaking (source):** `BasebandCandidate` gains the pub field `lag_baseband` (signed `shift`; `start_sample` still clamps at 0), so a struct
+  literal outside the crate stops compiling. `NEGATIVE_DT_PAD` stays, unused; `WSPRD_NPOINTS` (114 s) is new and `decode_scan` cuts its audio to it
+  (`NPOINTS_MAX` is unchanged). Embedded: the pipelines pad their own buffer; the literal in `wspr_dual_core.rs` is updated, not built or flashed here.
 
 ## 0.16.1 — FT4 is sent where WSJT-X sends it: `tx_buffer_start` is `Modulator.cpp`'s `delay_ms` (3600 samples, 0.300 s), not the DT = 0 placement (#749)
 

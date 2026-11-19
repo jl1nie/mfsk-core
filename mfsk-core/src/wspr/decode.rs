@@ -40,7 +40,9 @@ pub struct WsprResult {
     /// wsprd-equivalent `dt`: signal-start offset in seconds, relative
     /// to the WSPR nominal anchor (slot start + 1 s). Positive values
     /// = signal arrived late, negative = arrived early. Range that
-    /// `decode_scan` can express: `−3.072 s (`baseband::NEGATIVE_DT_PAD`) .. +∞`.
+    /// `decode_scan` can express: about `−4.5 s .. +∞` (`wsprd`'s coarse search reaches
+    /// `shift = 128 · (k0 + 1) = −1152` baseband samples at `k0 = −10`, `wsprd.c:1250`, and the refine
+    /// stages move it a further −128 and −32: −1312 samples, dt −4.499 s).
     pub dt_sec: f32,
     /// Linear drift the successful demodulation ran at, in Hz across
     /// the 110.6 s frame — wsprd's `drift1`.
@@ -461,6 +463,10 @@ mod callsign_table_tests {
     }
 }
 
+/// `minsync1`, `wsprd.c:820`: the refined sync a candidate needs for the fine stages (and, in
+/// `wsprd`, for its refined values to replace the coarse ones).
+const MINSYNC1: f32 = 0.10;
+
 /// wsprd's refine cascade (`wsprd.c:1221-1277`), in full. Each stage is
 /// `sync_and_demodulate` in mode 0 (search lag, freq fixed) or mode 1
 /// (search freq, lag fixed), keeping whichever cell scores highest on
@@ -568,13 +574,15 @@ fn refine_cascade(
     // Stages 4-5 run only above wsprd's `minsync1` (`wsprd.c:820,1325`);
     // below it the candidate is noise and the extra evals are wasted.
     //
-    // **Deliberate divergence from `wsprd`** (CLAUDE.md §2.1, on every path): `wsprd` writes the
-    // refined `freq` / `shift` / `drift` / `sync` back to the candidate only inside this branch
-    // (`wsprd.c:1325-1343`), so a candidate that stays at or below `minsync1` keeps its *coarse*
-    // values and can still pass `minsync2` on the coarse sync. Here such a candidate is dropped,
-    // its refined sync being the figure `minsync2` is compared with. Not measured to matter on
-    // the golden; not ported.
-    const MINSYNC1: f32 = 0.10;
+    // `wsprd` writes the refined `freq` / `shift` / `drift` / `sync` back to the candidate only
+    // inside this branch (`wsprd.c:1325-1343`), so a candidate that stays at or below `minsync1`
+    // keeps its *coarse* values and is judged by `minsync2` on the coarse sync. The scan
+    // (`refine_candidate`) does the same. The point decode (`decode_at_baseband_inner`) has no
+    // coarse sync to fall back on and still drops such a candidate on its refined sync. The pass-2
+    // ranking (`rank_pass2_candidates`, the embedded `wspr-pass2-topn` path) does hold the coarse
+    // candidate and could do the same; it is left because it changes what the embedded WSPR bench
+    // (`m5stack-s3`'s `wspr-bench`) measures. No app runs WSPR on a board any more (the CoreS3
+    // receiver was removed, 2026-09-30).
     if best_sync > MINSYNC1 {
         #[cfg(feature = "instrument")]
         super::instrument::bump(&super::instrument::MINSYNC1_PASS);
@@ -1196,14 +1204,12 @@ impl ScanDepth {
     };
 }
 
-// Front-side zero padding (`baseband::NEGATIVE_DT_PAD`, 3.072 s) added before
-// the search runs. WSPR transmissions can start up to ~2 s **before**
-// the nominal slot anchor (wsprd reports such cases as `dt < -1.0`);
-// the missing pre-roll samples are not in the recording, but with
-// front padding the demodulator still aligns the rest of the frame
-// and Fano can recover from ~1–2 missing leading symbols. Mirrors
-// wsprd's `wspr_decode.f90` which prepends a configurable buffer
-// for the same reason.
+// No front padding. `wsprd` addresses a signal that starts before the recording (`dt < -1.0`)
+// directly: its coarse search reaches `shift = 128 * (k0 + 1)` down to -1152 baseband samples
+// (`wsprd.c:1250`) and its demodulator skips the samples that are not there (`k > 0 && k < np`,
+// `wsprd.c:278`). The scan did the same on a copy of the audio with 3.072 s of zeros in front
+// through 0.16.1; that moved every spectrogram row by a pad, which changed the coarse sync of the
+// same alignment (0.09791 -> 0.10070 on one -32 dB file) and so which candidates reached `minsync2`.
 
 /// **Embedded-only** (feature `wspr-pass2-topn`; off by default, host
 /// stays on [`decode_pass2_candidate`]'s wsprd-faithful full ladder).
@@ -1302,7 +1308,7 @@ pub fn rank_pass2_candidates<'c>(
     ) -> Option<WsprPass2Candidate<'c>> {
         let f0_center_init = c.freq_hz + 1.5 * super::demod::TONE_SPACING_HZ;
         let f0_baseband_init = f0_center_init - super::baseband::CENTER_HZ;
-        let lag_baseband_init = c.start_sample as i32 / 32;
+        let lag_baseband_init = c.lag_baseband;
         let mut isqs = super::demod::IsQs::zeroed();
         let (freq, lag, drift, sync) = refine_cascade(
             idat,
@@ -1499,11 +1505,22 @@ fn refine_candidate(
         idat,
         qdat,
         f0,
-        c.start_sample as i32 / 32,
+        c.lag_baseband,
         c.drift_hz,
         refine_drift,
         &mut isqs,
     );
+    if sync <= MINSYNC1 {
+        // `wsprd.c:1325-1343`: not above `minsync1`, so the candidate keeps what the coarse
+        // search gave it, sync included, and `minsync2` is tested on that.
+        return RefinedCandidate {
+            snr_db: c.snr_db,
+            freq: f0,
+            lag: c.lag_baseband,
+            drift: c.drift_hz,
+            sync: c.sync,
+        };
+    }
     RefinedCandidate {
         snr_db: c.snr_db,
         freq,
@@ -1787,17 +1804,13 @@ pub(super) fn decode_scan_inner(
     let budget: Option<&(dyn Fn() -> bool + Sync)> =
         tracked.as_ref().map(|c| c as &(dyn Fn() -> bool + Sync));
     let spent = || hit.load(core::sync::atomic::Ordering::Relaxed);
-    // Prepend zeros so signals that started before audio[0] (negative
-    // dt) become reachable. Internal `start_sample`s are shifted by
-    // `pad`; we subtract `pad` back out before returning so callers
-    // see the original time base.
-    // 12 kHz is the only rate the baseband decimation takes; the pad is a whole
-    // number of `wsprd`'s 128-sample coarse strides (see `NEGATIVE_DT_PAD`).
-    let pad = super::baseband::NEGATIVE_DT_PAD;
-    let _ = sample_rate;
-    let mut padded = alloc::vec![0f32; pad + audio.len()];
-    padded[pad..].copy_from_slice(audio);
-    let nominal_shifted = nominal_start_sample + pad;
+    // No front padding (see the note above `PASS2_DEEP_LADDER_TOP_N`): `wsprd` reaches a negative
+    // `shift` directly, and reads only its `npoints` (114 s) of the recording. `pad` is 0 here; it
+    // stays a parameter of `decode_pass2_top_n` and `deep_decode_pass2_candidate`, which the embedded
+    // pipelines (`wspr_scan`) call with the pad of the buffer they build themselves.
+    let pad = 0usize;
+    let audio = &audio[..audio.len().min(super::baseband::WSPRD_NPOINTS)];
+    let _ = nominal_start_sample;
     // Decimate ONCE up-front; the wsprd-equivalent coarse and the
     // demod both consume the same baseband buffer, so we save 32×
     // FFT work vs running each separately.
@@ -1812,11 +1825,11 @@ pub(super) fn decode_scan_inner(
     #[cfg(all(feature = "wspr-ddc", feature = "wspr-ddc-cascade"))]
     compile_error!("wspr-ddc and wspr-ddc-cascade select different channelizers — enable only one");
     #[cfg(not(any(feature = "wspr-ddc", feature = "wspr-ddc-cascade")))]
-    let (mut idat, mut qdat) = super::baseband::decimate_to_baseband(&padded);
+    let (mut idat, mut qdat) = super::baseband::decimate_to_baseband(audio);
     #[cfg(feature = "wspr-ddc")]
-    let (mut idat, mut qdat) = super::ddc::ddc_to_baseband(&padded);
+    let (mut idat, mut qdat) = super::ddc::ddc_to_baseband(audio);
     #[cfg(feature = "wspr-ddc-cascade")]
-    let (mut idat, mut qdat) = super::ddc::ddc_to_baseband_cascade(&padded);
+    let (mut idat, mut qdat) = super::ddc::ddc_to_baseband_cascade(audio);
     // wsprd-equivalent coarse: 512-pt windowed FFT on the 375 Hz
     // baseband, time-averaged spectrum + 30 th-percentile noise
     // floor, peak detection on smspec, 3-D (freq, time, drift)
@@ -1853,7 +1866,6 @@ pub(super) fn decode_scan_inner(
     // WD4LHT, NM7J, KI7CI, DJ6OL, W3HH, W5BIT) comes through the
     // baseband path. Kept the legacy module for synth round-trip
     // tests; not invoked here.
-    let _ = nominal_shifted;
     // `coarse_baseband` already returns candidates sorted by sync score
     // descending — no remap/re-sort needed; keeping `BasebandCandidate`
     // itself (rather than the legacy `SyncCandidate`) preserves each
@@ -1865,7 +1877,6 @@ pub(super) fn decode_scan_inner(
     // `ScanDepth::freq_window`; otherwise the strongest `max_candidates` of the baseband. Passes
     // 1 and 2 search again on what is left and are not counted (`SlotResult::candidates`, #697).
     let first_search = Some(u32::try_from(cands.len()).unwrap_or(u32::MAX));
-    let _audio = &padded[..]; // shadow so all downstream reads use padded buffer
     let mut seen: Vec<WsprResult> = Vec::new();
     // 2-D refinement: WSPR's Fano (K=32 convolutional, no CRC) is
     // sensitive to *both* sub-bin freq and sub-t_step time mis-
@@ -2069,6 +2080,54 @@ pub(super) fn decode_scan_inner(
 /// itself the pub helper.
 fn deinterleave_llrs(llrs: &mut [f32; 162]) {
     crate::engine::interleave::deinterleave_bitrev(llrs);
+}
+
+#[cfg(test)]
+mod minsync1_tests {
+    use super::super::coarse_baseband::BasebandCandidate;
+    use super::*;
+
+    /// A candidate whose refined sync is at or below `minsync1` keeps the coarse frequency, shift,
+    /// drift **and sync** (`wsprd.c:1325-1343`), so `minsync2` is tested on the coarse sync. On pure
+    /// noise the refined sync is far below `minsync1`; a coarse sync of 0.77 must come back as it is.
+    /// This fails if the rule is dropped: the refined sync would come back instead.
+    #[test]
+    fn a_candidate_at_or_below_minsync1_keeps_its_coarse_values_and_sync() {
+        let mut x = 0x2545_f491u32;
+        let mut noise = || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x as f32 / u32::MAX as f32 - 0.5
+        };
+        let n = super::super::baseband::NFFT2;
+        let idat: Vec<f32> = (0..n).map(|_| noise()).collect();
+        let qdat: Vec<f32> = (0..n).map(|_| noise()).collect();
+        let c = BasebandCandidate {
+            start_sample: 3200,
+            lag_baseband: 100,
+            freq_hz: 1498.15,
+            drift_hz: 2.0,
+            sync: 0.77,
+            snr_db: -20.0,
+        };
+        let f0 = c.freq_hz + 1.5 * super::super::demod::TONE_SPACING_HZ
+            - super::super::baseband::CENTER_HZ;
+        // The precondition, so the test cannot pass for the wrong reason.
+        let mut isqs = super::super::demod::IsQs::zeroed();
+        let refined_sync = refine_cascade(&idat, &qdat, f0, 100, 2.0, true, &mut isqs).3;
+        assert!(
+            refined_sync <= MINSYNC1,
+            "refined sync {refined_sync} is above minsync1"
+        );
+
+        let r = refine_candidate(&idat, &qdat, &c, true);
+        assert_eq!(r.sync, 0.77);
+        assert_eq!(r.lag, 100);
+        assert_eq!(r.drift, 2.0);
+        assert_eq!(r.freq, f0);
+        assert_eq!(r.snr_db, -20.0);
+    }
 }
 
 #[cfg(test)]

@@ -69,10 +69,13 @@ const SNR_SCALING_DB: f32 = 26.3;
 /// `+1.5·tone_spacing` internally to recover the signal centre.
 #[derive(Clone, Copy, Debug)]
 pub struct BasebandCandidate {
-    /// Audio-rate sample where symbol 0 starts. Can be 0 if the signal
-    /// began before the buffer; callers (`decode_scan`) typically prepend
-    /// a 3 s zero pad to make all alignments addressable.
+    /// Audio-rate sample where symbol 0 starts, **clamped at 0**: a signal that began before the
+    /// buffer is 0 here and has its signed position in [`Self::lag_baseband`]. (A caller that pads
+    /// its own buffer, as the embedded pipelines do, sees no negative shift for a signal inside the pad.)
     pub start_sample: usize,
+    /// `wsprd`'s `shift`: where symbol 0 starts, in baseband samples, **signed** (a signal that
+    /// began before the buffer has a negative one; `start_sample` clamps it to 0).
+    pub lag_baseband: i32,
     /// Tone-0 audio frequency in Hz (signal centre minus
     /// `1.5·TONE_SPACING_HZ`).
     pub freq_hz: f32,
@@ -484,6 +487,7 @@ pub(super) fn coarse_baseband_ext(
             let start_sample = start_audio_signed.max(0) as usize;
             out.push(BasebandCandidate {
                 start_sample,
+                lag_baseband: shift_baseband,
                 freq_hz: tone0_audio_hz,
                 drift_hz: idrift as f32,
                 sync,
