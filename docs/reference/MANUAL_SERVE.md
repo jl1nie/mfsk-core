@@ -33,6 +33,8 @@ mfsk-serve decode FILE [--mode M] [--depth D] [--band LO-HI]    one request, ans
 mfsk-serve bench FILE [--mode M] [--iters N]                    time the decoder on FILE
 ```
 
+Every command takes `--threads N` (or the environment variable `MFSK_SERVE_THREADS=N`) to cap the decoder's worker threads; `0` or absent leaves rayon's default (every core, or `RAYON_NUM_THREADS`). On a board that also runs a radio controller, set it: the decoder uses the other cores for candidate-parallel work and for the three trials of `refine_dt`, and with `--threads 1` it stays on one core (same output; only the time changes).
+
 `FILE` is a `.wav` (mono, 12 kHz, s16 or f32) or a `.raw` (s16le, mono, 12 kHz). `M` is a mode name as the library spells it (`FT8`, `FT4`,
 `FST4-60`, `WSPR`, …), `FT8` by default.
 

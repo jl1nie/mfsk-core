@@ -32,6 +32,8 @@ mfsk-serve decode FILE [--mode M] [--depth D] [--band LO-HI]    1 リクエス�
 mfsk-serve bench FILE [--mode M] [--iters N]                    FILE でデコーダの時間を測る
 ```
 
+どのコマンドも `--threads N`（または環境変数 `MFSK_SERVE_THREADS=N`）で、デコーダのワーカースレッド数に上限をかけられます。`0` または省略なら rayon の既定（全コア、または `RAYON_NUM_THREADS`）のままです。無線機の制御など他のプロセスが同じボードで動くときは指定してください。デコーダは候補ごとの並列処理と `refine_dt` の 3 回の試行で他のコアを使いますが、`--threads 1` なら 1 コアに収まります（出力は同じで、時間だけが変わります）。
+
 `FILE` は `.wav`(モノラル、12 kHz、s16 または f32)か `.raw`(s16le、モノラル、12 kHz)です。`M` はライブラリでの綴りのモード名(`FT8`、`FT4`、
 `FST4-60`、`WSPR` など)で、既定は `FT8` です。
 

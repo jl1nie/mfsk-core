@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### `mfsk-serve --threads N` (#761)
+
+- Every command takes `--threads N` or `MFSK_SERVE_THREADS=N`, which builds rayon's global pool with `N` threads (`0` or absent: rayon's default, every core). The decoder's threads (candidate-parallel work, the three `refine_dt` trials) are otherwise unbounded, which matters on a board shared with other processes. Output does not depend on it. Checked: `--threads 1`/`2`/`4`/`0` on `qso3_busy.wav` at `Deep`, same user CPU time (0.43-0.45 s), wall 0.74 s on one thread against 0.39-0.40 s on two or more; a non-number is an error. Manual: `MANUAL_SERVE.md` and `.ja.md`.
+
 ### `subtract_tones_lpf_refine_dt`: the three trials run in parallel (#761)
 
 - The -90 / +90 / 0 sample trials (each: copy the audio, subtract at its offset, score the residual: a forward and an inverse FFT, then a forward FFT) share only the read-only audio and reference, so with `parallel` they run on separate threads (`rayon::join`); the last, best-offset, application needs their scores and follows. Each computation is the same as before, so the output is **bit-identical** (26 recordings x `Normal`/`Deep` with 4 threads: all 52 outputs equal to the last digit; tier A+B green). The 11 FFTs of one call become 5 in sequence.
