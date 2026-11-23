@@ -697,6 +697,35 @@ mod fft_lpf {
         ec
     }
 
+    /// `(lpf_half, table)` for each `lpf_half` [`cached_end_correction`] has built.
+    type EndCorrectionCache = Mutex<Vec<(usize, Arc<Vec<f32>>)>>;
+
+    /// [`end_correction`] for `lpf_half`, built once per distinct `lpf_half` seen (in practice one for
+    /// FT8, one for FT4), as `subtractft8.f90` builds `endcorrection` once (`first`/`save`).
+    ///
+    /// The table depends on nothing but `lpf_half`, and building it is `lpf_half + 1` sums of up to
+    /// `lpf_half + 1` taps each: about two million sequentially dependent f32 adds for FT8's 2000.
+    /// It was rebuilt on every call: 0.69 ms of a 2.41 ms `subtract` call, 29 %, measured on x86 with
+    /// the FFT pair at 0.48 ms (#761). The same function builds it, so every value is bit-identical
+    /// to what each call computed before.
+    fn cached_end_correction(lpf_half: usize) -> Arc<Vec<f32>> {
+        static CACHE: OnceLock<EndCorrectionCache> = OnceLock::new();
+        let cache = CACHE.get_or_init(|| Mutex::new(Vec::new()));
+        {
+            let guard = cache.lock().unwrap();
+            if let Some((_, ec)) = guard.iter().find(|(h, _)| *h == lpf_half) {
+                return ec.clone();
+            }
+        }
+        let ec = Arc::new(end_correction(lpf_half));
+        let mut guard = cache.lock().unwrap();
+        if let Some((_, existing)) = guard.iter().find(|(h, _)| *h == lpf_half) {
+            return existing.clone();
+        }
+        guard.push((lpf_half, ec.clone()));
+        ec
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn subtract_tones_lpf_fft(
         audio: &mut [i16],
@@ -800,7 +829,7 @@ mod fft_lpf {
         inverse.process(&mut cfilt);
 
         if endcorrection && lpf_half < nframe {
-            let ec = end_correction(lpf_half);
+            let ec = cached_end_correction(lpf_half);
             for (d, &factor) in ec.iter().enumerate() {
                 cfilt[d] *= factor;
                 let end_idx = nframe - 1 - d;
@@ -966,6 +995,31 @@ mod fft_lpf {
             endcorrection,
             best_offset,
         );
+    }
+
+    #[cfg(test)]
+    mod end_correction_cache_tests {
+        use super::*;
+
+        /// The cache hands back what `end_correction` computes, to the bit, and builds it once.
+        #[test]
+        fn the_cached_table_is_the_one_end_correction_computes() {
+            for lpf_half in [2000usize, 700, 3] {
+                let want = end_correction(lpf_half);
+                let got = cached_end_correction(lpf_half);
+                assert_eq!(got.len(), want.len(), "lpf_half {lpf_half}");
+                assert!(
+                    got.iter()
+                        .zip(&want)
+                        .all(|(a, b)| a.to_bits() == b.to_bits()),
+                    "lpf_half {lpf_half}: a value differs"
+                );
+                assert!(
+                    Arc::ptr_eq(&got, &cached_end_correction(lpf_half)),
+                    "lpf_half {lpf_half}: asked twice, built twice"
+                );
+            }
+        }
     }
 }
 

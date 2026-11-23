@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Subtract builds its end-correction table once, not on every call (#761)
+
+- `subtract_tones_lpf` (FT8, FT4, and every other user of `engine::dsp::subtract`) rebuilt `end_correction(lpf_half)` on every call: `lpf_half + 1` sums of up to `lpf_half + 1` taps, about two million sequentially dependent f32 adds for FT8's 2000, for a table that depends on nothing but `lpf_half`. `subtractft8.f90` builds it once; so does this now, by the same function, so every value is bit-identical (a test pins the bits; tier A+B: 172 binaries, 1397 passed, no fixture moved).
+- Measured against `MFSK_TRACE_STAGE_FT8`'s split (`qso3_busy.wav`, x86, one thread): one `subtract` 2.41 -> 1.35 ms; a whole call at `Fast` 79 -> 67 ms, `Normal` 293 -> 239 ms, `Deep` 594 -> 533 ms, the same rows. `subtract` had been 45 % of `Fast` and 57 % of `Normal`; the table was 29 % of one `subtract`. A Cortex-A72's add latency is longer, so the share there is probably larger; not measured.
+
 ### FT8 — `MFSK_TRACE_STAGE_FT8` says where a call spends its time (#761)
 
 - With the variable set, every `Decoder<Ft8>` call (`decode`, `decode_prefix`) prints one `TRACE_STAGE_FT8_ALL` line on stderr: wall time, the time put to stages, and each stage's time and count, largest first (spectrogram, coarse sync, FFT cache, downsample, fine refine, symbol spectra, the LLR metrics, BP, OSD, subtract, baseline, SNR). Times are exclusive and summed over threads, so use `RAYON_NUM_THREADS=1` for one core's split. Measured on `qso3_busy.wav` (x86, one thread) the stages account for 92-100 % of a call; unset, a stage costs one relaxed atomic load. No result changes; the stage list and the first split are in #761.
