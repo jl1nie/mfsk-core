@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### `mfsk-serve` — a resident decode/encode process on JSON lines (`apps/serve`, #760)
+
+- One process keeps a decoder per mode, so what a `Decoder` holds between calls (callsign hash table, the two latest periods, a period's checkpoint state) lives across requests. Requests are JSON lines on stdin: `decode` (`wav`/`.raw`, `depth`, `band`, `period`, `budget_ms`, `learn`, `prefix` + `samples` for `decode_prefix`), `encode` (`encoder::encode` to raw s16le; what the message sends as hashes is learned). Answers are `row` / `done` / `encoded` / `error` lines; a bad line never ends the process.
+- `mfsk-serve bench FILE` times a recording per depth (cold, warm, and at the decoder's checkpoints): the measurement #761 needs on a Raspberry Pi. No speed claim is made for any board; on x86 a warm process saves 10-21 ms of an 82-620 ms call, so the point is the kept state.
+- Sample app, `publish = false`, installed with `cargo install --git`; no library change, no tag. Tier A in `apps/serve/tests` (state across requests, checkpoints end with the whole period, encode→decode, error lines). Manual: `docs/reference/MANUAL_SERVE.md`.
+
 ### Docs — `DESIGN_RATIONALE.md` leads with the design, history goes to the changelogs
 
 - Part I explains why the crate is built as it is (purpose, WSJT-X as reference, the `Protocol` trait, the `jt9`-shaped API, the

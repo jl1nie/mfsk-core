@@ -5,6 +5,8 @@ members  = [
     # std-only IQ clients they build on (`apps/sdr-io`). The
     # Tauri GUI beside them (`apps/skimmer/gui`) is excluded below.
     "apps/sdr-io", "apps/skimmer/core", "apps/skimmer/cli",
+    # `mfsk-serve`: a resident decode/encode process speaking JSON lines (#760).
+    "apps/serve",
 ]
 # `embedded-poc/*` are stand-alone Cargo projects targeting embedded
 # MCUs (ESP32-S3, RP2350, …) with their own toolchain (`+esp` for

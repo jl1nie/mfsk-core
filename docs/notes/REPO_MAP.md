@@ -14,6 +14,7 @@ Host workspace members (`Cargo.toml` `[workspace] members`):
 | `hosttest/mfsk-app-shared/` | runs the host-testable parts of `embedded-poc/mfsk-app-shared` under a normal `cargo test` | no |
 | `apps/skimmer/core/`, `apps/skimmer/cli/` | sample app: mfsk-skimmer over `IqReceiver` (`skimmer-core` + the `skimmer` CLI); see `apps/skimmer/README.md`. `mfsk-core` itself has no network code, by decision | no |
 | `apps/sdr-io/` | std-only IQ clients (SpyServer, `rtl_tcp`), the NTP clock and the stream anchor, split out of `skimmer-core` (which re-exports them) so a light receiver can use them without its SQLite store, PSK Reporter and every mode; takes only `IqSampleFormat` from `mfsk-core` | no |
+| `apps/serve/` | sample app: `mfsk-serve`, one resident process that decodes and encodes through `mfsk-core` on JSON lines (stdin/stdout), keeping each mode's decoder (hash table, period checkpoints) between requests; `bench` times a recording per depth. Installed with `cargo install --git`, no tag of its own; see `apps/serve/README.md` (#760) | no |
 
 Only `mfsk-core` reaches crates.io; the rest are `publish = false`.
 `workspace.package.version` in the root `Cargo.toml` is the single source

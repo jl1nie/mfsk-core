@@ -136,6 +136,7 @@ jobs:
               - 'apps/sdr-io/**'
               - 'apps/skimmer/core/**'
               - 'apps/skimmer/cli/**'
+              - 'apps/serve/**'
               - 'wasm-smoke/**'
             # Tier A+B is the only job that reads the recordings, so a
             # change to one runs that job and not `src`'s others
@@ -709,6 +710,11 @@ jobs:
       # framing, the NTP clock, the anchor. Split out of skimmer-core, so its tests went with it.
       - name: cargo test -p sdr-io
         run: cargo test -p sdr-io --release
+
+      # `mfsk-serve` (`apps/serve`): the JSON-lines protocol, and the state a resident process keeps
+      # (hash table, checkpoints). Reads `qso3_busy.wav`, so it needs the corpus as the job's other tests do.
+      - name: cargo test -p mfsk-serve
+        run: cargo test -p mfsk-serve --release
 
       - name: Build mfsk-ffi
         run: cargo build -p mfsk-ffi --release
