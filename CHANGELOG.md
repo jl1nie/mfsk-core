@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### `subtract_tones_lpf_refine_dt`: the three trials run in parallel (#761)
+
+- The -90 / +90 / 0 sample trials (each: copy the audio, subtract at its offset, score the residual: a forward and an inverse FFT, then a forward FFT) share only the read-only audio and reference, so with `parallel` they run on separate threads (`rayon::join`); the last, best-offset, application needs their scores and follows. Each computation is the same as before, so the output is **bit-identical** (26 recordings x `Normal`/`Deep` with 4 threads: all 52 outputs equal to the last digit; tier A+B green). The 11 FFTs of one call become 5 in sequence.
+- Measured (Apple arm64, `RAYON_NUM_THREADS=4`, base and new binaries alternated twice): `Normal` 227 -> 193 ms, `Deep` 425 -> 381 ms, the checkpoint that only subtracts (B) 66 -> 33 ms at `Normal`, 85 -> 43 ms at `Deep`. With one thread nothing moves. **The last checkpoint, the one after the period ends, does not move** (82 ms `Normal`, 180 ms `Deep`): it subtracts with the plain, sequential call. Not run on a Cortex-A72.
+
 ### FT8 BP (SumProduct): index tables and a vectorisable `tanh` approximation (#761)
 
 - `bp_decode_generic_kind_with_scratch` and `bp_llr_zsum_ap_with_scratch` searched `mn` for the edge to subtract and tested `bit != j` on every term of each check's product. Both are now tables built once per `BpScratch` (padded with a `1.0` slot, so each product has a fixed length): the same arithmetic in the same order, **bit-identical**. The `tanh` of the half-message cache is a rational approximation with no libm call (`tanh_approx`, Eigen's coefficients, absolute error 3.5e-7 against 4.6e-8 for libm `f32`), one loop over all edges that vectorises. **A divergence from the WSJT-X BPs, which call `tanh`**, marked in the code; it is the same on every target.

@@ -1022,31 +1022,32 @@ mod fft_lpf {
             copy
         };
 
-        let cand_m = trial(-SEARCH_SAMPLES);
-        let cand_p = trial(SEARCH_SAMPLES);
-        let cand_0 = trial(0);
-
-        let sq_m = residual_band_power(
-            &cand_m,
-            cfg.frame_len(tones.len()),
-            freq_hz,
-            cfg.tone_spacing_hz,
-            cfg.sample_rate,
+        // The three trials share nothing but the read-only audio and reference: each copies the
+        // audio, subtracts at its offset and scores the residual (a forward FFT pair and a forward
+        // FFT). They run on separate threads when `parallel` is on (each computation is the same,
+        // so every sample is bit-identical); the last, best-offset, application needs their
+        // scores and stays after. On a 4-core board this takes the 11 FFTs of one call to 5
+        // in sequence (#761).
+        let frame_len = cfg.frame_len(tones.len());
+        let scored = |offset: i64| -> (Vec<i16>, f32) {
+            let cand = trial(offset);
+            let sq = residual_band_power(
+                &cand,
+                frame_len,
+                freq_hz,
+                cfg.tone_spacing_hz,
+                cfg.sample_rate,
+            );
+            (cand, sq)
+        };
+        #[cfg(feature = "parallel")]
+        let ((_, sq_m), ((_, sq_p), (cand_0, sq_0))) = rayon::join(
+            || scored(-SEARCH_SAMPLES),
+            || rayon::join(|| scored(SEARCH_SAMPLES), || scored(0)),
         );
-        let sq_p = residual_band_power(
-            &cand_p,
-            cfg.frame_len(tones.len()),
-            freq_hz,
-            cfg.tone_spacing_hz,
-            cfg.sample_rate,
-        );
-        let sq_0 = residual_band_power(
-            &cand_0,
-            cfg.frame_len(tones.len()),
-            freq_hz,
-            cfg.tone_spacing_hz,
-            cfg.sample_rate,
-        );
+        #[cfg(not(feature = "parallel"))]
+        let ((_, sq_m), (_, sq_p), (cand_0, sq_0)) =
+            (scored(-SEARCH_SAMPLES), scored(SEARCH_SAMPLES), scored(0));
 
         // peakup.f90: b=(yp-ym)/2; c=(yp+ym-2*y0)/2; dx=-b/(2*c).
         let b = (sq_p - sq_m) / 2.0;
