@@ -1362,6 +1362,19 @@ const RTL_PAUSE_NS: i64 = 500_000_000;
 /// quiet moment on the network falls inside it, short enough to follow an
 /// NTP step within a slot or two.
 const ANCHOR_WINDOW_S: f64 = 30.0;
+/// The longest hole in the sample stream, s, that is filled with silence instead of dropping the open slots.
+const GAP_FILL_MAX_S: f64 = 0.5;
+
+/// `samples` complex samples of silence in `format`: zero, which is the byte 128 in offset-binary
+/// `Cu8` (a zero byte there is full scale, a step that would ring through every channel filter).
+fn silence(format: IqSampleFormat, samples: usize) -> Vec<u8> {
+    let fill = if format == IqSampleFormat::Cu8 {
+        128
+    } else {
+        0
+    };
+    vec![fill; samples * format.bytes_per_sample()]
+}
 
 enum End {
     Stopped,
@@ -2524,6 +2537,7 @@ fn stream_inner(
             }
         }
         let n = m.body.len() / format.bytes_per_sample();
+        let mut fill_samples = 0usize;
 
         // The sequence counts messages; a hole of d messages is taken to be
         // d messages of this one's length.
@@ -2535,7 +2549,17 @@ fn stream_inner(
                     messages: missed,
                     at_s: rx.samples_in() as f64 / rate as f64,
                 });
-                rx.gap(missed as u64 * n as u64);
+                let lost = missed as u64 * n as u64;
+                // A short hole (the server dropped a few messages while the path stalled) is
+                // filled with silence in place and the open slots go on, where `gap` would drop
+                // every open slot; longer holes keep that behaviour. Seen on a demo over a
+                // tethered link (2026-11-22). `short_spyserver_hole_keeps_the_slot`: an FT8
+                // frame with 0.1 s missing decodes, one with 0.6 s missing is dropped as before.
+                if lost <= (rate as f64 * GAP_FILL_MAX_S) as u64 {
+                    fill_samples = lost as usize;
+                } else {
+                    rx.gap(lost);
+                }
             }
         }
         next_seq = Some(m.seq.wrapping_add(1));
@@ -2562,6 +2586,9 @@ fn stream_inner(
 
         let t = Instant::now();
         let mut slots = Vec::new();
+        if fill_samples > 0 {
+            rx.push_bytes(&silence(format, fill_samples), &mut slots);
+        }
         rx.push_bytes(&m.body, &mut slots);
         // JTTY channels: the audio since the last message, run by run (a break in
         // the audio ends a reception in the thread); the waterfall below gets a
@@ -3321,6 +3348,170 @@ mod tests {
             gaps,
             reanchors,
         )
+    }
+
+    /// Silence is the byte 0 in every format but offset-binary `Cu8`, where it is 128.
+    #[test]
+    fn silence_is_zero_in_every_format() {
+        for (format, byte) in [
+            (IqSampleFormat::Cf32, 0u8),
+            (IqSampleFormat::Cs16, 0),
+            (IqSampleFormat::Cs8, 0),
+            (IqSampleFormat::Cu8, 128),
+            (IqSampleFormat::Cs24, 0),
+        ] {
+            let s = silence(format, 3);
+            assert_eq!(s.len(), 3 * format.bytes_per_sample(), "{format:?}");
+            assert!(s.iter().all(|&b| b == byte), "{format:?}");
+        }
+    }
+
+    /// A SpyServer stream (sequence-numbered messages of 0.1 s at 48 kS/s) carrying one FT8 frame
+    /// in slot 1, with the messages in `[20 s, 20 s + hole_s)` never delivered. Returns whether
+    /// that frame decoded, and the number of `Gap` events.
+    fn spyserver_hole_trace(format: IqSampleFormat, hole_s: f64) -> (bool, u64) {
+        use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
+        use mfsk_core::engine::{MessageCodec, MessageFields};
+        use mfsk_core::msg::Wsjt77Message;
+        const RATE: u32 = 48_000;
+        const BLOCK: usize = 4_800;
+        const T0: i64 = 1_700_000_010_000_000_000; // a 15 s boundary
+        const DIAL: f64 = 14_074_000.0;
+        const CENTER: f64 = DIAL - 10_000.0;
+
+        let bits: [u8; 77] = Wsjt77Message
+            .pack(&MessageFields {
+                call1: Some("CQ".into()),
+                call2: Some("K1ABC".into()),
+                grid: Some("FN42".into()),
+                ..MessageFields::default()
+            })
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let frame = synthesize_i16::<mfsk_core::ft8::Ft8>(
+            &message_to_tones::<mfsk_core::ft8::Ft8>(&bits),
+            12_000,
+            1500.0,
+            8_000,
+        );
+        let mut audio = vec![0i16; 45 * 12_000];
+        audio[15 * 12_000 + 6_000..][..frame.len()].copy_from_slice(&frame);
+        // 12 kHz audio up to 48 kS/s, mixed to the dial's offset from the centre.
+        let iq: Vec<[f64; 2]> = (0..audio.len() * 4)
+            .map(|n| {
+                let a = f64::from(audio[n / 4]);
+                let p = std::f64::consts::TAU * (DIAL - CENTER) * n as f64 / f64::from(RATE);
+                [a * p.cos(), a * p.sin()]
+            })
+            .collect();
+        let (kind, encode): (u32, fn(f64) -> Vec<u8>) = match format {
+            IqSampleFormat::Cs16 => (MSG_INT16_IQ, |v| (v.round() as i16).to_le_bytes().to_vec()),
+            IqSampleFormat::Cu8 => (MSG_UINT8_IQ, |v| {
+                vec![(v / 256.0 + 128.0).round().clamp(0.0, 255.0) as u8]
+            }),
+            f => panic!("{f:?} not wired here"),
+        };
+        let hole = (20.0, 20.0 + hole_s);
+        let mut msgs = std::collections::VecDeque::new();
+        for (k, chunk) in iq.chunks(BLOCK).enumerate() {
+            let t = (k * BLOCK) as f64 / f64::from(RATE);
+            if t >= hole.0 && t < hole.1 {
+                continue; // never delivered; the next message's sequence number shows the hole
+            }
+            msgs.push_back(Message {
+                kind,
+                seq: k as u32,
+                body: chunk
+                    .iter()
+                    .flat_map(|&[i, q]| [encode(i), encode(q)].concat())
+                    .collect(),
+                arrival_ns: T0 + ((t + 0.1 + 0.05) * 1e9) as i64,
+            });
+        }
+        struct Queue(std::collections::VecDeque<Message>);
+        impl Link for Queue {
+            fn read(&mut self, _: &AtomicBool) -> std::io::Result<Message> {
+                self.0
+                    .pop_front()
+                    .ok_or_else(|| std::io::ErrorKind::Interrupted.into())
+            }
+            fn queued_bytes(&self) -> usize {
+                0
+            }
+            fn write_gain(&mut self, _: u32, _: &Device, _: &Plan) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut cfg = Config::new("hole", vec![ChannelSpec::new(Mode::Ft8, DIAL)]);
+        cfg.early_decode = false;
+        cfg.waterfall = false;
+        let p = Plan {
+            rate: RATE,
+            decimation: 0,
+            center_hz: CENTER,
+            active: vec![0],
+        };
+        let dev = Device {
+            kind: rtltcp::DEVICE_RTL_TCP,
+            max_rate: RATE,
+            bandwidth_hz: f64::from(RATE),
+            max_gain: 0,
+            rates: vec![(0, RATE)],
+        };
+        let sync = Sync {
+            can_control: false,
+            gain: 0,
+            device_hz: CENTER,
+            iq_hz: CENTER,
+        };
+        let setup = RateSetup {
+            ppm: 0.0,
+            track: false,
+            acquisition_hz: None,
+        };
+        let (mut live, mut bank) = (None, WfBank::new());
+        let mut rows = Vec::new();
+        let mut gaps = 0;
+        let mut sink = |event| match event {
+            Event::Decode(d) => rows.push(d),
+            Event::Gap { .. } => gaps += 1,
+            _ => {}
+        };
+        let end = stream_inner(
+            &mut Queue(msgs),
+            &AtomicBool::new(false),
+            &cfg,
+            &dev,
+            &p,
+            sync,
+            None,
+            &mut live,
+            &mut bank,
+            setup,
+            &mut sink,
+        )
+        .unwrap();
+        assert!(matches!(end, StreamEnd::Stopped));
+        settle(&mut live, &mut sink);
+        let slot1 = T0 + 15_000_000_000;
+        let decoded = rows.iter().any(|d| {
+            d.text == "CQ K1ABC FN42"
+                && d.slot_utc_ns
+                    .is_some_and(|t| (t - slot1).abs() < 1_000_000_000)
+        });
+        (decoded, gaps)
+    }
+
+    /// A short hole in a SpyServer stream (here 0.1 s inside an FT8 frame) is filled with silence and
+    /// the slot still decodes, in `Cs16` and in offset-binary `Cu8`; a long one (0.6 s, past
+    /// `GAP_FILL_MAX_S`) drops the open slots as before. Without the hole the frame decodes too.
+    #[test]
+    fn short_spyserver_hole_keeps_the_slot() {
+        assert_eq!(spyserver_hole_trace(IqSampleFormat::Cs16, 0.0), (true, 0));
+        assert_eq!(spyserver_hole_trace(IqSampleFormat::Cs16, 0.1), (true, 1));
+        assert_eq!(spyserver_hole_trace(IqSampleFormat::Cu8, 0.1), (true, 1));
+        assert_eq!(spyserver_hole_trace(IqSampleFormat::Cs16, 0.6), (false, 1));
     }
 
     #[test]
