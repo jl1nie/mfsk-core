@@ -125,13 +125,32 @@ impl DownsampleCfg {
 /// the expensive operation amortised by `crate::ft8::decode::process_candidate`.
 #[inline]
 pub fn build_fft_cache(audio: &[i16], cfg: &DownsampleCfg) -> Vec<Complex<f32>> {
-    let mut x: Vec<Complex<f32>> = audio
+    // The input is real, so the transform is a real-input FFT (half the work), as
+    // `ft8_downsample.f90` (`four2a(cx,NFFT1,1,-1,0)`) and its FT4 / FST4 siblings do it; this
+    // crate ran a complex FFT of the zero-imaginary signal until #761. The values differ from
+    // that by rounding only. The negative-frequency half is filled with the conjugates, so the
+    // cache is the full `fft1_size` spectrum as before (`downsample_cached` reads only bins up to
+    // `fft1_size / 2`).
+    let n = cfg.fft1_size;
+    let mut input: Vec<f32> = audio
         .iter()
-        .map(|&s| Complex::new(s as f32, 0.0))
-        .chain(iter::repeat(Complex::new(0.0, 0.0)))
-        .take(cfg.fft1_size)
+        .map(|&s| s as f32)
+        .chain(iter::repeat(0.0))
+        .take(n)
         .collect();
-    with_default_planner(|planner| planner.plan_forward(cfg.fft1_size).process(&mut x));
+    let mut x = vec![Complex::new(0.0f32, 0.0); n];
+    if n == 0 {
+        return x;
+    }
+    let half = n / 2 + 1;
+    with_default_planner(|planner| {
+        planner
+            .plan_real_forward(n)
+            .process(&mut input, &mut x[..half])
+    });
+    for k in half..n {
+        x[k] = x[n - k].conj();
+    }
     x
 }
 

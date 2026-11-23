@@ -707,6 +707,23 @@ mod fft_lpf {
         best
     }
 
+    /// `(nfft, plan)` for each length [`cached_real_plan`] has planned.
+    type RealPlanCache = Mutex<Vec<(usize, Arc<dyn realfft::RealToComplex<f32>>)>>;
+
+    /// A real-input forward FFT plan for `nfft`, planned once per length (planning builds the
+    /// twiddle tables, which costs more than a transform; see [`cached_plans`]).
+    fn cached_real_plan(nfft: usize) -> Arc<dyn realfft::RealToComplex<f32>> {
+        static CACHE: OnceLock<RealPlanCache> = OnceLock::new();
+        let cache = CACHE.get_or_init(|| Mutex::new(Vec::new()));
+        let mut guard = cache.lock().unwrap();
+        if let Some((_, p)) = guard.iter().find(|(n, _)| *n == nfft) {
+            return p.clone();
+        }
+        let plan = realfft::RealFftPlanner::<f32>::new().plan_fft_forward(nfft);
+        guard.push((nfft, plan.clone()));
+        plan
+    }
+
     /// Per-edge-distance boost factor, `endcorrection(j)` in
     /// `subtractft8.f90` (`j` there is 1-indexed 1..=lpf_half+1; here
     /// `d = j-1` is the 0-indexed distance from the frame edge,
@@ -944,13 +961,15 @@ mod fft_lpf {
             return 0.0;
         }
         let nfft = fft_len(nfft);
-        let mut buf: Vec<Complex32> = audio
-            .iter()
-            .map(|&s| Complex32::new(s as f32, 0.0))
-            .collect();
-        buf.resize(nfft, Complex32::new(0.0, 0.0));
-        let (forward, _) = cached_plans(nfft);
-        forward.process(&mut buf);
+        // A real-input FFT: the audio is real, and `sqf` in `subtractft8.f90` takes it through
+        // `four2a(...,-1,0)`, the real transform. Half the work of the complex FFT this ran until
+        // #761; the bins differ from it by rounding only, and only bins up to `nfft / 2` exist.
+        let mut input: Vec<f32> = audio.iter().map(|&s| s as f32).collect();
+        input.resize(nfft, 0.0);
+        let mut buf = vec![Complex32::new(0.0, 0.0); nfft / 2 + 1];
+        cached_real_plan(nfft)
+            .process(&mut input, &mut buf)
+            .expect("input is nfft samples, output nfft / 2 + 1 bins");
 
         let df = sample_rate / nfft as f32;
         // Fortran `ia=(f0-1.5*baud)/df` / `ib=(f0+8.5*baud)/df`: real-to-
@@ -958,7 +977,7 @@ mod fft_lpf {
         let ia = ((freq_hz - 1.5 * tone_spacing_hz) / df) as i64;
         let ib = ((freq_hz + 8.5 * tone_spacing_hz) / df) as i64;
         let lo = ia.max(0) as usize;
-        let hi = (ib.max(0) as usize).min(nfft.saturating_sub(1));
+        let hi = (ib.max(0) as usize).min(nfft / 2);
         let mut sqq = 0.0f32;
         for k in lo..=hi {
             let c = buf[k];

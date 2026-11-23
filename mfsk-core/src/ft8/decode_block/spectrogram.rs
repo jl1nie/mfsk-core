@@ -183,27 +183,26 @@ pub fn compute_spectrogram_f32_timed<S: AudioSample>(
     let n_time = NMAX / NSTEP - 3;
     let scale = 1.0f32 / 300.0;
 
+    // A real-input FFT, as `sync8.f90`'s `four2a(x,NFFT1,1,-1,0)` is: half the work of the
+    // complex FFT of a zero-imaginary signal this ran until #761, the same bins up to rounding.
     let mut planner = default_planner();
-    let fft = planner.plan_forward(NFFT_SPEC);
+    let fft = planner.plan_real_forward(NFFT_SPEC);
 
     let mut data = vec![0.0f32; n_freq * n_time];
-    let mut buf = vec![Complex::new(0.0f32, 0.0); NFFT_SPEC];
+    let mut input = vec![0.0f32; NFFT_SPEC];
+    let mut buf = vec![Complex::new(0.0f32, 0.0); NFFT_SPEC / 2 + 1];
 
     for j in 0..n_time {
         let ia = j * NSTEP;
-        for (k, c) in buf.iter_mut().enumerate() {
-            *c = if k < NSPS {
-                let sample = if ia + k < audio.len() {
-                    audio[ia + k].to_f32() * scale
-                } else {
-                    0.0
-                };
-                Complex::new(sample, 0.0)
+        // `process` may use `input` as scratch, so it is rewritten whole for every row.
+        for (k, c) in input.iter_mut().enumerate() {
+            *c = if k < NSPS && ia + k < audio.len() {
+                audio[ia + k].to_f32() * scale
             } else {
-                Complex::new(0.0, 0.0)
+                0.0
             };
         }
-        fft.process(&mut buf);
+        fft.process(&mut input, &mut buf);
         let row_base = j * n_freq;
         for i in 0..n_freq {
             data[row_base + i] = buf[i].norm_sqr();
@@ -226,8 +225,10 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
     let n_time = NMAX / NSTEP - 3;
     let scale = 1.0f32 / 300.0;
 
+    // A real-input FFT, as `sync8.f90`'s `four2a(x,NFFT1,1,-1,0)` is: half the work of the
+    // complex FFT of a zero-imaginary signal this ran until #761, the same bins up to rounding.
     let mut planner = default_planner();
-    let fft = planner.plan_forward(NFFT_SPEC);
+    let fft = planner.plan_real_forward(NFFT_SPEC);
 
     // Rectangular window — matches WSJT-X `sync8.f90`. With NFFT=3840,
     // `tone_step_bins = 6.25 / (12000/3840) = 2.0` exactly, so the
@@ -235,23 +236,20 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
     // (The fixed-point path keeps Hann to mitigate the wider sidelobes
     // that come with NFFT=4096's fractional 2.13 bins/tone.)
     let mut data = vec![0.0f32; n_freq * n_time];
-    let mut buf = vec![Complex::new(0.0f32, 0.0); NFFT_SPEC];
+    let mut input = vec![0.0f32; NFFT_SPEC];
+    let mut buf = vec![Complex::new(0.0f32, 0.0); NFFT_SPEC / 2 + 1];
 
     for j in 0..n_time {
         let ia = j * NSTEP;
-        for (k, c) in buf.iter_mut().enumerate() {
-            *c = if k < NSPS {
-                let sample = if ia + k < audio.len() {
-                    audio[ia + k].to_f32() * scale
-                } else {
-                    0.0
-                };
-                Complex::new(sample, 0.0)
+        // `process` may use `input` as scratch, so it is rewritten whole for every row.
+        for (k, c) in input.iter_mut().enumerate() {
+            *c = if k < NSPS && ia + k < audio.len() {
+                audio[ia + k].to_f32() * scale
             } else {
-                Complex::new(0.0, 0.0)
+                0.0
             };
         }
-        fft.process(&mut buf);
+        fft.process(&mut input, &mut buf);
         // Column-major write — `data[j * n_freq + i]` keeps each
         // time slice contiguous in memory (good PSRAM locality
         // for downstream coarse_sync).

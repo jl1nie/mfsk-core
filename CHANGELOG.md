@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Real-input FFTs where the input is real: the FT8 spectrogram, the downsample cache, the `refine_dt` score (#761)
+
+- Three transforms took a real signal through a complex FFT with a zero imaginary part: the FT8 spectrogram (372 rows of 3840 points a call), `build_fft_cache` (the downsample spectrum, 192 000 points for FT8; shared by FT4, FST4 and the engine pipeline) and `refine_dt`'s residual score. They are real-input FFTs now (`realfft`, already a dependency), half the work, as the WSJT-X sources do it (`four2a(..., 0)` in `sync8.f90`, `ft8_downsample.f90`, `subtractft8.f90`). The cache keeps its full length: the negative half is filled with the conjugates. Values differ from before by rounding.
+- Measured (Apple arm64, one thread, `qso3_busy.wav`, base and new alternated three times): `Fast` 63.2 -> 59.8 ms, `Normal` 227 -> 206 ms (last checkpoint 82.3 -> 75.7), `Deep` 423 -> 401 ms (last checkpoint 179 -> 175). FT8 and FT4 over the 26 vendored recordings at three depths: the same message set in all 156 runs. Tier A+B: 172 binaries, 1402 passed. **Tier C (FT8, FT4, FST4 sweeps) is not run here.**
+
 ### `[profile.dist]`: fat LTO and one codegen unit for installed binaries (#761)
 
 - `cargo install --profile dist` builds with `lto = "fat"` and `codegen-units = 1` (the workspace had no release profile settings; `release` is unchanged, so the merge gate's test builds do not slow down). Measured on `mfsk-serve bench qso3_busy.wav` (Apple arm64, one thread, three alternations): `Fast` 63.8 -> 61.1 ms, `Normal` last checkpoint 83 -> 80 ms, `Deep` last checkpoint 181 -> 172 ms; output identical on 26 recordings x 3 depths. `MANUAL_SERVE.md` / `.ja.md` and the serve README install with it. Not measured on a Cortex-A72.
