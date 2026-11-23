@@ -4,7 +4,7 @@ A resident process that decodes and encodes through `mfsk-core`: JSON lines on s
 requests, so the callsign hash table, the latest periods and a period's checkpoint state live as long as the process does.
 
 ```sh
-cargo install --git https://github.com/jl1nie/mfsk-core --rev <commit> mfsk-serve
+cargo install --git https://github.com/jl1nie/mfsk-core --rev <commit> --profile dist mfsk-serve
 echo '{"op":"decode","id":1,"mode":"FT8","wav":"slot.wav","depth":"normal"}' | mfsk-serve
 mfsk-serve bench slot.wav        # time the decoder per depth, cold and warm, and at the checkpoints
 ```

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### `[profile.dist]`: fat LTO and one codegen unit for installed binaries (#761)
+
+- `cargo install --profile dist` builds with `lto = "fat"` and `codegen-units = 1` (the workspace had no release profile settings; `release` is unchanged, so the merge gate's test builds do not slow down). Measured on `mfsk-serve bench qso3_busy.wav` (Apple arm64, one thread, three alternations): `Fast` 63.8 -> 61.1 ms, `Normal` last checkpoint 83 -> 80 ms, `Deep` last checkpoint 181 -> 172 ms; output identical on 26 recordings x 3 depths. `MANUAL_SERVE.md` / `.ja.md` and the serve README install with it. Not measured on a Cortex-A72.
+
 ### `mfsk-serve --threads N` (#761)
 
 - Every command takes `--threads N` or `MFSK_SERVE_THREADS=N`, which builds rayon's global pool with `N` threads (`0` or absent: rayon's default, every core). The decoder's threads (candidate-parallel work, the three `refine_dt` trials) are otherwise unbounded, which matters on a board shared with other processes. Output does not depend on it. Checked: `--threads 1`/`2`/`4`/`0` on `qso3_busy.wav` at `Deep`, same user CPU time (0.43-0.45 s), wall 0.74 s on one thread against 0.39-0.40 s on two or more; a non-number is an error. Manual: `MANUAL_SERVE.md` and `.ja.md`.

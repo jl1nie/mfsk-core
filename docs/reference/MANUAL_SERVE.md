@@ -18,8 +18,10 @@ It is not, by itself, a speed-up. Measured on x86 (`qso3_busy.wav`, one thread):
 ## 2. Install
 
 ```sh
-cargo install --git https://github.com/jl1nie/mfsk-core --rev <commit> mfsk-serve
+cargo install --git https://github.com/jl1nie/mfsk-core --rev <commit> --profile dist mfsk-serve
 ```
+
+`--profile dist` is a release build with fat LTO and one codegen unit: measured 4-5 % faster at every depth on an Apple arm64 core, the same output, a slower build (50 s against 14 s there). Without it the plain `release` profile is used.
 
 `--rev` pins the build; without it the tip of `main` is built, which can hold changes that are not in a release yet. On a Raspberry Pi build
 on the board with a 64-bit OS: on 32-bit ARM, rustc 1.100.0 offers NEON only as an unstable target feature (it warns that this will become an error). `RUSTFLAGS="-C target-cpu=native"` is allowed there; what

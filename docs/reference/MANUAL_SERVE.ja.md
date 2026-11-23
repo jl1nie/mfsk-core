@@ -17,8 +17,10 @@
 ## 2. インストール
 
 ```sh
-cargo install --git https://github.com/jl1nie/mfsk-core --rev <commit> mfsk-serve
+cargo install --git https://github.com/jl1nie/mfsk-core --rev <commit> --profile dist mfsk-serve
 ```
+
+`--profile dist` は、fat LTO・コード生成単位 1 のリリースビルドです。Apple の arm64 コアで測ると、どの depth でも 4〜5 % 速く、出力は同じで、ビルドは遅くなります(そのマシンで 50 秒、通常は 14 秒)。指定しなければ通常の `release` プロファイルでビルドされます。
 
 `--rev` でビルドを固定します。指定しないと `main` の先端がビルドされ、まだリリースに入っていない変更を含むことがあります。Raspberry Pi では、64 ビット OS を使い、
 ボード上でビルドしてください。32 ビット ARM では、rustc 1.100.0 は NEON を不安定なターゲット機能としてしか提供しません(将来エラーになるという警告が出ます)。
