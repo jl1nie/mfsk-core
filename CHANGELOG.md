@@ -2,10 +2,11 @@
 
 ## Unreleased
 
-### Subtract builds its end-correction table once, not on every call (#761)
+### Subtract: the end-correction table is built once, and `refine_dt` builds its reference once (#761)
 
 - `subtract_tones_lpf` (FT8, FT4, and every other user of `engine::dsp::subtract`) rebuilt `end_correction(lpf_half)` on every call: `lpf_half + 1` sums of up to `lpf_half + 1` taps, about two million sequentially dependent f32 adds for FT8's 2000, for a table that depends on nothing but `lpf_half`. `subtractft8.f90` builds it once; so does this now, by the same function, so every value is bit-identical (a test pins the bits; tier A+B: 172 binaries, 1397 passed, no fixture moved).
 - Measured against `MFSK_TRACE_STAGE_FT8`'s split (`qso3_busy.wav`, x86, one thread): one `subtract` 2.41 -> 1.35 ms; a whole call at `Fast` 79 -> 67 ms, `Normal` 293 -> 239 ms, `Deep` 594 -> 533 ms, the same rows. `subtract` had been 45 % of `Fast` and 57 % of `Normal`; the table was 29 % of one `subtract`. A Cortex-A72's add latency is longer, so the share there is probably larger; not measured.
+- `subtract_tones_lpf_refine_dt` (the checkpoints and `sic_early`) applied the subtraction four times, offsets -90, +90, 0 and the best, and each application rebuilt the GFSK reference, which does not depend on the offset: 0.69 ms of each. It is built once now; every sample is unchanged (a test compares against the old four-build search on a full slot, a frame that starts before the buffer, a buffer shorter than the frame and no filter; tier A+B: 172 binaries, 1398 passed). One `refine_dt` call 8.9 -> 6.55 ms; the checkpoint that only subtracts (B) 65 -> 43 ms at `Normal`, 85 -> 57 ms at `Deep`; a whole call at `Normal` 243 -> 217 ms and at `Deep` 540 -> 507 ms; `Fast` does not use it.
 
 ### FT8 — `MFSK_TRACE_STAGE_FT8` says where a call spends its time (#761)
 

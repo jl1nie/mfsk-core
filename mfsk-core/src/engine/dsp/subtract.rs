@@ -765,7 +765,45 @@ mod fft_lpf {
         endcorrection: bool,
         idt_offset: i64,
     ) {
-        let nframe = cfg.frame_len(tones.len());
+        if is_degenerate(audio.len(), cfg.frame_len(tones.len()), lpf_half) {
+            return;
+        }
+        let (cref_re, cref_im) = generate_iq(tones, freq_hz, cfg);
+        apply_with_reference(
+            audio,
+            &cref_re,
+            &cref_im,
+            tones.len(),
+            dt_sec,
+            cfg,
+            lpf_half,
+            endcorrection,
+            idt_offset,
+        );
+    }
+
+    /// Nothing to subtract: no frame, no audio, or no filter. `apply_at_offset` returns before it
+    /// builds a reference in this case, and `generate_iq` refuses an empty tone sequence.
+    fn is_degenerate(audio_len: usize, nframe: usize, lpf_half: usize) -> bool {
+        nframe == 0 || audio_len.max(nframe) == 0 || lpf_half == 0
+    }
+
+    /// [`apply_at_offset`] with the reference waveform given: `cref_re`/`cref_im` are what
+    /// `generate_iq` returns for the message and carrier. The reference does not depend on
+    /// `idt_offset`, so [`subtract_tones_lpf_refine_dt_fft`]'s four calls build it once.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_with_reference(
+        audio: &mut [i16],
+        cref_re: &[f32],
+        cref_im: &[f32],
+        ntones: usize,
+        dt_sec: f32,
+        cfg: &SubtractCfg,
+        lpf_half: usize,
+        endcorrection: bool,
+        idt_offset: i64,
+    ) {
+        let nframe = cfg.frame_len(ntones);
         // `subtractft8.f90`'s `NFFT = NMAX = 15*12000` (v3.2.0-rc1, lines
         // 10-11) is a *constant*, chosen to be at least `NFRAME`, so
         // `camp`/`cfilt` are always long enough to hold the whole frame and
@@ -788,10 +826,9 @@ mod fft_lpf {
         // `audio.len() > nframe` already, so `nfft` does not move and the
         // output stays bit-identical (`full_slot_output_is_pinned`).
         let nfft = audio.len().max(nframe);
-        if nframe == 0 || nfft == 0 || lpf_half == 0 {
+        if is_degenerate(audio.len(), nframe, lpf_half) {
             return;
         }
-        let (cref_re, cref_im) = generate_iq(tones, freq_hz, cfg);
 
         // `nstart - 1` in WSJT-X's 1-indexed Fortran == `signed_start`
         // here: camp(i) (0-indexed i=0..nframe) reads audio at absolute
@@ -929,18 +966,30 @@ mod fft_lpf {
     ) {
         const SEARCH_SAMPLES: i64 = 90;
 
+        // The reference does not depend on the offset: build it once for the three trials and the
+        // final subtract (it was built four times, 0.69 ms each, #761). A degenerate call builds
+        // none and, as `apply_at_offset` does, leaves the audio as it is.
+        let reference = (!is_degenerate(audio.len(), cfg.frame_len(tones.len()), lpf_half))
+            .then(|| generate_iq(tones, freq_hz, cfg));
+        let apply = |buf: &mut [i16], offset: i64| {
+            if let Some((cref_re, cref_im)) = &reference {
+                apply_with_reference(
+                    buf,
+                    cref_re,
+                    cref_im,
+                    tones.len(),
+                    dt_sec,
+                    cfg,
+                    lpf_half,
+                    endcorrection,
+                    offset,
+                );
+            }
+        };
+
         let trial = |offset: i64| -> Vec<i16> {
             let mut copy = audio.to_vec();
-            apply_at_offset(
-                &mut copy,
-                tones,
-                freq_hz,
-                dt_sec,
-                cfg,
-                lpf_half,
-                endcorrection,
-                offset,
-            );
+            apply(&mut copy, offset);
             copy
         };
 
@@ -985,16 +1034,146 @@ mod fft_lpf {
             return;
         }
         let best_offset = (SEARCH_SAMPLES as f32 * dx).round() as i64;
-        apply_at_offset(
-            audio,
-            tones,
-            freq_hz,
-            dt_sec,
-            cfg,
-            lpf_half,
-            endcorrection,
-            best_offset,
-        );
+        apply(audio, best_offset);
+    }
+
+    #[cfg(test)]
+    mod refine_dt_reference_tests {
+        use super::*;
+        use crate::engine::dsp::subtract::GfskParams;
+
+        fn ft8_cfg() -> SubtractCfg {
+            SubtractCfg {
+                sample_rate: 12_000.0,
+                tone_spacing_hz: 6.25,
+                samples_per_symbol: 1920,
+                base_offset_s: 0.5,
+                gfsk: Some(GfskParams {
+                    bt: 2.0,
+                    hmod: 1.0,
+                    ramp_samples: 1920 / 8,
+                    frame_ramp: false,
+                }),
+            }
+        }
+
+        /// `refine_dt` as it was before the reference was shared: every trial and the final subtract
+        /// built the reference themselves, through `apply_at_offset`.
+        fn refine_dt_building_the_reference_each_time(
+            audio: &mut [i16],
+            tones: &[u8],
+            freq_hz: f32,
+            dt_sec: f32,
+            cfg: &SubtractCfg,
+            lpf_half: usize,
+        ) {
+            const SEARCH_SAMPLES: i64 = 90;
+            let trial = |offset: i64| -> Vec<i16> {
+                let mut copy = audio.to_vec();
+                apply_at_offset(
+                    &mut copy, tones, freq_hz, dt_sec, cfg, lpf_half, true, offset,
+                );
+                copy
+            };
+            let cand_m = trial(-SEARCH_SAMPLES);
+            let cand_p = trial(SEARCH_SAMPLES);
+            let cand_0 = trial(0);
+            let nframe = cfg.frame_len(tones.len());
+            let power = |a: &[i16]| {
+                residual_band_power(a, nframe, freq_hz, cfg.tone_spacing_hz, cfg.sample_rate)
+            };
+            let (sq_m, sq_p, sq_0) = (power(&cand_m), power(&cand_p), power(&cand_0));
+            let b = (sq_p - sq_m) / 2.0;
+            let c = (sq_p + sq_m - 2.0 * sq_0) / 2.0;
+            if c.abs() < f32::EPSILON {
+                audio.copy_from_slice(&cand_0);
+                return;
+            }
+            let dx = -b / (2.0 * c);
+            if dx.abs() > 1.0 {
+                return;
+            }
+            let best_offset = (SEARCH_SAMPLES as f32 * dx).round() as i64;
+            apply_at_offset(
+                audio,
+                tones,
+                freq_hz,
+                dt_sec,
+                cfg,
+                lpf_half,
+                true,
+                best_offset,
+            );
+        }
+
+        /// A frame at `freq_hz`/`dt_sec` in fixed-seed noise, `len` samples long.
+        fn recording(
+            tones: &[u8],
+            freq_hz: f32,
+            dt_sec: f32,
+            len: usize,
+            cfg: &SubtractCfg,
+        ) -> Vec<i16> {
+            let (cos, _) = generate_iq(tones, freq_hz, cfg);
+            let start = cfg.frame_start(dt_sec);
+            let mut state = 0x2545_F491_4F6C_DD1Du64;
+            (0..len)
+                .map(|i| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    let noise = ((state >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 30.0;
+                    let k = i as i64 - start;
+                    let sig = if (0..cos.len() as i64).contains(&k) {
+                        3000.0 * cos[k as usize]
+                    } else {
+                        0.0
+                    };
+                    (sig + noise).round() as i16
+                })
+                .collect()
+        }
+
+        /// One reference for the four applications changes no sample: the search lands on the same
+        /// offset and the audio comes out the same, on a full slot, on a frame that starts before
+        /// the buffer, on a buffer shorter than the frame, and with no filter at all.
+        #[test]
+        fn one_reference_for_the_trials_leaves_every_sample_as_it_was() {
+            let cfg = ft8_cfg();
+            let mut state = 0x9E37_79B9_7F4A_7C15u64;
+            let tones: Vec<u8> = (0..79)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    (state % 8) as u8
+                })
+                .collect();
+            for (len, freq, dt, lpf_half) in [
+                (180_000usize, 1500.0f32, 0.10f32, 2000usize),
+                (180_000, 1203.7, -0.30, 2000),
+                (100_000, 900.0, 0.40, 2000),
+                (180_000, 1500.0, 0.10, 0),
+            ] {
+                let original = recording(&tones, freq, dt, len, &cfg);
+                let mut want = original.clone();
+                refine_dt_building_the_reference_each_time(
+                    &mut want, &tones, freq, dt, &cfg, lpf_half,
+                );
+                let mut got = original.clone();
+                subtract_tones_lpf_refine_dt_fft(&mut got, &tones, freq, dt, &cfg, lpf_half, true);
+                assert_eq!(
+                    got, want,
+                    "len {len}, {freq} Hz, dt {dt}, lpf_half {lpf_half}"
+                );
+                if lpf_half > 0 {
+                    assert_ne!(
+                        got, original,
+                        "the subtract did something (len {len}, dt {dt})"
+                    );
+                }
+            }
+        }
     }
 
     #[cfg(test)]
