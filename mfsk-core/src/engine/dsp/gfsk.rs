@@ -717,22 +717,24 @@ pub fn synth_complex_f32_into(
     let mut dphi = vec![0.0f32; total];
     let dphi_peak = twopi * cfg.hmod / nsps as f32;
 
+    // Each symbol's pulse is `pulse_len = 3 * nsps` long and starts at `j * nsps`, so it ends at
+    // most at `(nsym + 2) * nsps = total`: the old per-element `ib + i < total` test was always
+    // true, and the slices below are exactly in range. The same holds for the two end pulses
+    // (`2 * nsps` samples at 0 and at `nsym * nsps`). In the `zip` form the loop has no bound
+    // check left and vectorises; each element still gets the same additions in the same order
+    // (the symbols in turn, then the carrier), so every value is bit-identical (#761).
     for (j, &tone) in tones.iter().enumerate() {
         let ib = j * nsps;
-        for i in 0..pulse_len {
-            if ib + i < total {
-                dphi[ib + i] += dphi_peak * pulse[i] * tone as f32;
-            }
+        for (d, &p) in dphi[ib..ib + pulse_len].iter_mut().zip(pulse.iter()) {
+            *d += dphi_peak * p * tone as f32;
         }
     }
-    for i in 0..(2 * nsps).min(total) {
-        dphi[i] += dphi_peak * tones[0] as f32 * pulse[nsps + i];
+    for (d, &p) in dphi[..2 * nsps].iter_mut().zip(pulse[nsps..].iter()) {
+        *d += dphi_peak * tones[0] as f32 * p;
     }
     let ofs = nsym * nsps;
-    for i in 0..(2 * nsps) {
-        if ofs + i < total {
-            dphi[ofs + i] += dphi_peak * tones[nsym - 1] as f32 * pulse[i];
-        }
+    for (d, &p) in dphi[ofs..ofs + 2 * nsps].iter_mut().zip(pulse.iter()) {
+        *d += dphi_peak * tones[nsym - 1] as f32 * p;
     }
     for d in dphi.iter_mut() {
         *d += twopi * f0_hz * dt;
@@ -848,6 +850,164 @@ mod tests {
             bt: 2.0,
             hmod: 1.0,
             ramp_samples: 240,
+        }
+    }
+
+    /// `synth_complex_f32_into` before its `dphi` build lost the per-element bound checks: the
+    /// indexed loops, as they were.
+    fn complex_synthesis_with_indexed_dphi(
+        tones: &[u8],
+        f0_hz: f32,
+        cfg: &GfskCfg,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let nsps = cfg.samples_per_symbol;
+        let nsym = tones.len();
+        let nwave = synth_output_len(nsym, nsps);
+        let twopi = 2.0 * PI;
+        let dt = 1.0 / cfg.sample_rate;
+        let pulse_len = 3 * nsps;
+        let pulse = pulse_table(cfg.bt, nsps);
+        let total = (nsym + 2) * nsps;
+        let mut dphi = vec![0.0f32; total];
+        let dphi_peak = twopi * cfg.hmod / nsps as f32;
+        for (j, &tone) in tones.iter().enumerate() {
+            let ib = j * nsps;
+            for i in 0..pulse_len {
+                if ib + i < total {
+                    dphi[ib + i] += dphi_peak * pulse[i] * tone as f32;
+                }
+            }
+        }
+        for i in 0..(2 * nsps).min(total) {
+            dphi[i] += dphi_peak * tones[0] as f32 * pulse[nsps + i];
+        }
+        let ofs = nsym * nsps;
+        for i in 0..(2 * nsps) {
+            if ofs + i < total {
+                dphi[ofs + i] += dphi_peak * tones[nsym - 1] as f32 * pulse[i];
+            }
+        }
+        for d in dphi.iter_mut() {
+            *d += twopi * f0_hz * dt;
+        }
+        let (mut c, mut s) = (vec![0.0f32; nwave], vec![0.0f32; nwave]);
+        let mut phi = 0.0f32;
+        for k in 0..nwave {
+            c[k] = phi.cos();
+            s[k] = phi.sin();
+            phi += dphi[nsps + k];
+            if phi > twopi {
+                phi -= twopi;
+            }
+        }
+        let nramp = cfg.ramp_samples.min(nwave / 2);
+        if nramp > 0 {
+            for i in 0..nramp {
+                let env = (1.0 - (twopi * i as f32 / (2.0 * nramp as f32)).cos()) / 2.0;
+                c[i] *= env;
+                s[i] *= env;
+            }
+            let k1 = nwave - nramp;
+            for i in 0..nramp {
+                let env = (1.0 + (twopi * i as f32 / (2.0 * nramp as f32)).cos()) / 2.0;
+                c[k1 + i] *= env;
+                s[k1 + i] *= env;
+            }
+        }
+        (c, s)
+    }
+
+    /// The `zip` form of the `dphi` build changes no sample of the complex waveform, for FT8's,
+    /// FT4's and FST4's shapes and for one and two symbols (the end pulses overlap).
+    #[test]
+    fn complex_synthesis_is_the_indexed_form_bit_for_bit() {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut tones = |n: usize| -> Vec<u8> {
+            (0..n)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    (state % 8) as u8
+                })
+                .collect()
+        };
+        let shapes = [
+            (
+                GfskCfg {
+                    sample_rate: 12_000.0,
+                    samples_per_symbol: 1920,
+                    bt: 2.0,
+                    hmod: 1.0,
+                    ramp_samples: 240,
+                },
+                79usize,
+                1500.0f32,
+            ),
+            (
+                GfskCfg {
+                    sample_rate: 12_000.0,
+                    samples_per_symbol: 576,
+                    bt: 2.0,
+                    hmod: 1.0,
+                    ramp_samples: 72,
+                },
+                105,
+                1203.7,
+            ),
+            (
+                GfskCfg {
+                    sample_rate: 12_000.0,
+                    samples_per_symbol: 1920,
+                    bt: 1.0,
+                    hmod: 1.0,
+                    ramp_samples: 240,
+                },
+                160,
+                800.0,
+            ),
+            (
+                GfskCfg {
+                    sample_rate: 12_000.0,
+                    samples_per_symbol: 1920,
+                    bt: 2.0,
+                    hmod: 1.0,
+                    ramp_samples: 240,
+                },
+                2,
+                1500.0,
+            ),
+            (
+                GfskCfg {
+                    sample_rate: 12_000.0,
+                    samples_per_symbol: 1920,
+                    bt: 2.0,
+                    hmod: 1.0,
+                    ramp_samples: 240,
+                },
+                1,
+                1500.0,
+            ),
+        ];
+        for (cfg, nsym, f0) in shapes {
+            let t = tones(nsym);
+            let n = synth_output_len(nsym, cfg.samples_per_symbol);
+            let (mut got_c, mut got_s) = (vec![0.0f32; n], vec![0.0f32; n]);
+            synth_complex_f32_into(&mut got_c, &mut got_s, &t, f0, 1.0, &cfg);
+            let (want_c, want_s) = complex_synthesis_with_indexed_dphi(&t, f0, &cfg);
+            assert!(
+                got_c
+                    .iter()
+                    .zip(&want_c)
+                    .all(|(a, b)| a.to_bits() == b.to_bits())
+                    && got_s
+                        .iter()
+                        .zip(&want_s)
+                        .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "nsps {}, {nsym} symbols, bt {}",
+                cfg.samples_per_symbol,
+                cfg.bt
+            );
         }
     }
 
