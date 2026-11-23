@@ -109,7 +109,7 @@ For each depth: `whole #i` is a whole-period call, `#0` cold (the first call of 
 `prefix period i` is the same period fed in at the decoder's checkpoints, one time per checkpoint. The figures are wall clock on the machine that runs it.
 
 What a reply needs is the time after the period ends: a reply is due when the transmit audio starts, 0.5 s after the boundary for FT8. For
-`decode_prefix` that is the last figure of a line; for a whole-period call at `Fast`, all of it. Run it on the board and read those against 0.5 s. The
+`decode_prefix` that is the last figure of a line; for a whole-period call at `Fast`, all of it. Run it on the board and read those against 0.5 s. Where the time of a call goes, by stage, and how to read it: [`docs/notes/FT8_SLOT_PROFILE.md`](../notes/FT8_SLOT_PROFILE.md). The
 earlier checkpoints have the time to the next one (1.7 s from A to B, 1.5 s from B to the end for FT8).
 
 ## 6. Limits
