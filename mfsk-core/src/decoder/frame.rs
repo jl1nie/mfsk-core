@@ -696,6 +696,7 @@ impl Decodable for crate::Ft8 {
         slot: &SlotInput<'_>,
         on_row: Option<OnRow<'_, DecodeResult>>,
     ) -> SlotResult<DecodeResult> {
+        let _call = crate::ft8::stage_timing::Call::begin();
         let search = ft8_search(params.depth).tuned(&extras.tuning);
         let sniper = extras.sniper.zip(params.rx_freq_hz);
         ft8_decode(
@@ -716,6 +717,7 @@ impl Decodable for crate::Ft8 {
         on_row: Option<OnRow<'_, DecodeResult>>,
         full: bool,
     ) -> SlotResult<DecodeResult> {
+        let _call = crate::ft8::stage_timing::Call::begin();
         use crate::ft8::decode::{Staged, StagedStep, staged_step_for};
         let period = slot.period.expect("Decoder::decode_prefix passes a period");
         if state.prefix.as_ref().map(|p| p.period) != Some(period) {

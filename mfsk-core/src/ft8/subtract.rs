@@ -45,6 +45,7 @@ const FT8_CFG: SubtractCfg = SubtractCfg {
 /// underused the residual on busy bands; see the v0.6.2 CHANGELOG
 /// for the recall delta this rewire produced on `qso3_busy.wav`.
 pub fn subtract_signal_lpf(audio: &mut [i16], result: &DecodeResult) {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Subtract);
     let tones = crate::engine::tx::message_to_tones::<crate::ft8::Ft8>(result.message77());
     subtract_tones_lpf(
         audio,
@@ -66,6 +67,7 @@ pub fn subtract_signal_lpf(audio: &mut [i16], result: &DecodeResult) {
 /// a final decode pass to lock it down. Use plain [`subtract_signal_lpf`]
 /// once a candidate's `dt` is already final.
 pub fn subtract_signal_lpf_refine_dt(audio: &mut [i16], result: &DecodeResult) {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Subtract);
     let tones = crate::engine::tx::message_to_tones::<crate::ft8::Ft8>(result.message77());
     subtract_tones_lpf_refine_dt(
         audio,

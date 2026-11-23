@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### FT8 — `MFSK_TRACE_STAGE_FT8` says where a call spends its time (#761)
+
+- With the variable set, every `Decoder<Ft8>` call (`decode`, `decode_prefix`) prints one `TRACE_STAGE_FT8_ALL` line on stderr: wall time, the time put to stages, and each stage's time and count, largest first (spectrogram, coarse sync, FFT cache, downsample, fine refine, symbol spectra, the LLR metrics, BP, OSD, subtract, baseline, SNR). Times are exclusive and summed over threads, so use `RAYON_NUM_THREADS=1` for one core's split. Measured on `qso3_busy.wav` (x86, one thread) the stages account for 92-100 % of a call; unset, a stage costs one relaxed atomic load. No result changes; the stage list and the first split are in #761.
+
 ### `mfsk-serve` — a resident decode/encode process on JSON lines (`apps/serve`, #760)
 
 - One process keeps a decoder per mode, so what a `Decoder` holds between calls (callsign hash table, the two latest periods, a period's checkpoint state) lives across requests. Requests are JSON lines on stdin: `decode` (`wav`/`.raw`, `depth`, `band`, `period`, `budget_ms`, `learn`, `prefix` + `samples` for `decode_prefix`), `encode` (`encoder::encode` to raw s16le; what the message sends as hashes is learned). Answers are `row` / `done` / `encoded` / `error` lines; a bad line never ends the process.

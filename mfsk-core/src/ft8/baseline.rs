@@ -112,6 +112,7 @@ pub fn avg_spectrum(spec: &crate::ft8::decode_block::Spectrogram, out: &mut [f32
 /// is fit to that specific pipeline pair, and the two mismatches don't
 /// cancel when only one side is corrected (verified 2026-08-10).
 pub fn compute_baseline_spectrum(audio: &[i16]) -> Vec<f32> {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Baseline);
     use crate::engine::fft::default_planner;
     use crate::ft8::decode_block::NFFT_SPEC;
     use crate::ft8::params::NMAX;

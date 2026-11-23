@@ -762,6 +762,7 @@ pub(crate) fn compute_xsig_wsjtx(
     audio: &[i16],
     fft_cache: Option<&[Complex<f32>]>,
 ) -> (f32, u32) {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Xsnr);
     let itone = crate::engine::tx::message_to_tones::<crate::ft8::Ft8>(result.message77());
     let mut cs: Box<[[Cmplx<f32>; 8]; 79]> = alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
         .try_into()
@@ -840,6 +841,7 @@ pub(crate) fn apply_wsjtx_xsnr2(
     nsync: u32,
     sbase: &[f32],
 ) -> bool {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Xsnr);
     let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
 
     let raw_snr = recompute_snr_xsnr2(result.freq_hz, xsig, sbase, df);
@@ -1245,6 +1247,7 @@ fn bp_step_select(
     max_iter: u32,
     verify: Option<fn(&[u8]) -> bool>,
 ) -> Option<crate::fec::ldpc::bp::BpResult> {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Bp);
     // `std::env::var` is a locked, allocating lookup — reading it fresh
     // on every call (up to 4x per candidate: Steps 1/d/b/c) measurably
     // added up across the hundreds of candidates a busy-band decode
@@ -1276,6 +1279,7 @@ fn bp_step_select<T: crate::engine::scalar::LlrScalar>(
     max_iter: u32,
     verify: Option<fn(&[u8]) -> bool>,
 ) -> Option<crate::fec::ldpc::bp::BpResult> {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Bp);
     crate::fec::ldpc::bp::bp_decode_nms_with_scratch::<T>(
         bp_scratch, llr, None, max_iter, verify, NMS_ALPHA,
     )

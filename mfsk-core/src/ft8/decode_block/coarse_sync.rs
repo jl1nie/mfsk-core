@@ -56,6 +56,7 @@ pub fn coarse_sync(
     sync_min: f32,
     max_cand: usize,
 ) -> Vec<SyncCandidate> {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::CoarseSync);
     coarse_sync_inner(
         spec,
         freq_min,

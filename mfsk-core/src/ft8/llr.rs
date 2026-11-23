@@ -66,6 +66,7 @@ pub fn compute_llr<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
 /// [`compute_llr`] with WSJT-X's `imetric` chosen: `squared` = `imetric` 2
 /// (`|cs|²` per tone group before the per-bit max; `ft8b.f90` v3.0.0).
 pub fn compute_llr_metric<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79], squared: bool) -> LlrSet<T> {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::LlrFull);
     let flat = flatten_cs(cs);
     let g = crate::engine::llr::compute_llr_generic_metric::<Ft8, f32, T>(flat, 3, squared);
     // Sanity check scale consistency at build time.
@@ -90,6 +91,7 @@ pub fn compute_llr_fast_metric<T: LlrScalar>(
     cs: &[[Cmplx<f32>; 8]; 79],
     squared: bool,
 ) -> LlrSet<T> {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::LlrFast);
     let flat = flatten_cs(cs);
     let g = crate::engine::llr::compute_llr_generic_metric::<Ft8, f32, T>(flat, 1, squared);
     LlrSet {
@@ -117,6 +119,7 @@ pub fn compute_llr_partial_metric<T: LlrScalar>(
     nsym: usize,
     squared: bool,
 ) -> [T; LDPC_N] {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::LlrPartial);
     let flat = flatten_cs(cs);
     let v = crate::engine::llr::compute_llr_partial_metric::<Ft8, f32, T>(flat, nsym, squared);
     inflate_llr(v)
@@ -126,6 +129,7 @@ pub fn compute_llr_partial_metric<T: LlrScalar>(
 /// largest magnitude (see [`crate::engine::llr::compute_llre_best_of`]).
 /// `squared` is `imetric` 2, as for the other variants.
 pub fn compute_llre_metric<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79], squared: bool) -> [T; LDPC_N] {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::LlrE);
     let flat = flatten_cs(cs);
     inflate_llr(crate::engine::llr::compute_llre_best_of::<Ft8, f32, T>(
         flat, 3, squared,

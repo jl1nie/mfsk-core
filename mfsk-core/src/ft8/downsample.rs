@@ -32,6 +32,7 @@ pub fn downsample(
     f0: f32,
     fft_cache: Option<&[Complex<f32>]>,
 ) -> (Vec<Complex<f32>>, Vec<Complex<f32>>) {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Downsample);
     match fft_cache {
         Some(cache) => (g::downsample_cached(cache, f0, &FT8_CFG), cache.to_vec()),
         None => g::downsample(audio, f0, &FT8_CFG),
@@ -42,12 +43,14 @@ pub fn downsample(
 /// across all subsequent downsample calls for the same audio block.
 #[inline]
 pub fn build_fft_cache(audio: &[i16]) -> Vec<Complex<f32>> {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::FftCache);
     g::build_fft_cache(audio, &FT8_CFG)
 }
 
 /// No-cache convenience: returns only the 3200-sample baseband.
 #[inline]
 pub fn downsample_simple(audio: &[i16], f0: f32) -> Vec<Complex<f32>> {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Downsample);
     downsample(audio, f0, None).0
 }
 

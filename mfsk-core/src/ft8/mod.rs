@@ -65,6 +65,8 @@ pub mod llr;
 pub mod params;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod refine_fine;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub(crate) mod stage_timing;
 // `subtract` consumes `super::decode::DecodeResult`, which is itself
 // FFT-gated — match the gate so `--features ft8` (TX-only) builds.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]

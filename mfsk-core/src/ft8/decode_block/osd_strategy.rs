@@ -139,6 +139,7 @@ pub(super) fn try_fallback(
     // `llre` (see `compute_llre_metric`) if the caller already has it in f32.
     precomputed_llre: Option<&[f32; LDPC_N]>,
 ) -> Option<(BpResult, u8)> {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Osd);
     if !depth.osd || q <= 6 {
         return None;
     }

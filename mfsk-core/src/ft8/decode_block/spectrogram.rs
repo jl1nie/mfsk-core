@@ -218,6 +218,7 @@ pub fn compute_spectrogram_f32_timed<S: AudioSample>(
 /// this module after #46 / #48 step B).
 #[cfg(not(feature = "fixed-point"))]
 pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spectrogram {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Spectrogram);
     let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
     let band_top_hz = max_freq_hz + (NTONES as f32) * TONE_SPACING_HZ;
     let n_freq_full = NFFT_SPEC / 2;
@@ -282,6 +283,7 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
 /// headroom for FFT growth in tone-rich slots.
 #[cfg(feature = "fixed-point")]
 pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spectrogram {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Spectrogram);
     use crate::engine::fft::default_planner_16;
 
     let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;

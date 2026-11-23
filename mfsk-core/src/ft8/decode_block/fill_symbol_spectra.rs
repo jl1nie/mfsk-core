@@ -180,6 +180,7 @@ pub fn fill_symbol_spectra<S: AudioSample>(
     mask: SymMask,
     fft_cache: Option<&[Complex<f32>]>,
 ) {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::SymbolSpectra);
     fill_symbol_spectra_via_cd0(out, audio, freq_hz, dt_sec, mask, fft_cache);
 }
 
@@ -201,6 +202,7 @@ pub fn fill_symbol_spectra<S: AudioSample>(
     mask: SymMask,
     fft_cache: Option<&[Complex<f32>]>,
 ) {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::SymbolSpectra);
     let _ = fft_cache;
     fill_symbol_spectra_generic::<f32, S>(out, audio, freq_hz, dt_sec, mask);
 }
@@ -229,6 +231,7 @@ fn fill_symbol_spectra_via_cd0<S: AudioSample>(
     mask: SymMask,
     fft_cache: Option<&[Complex<f32>]>,
 ) {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::SymbolSpectra);
     use rustfft::FftPlanner;
     extern crate alloc;
 
@@ -327,6 +330,7 @@ pub fn fill_symbol_spectra_generic<Sc: crate::engine::scalar::SpecScalar, S: Aud
     dt_sec: f32,
     mask: SymMask,
 ) {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::SymbolSpectra);
     let i0 = ((TX_START_OFFSET_S + dt_sec) * SAMPLE_RATE_HZ).round() as i64;
     let two_pi_over_fs = core::f32::consts::TAU / SAMPLE_RATE_HZ;
 
@@ -500,6 +504,7 @@ pub fn fill_symbol_spectra_goertzel<S: AudioSample>(
     dt_sec: f32,
     mask: SymMask,
 ) {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::SymbolSpectra);
     let two_pi_over_fs = core::f32::consts::TAU / SAMPLE_RATE_HZ;
     let i0 = ((TX_START_OFFSET_S + dt_sec) * SAMPLE_RATE_HZ).round() as i64;
 

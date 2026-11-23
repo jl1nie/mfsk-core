@@ -211,6 +211,7 @@ fn build_tweak(delf_hz: f32) -> [Complex<f32>; 32] {
 /// follow-up: matches real WSJT-X, ~100x less arithmetic than the
 /// data-shifting approach this replaced).
 pub fn fine_refine_3stage(cd0: &[Complex<f32>], initial_dt_sec: f32) -> FineRefine {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::FineRefine);
     debug_assert_eq!(cd0.len(), CD0_LEN);
 
     // Process-lifetime cached on std builds, built fresh per call on
