@@ -43,6 +43,33 @@ const NCW: usize = 3;
 /// piecewise form needs no `atanh`. FT8 again with 100 trials a cell (5200 files,
 /// seeded `ft8sim`): 2561 against 2559 decodes, 12 gained and 14 lost (sign test
 /// p = 0.85), no unexpected decode either way, every crossing within 0.04 dB.
+/// `tanh` for the `SumProduct` half-message cache: a rational approximation (a degree-13 odd
+/// numerator over a degree-6 even denominator, Eigen's `ptanh_float` coefficients) with no libm
+/// call, so a loop of it vectorises. **A divergence from `decode174_91.f90` and the other WSJT-X
+/// BPs, which call `tanh`**: absolute error against the exact function is 3.5e-7 (a libm `f32`
+/// `tanh`: 4.6e-8) over all of `f32`, saturating at 1 beyond |x| = 7.9. The value goes through a
+/// product and `platanh`, whose last slope is 1/0.0012, so it is the tier A+B corpora that say
+/// whether it matters (#761). Written with separate multiply and add, not `mul_add`: without the
+/// `fma` target feature `mul_add` is a library call, and without it the result is the same on
+/// every target.
+#[inline]
+pub(crate) fn tanh_approx(x: f32) -> f32 {
+    let x = x.clamp(-7.905_311, 7.905_311);
+    let x2 = x * x;
+    let mut p = -2.760_768_5e-16_f32;
+    p = p * x2 + 2.000_188e-13;
+    p = p * x2 - 8.604_672e-11;
+    p = p * x2 + 5.122_297e-8;
+    p = p * x2 + 1.485_722_4e-5;
+    p = p * x2 + 6.372_619_3e-4;
+    p = p * x2 + 4.893_524_6e-3;
+    let mut q = 1.198_258_4e-6_f32;
+    q = q * x2 + 1.185_347e-4;
+    q = q * x2 + 2.268_434_6e-3;
+    q = q * x2 + 4.893_525e-3;
+    (x * p) / q
+}
+
 #[inline]
 pub(crate) fn platanh(x: f32) -> f32 {
     let mut isign = 1.0f32;
@@ -246,13 +273,14 @@ pub fn bp_decode_generic_kind_with_scratch<P: LdpcParams>(
     let max_row = P::MAX_ROW;
 
     scratch.reset();
-    if matches!(kind, BpKind::SumProduct) {
-        scratch.ensure_tanhtoc();
-    }
+    // Every kind reads `c2v_idx`, which is built with `tanhtoc`; this path is `f32` host code.
+    scratch.ensure_tanhtoc();
     let BpScratch {
         tov,
         toc,
         tanhtoc,
+        c2v_idx,
+        prod_idx,
         min1,
         min2,
         idx_min1,
@@ -358,42 +386,28 @@ pub fn bp_decode_generic_kind_with_scratch<P: LdpcParams>(
             let nrw_j = P::nrw(j) as usize;
             for i in 0..nrw_j {
                 let ibj = P::nm(j, i) as usize;
-                let mut msg = zn[ibj];
-                let mn_ibj = P::mn(ibj);
-                for kk in 0..NCW {
-                    if mn_ibj[kk] as usize == j {
-                        msg -= tov[ibj * NCW + kk];
-                    }
-                }
-                toc[j * max_row + i] = msg;
+                let e = j * max_row + i;
+                toc[e] = zn[ibj] - tov[c2v_idx[e] as usize];
             }
         }
 
         match kind {
             BpKind::SumProduct => {
                 // tanh half-message cache.
-                for i in 0..m_checks {
-                    let nrw_i = P::nrw(i) as usize;
-                    for k_ in 0..nrw_i {
-                        tanhtoc[i * max_row + k_] = (-toc[i * max_row + k_] / 2.0).tanh();
-                    }
+                // Over every slot, padding included (`toc` is 0 there, so `tanh` is 0): one
+                // contiguous loop that vectorises.
+                for (t, &c) in tanhtoc.iter_mut().zip(toc.iter()) {
+                    *t = tanh_approx(-c / 2.0);
                 }
 
                 // Variable-to-check message update via 2·atanh(∏ tanh(L/2)).
-                for j in 0..n {
-                    let mn_j = P::mn(j);
-                    for k_ in 0..NCW {
-                        let ichk = mn_j[k_] as usize;
-                        let nrw_ichk = P::nrw(ichk) as usize;
-                        let mut tmn = 1.0f32;
-                        for s in 0..nrw_ichk {
-                            let bit = P::nm(ichk, s) as usize;
-                            if bit != j {
-                                tmn *= tanhtoc[ichk * max_row + s];
-                            }
-                        }
-                        tov[j * NCW + k_] = 2.0 * platanh(-tmn);
+                let width = max_row - 1;
+                for e in 0..n * NCW {
+                    let mut tmn = 1.0f32;
+                    for &t in &prod_idx[e * width..(e + 1) * width] {
+                        tmn *= tanhtoc[t as usize];
                     }
+                    tov[e] = 2.0 * platanh(-tmn);
                 }
             }
             BpKind::NormalizedMinSum { .. } | BpKind::OffsetMinSum { .. } => {
@@ -578,6 +592,8 @@ pub fn bp_llr_zsum_ap_with_scratch<'s, P: LdpcParams>(
         tov,
         toc,
         tanhtoc,
+        c2v_idx,
+        prod_idx,
         zn,
         zsum,
         ..
@@ -612,38 +628,22 @@ pub fn bp_llr_zsum_ap_with_scratch<'s, P: LdpcParams>(
             let nrw_j = P::nrw(j) as usize;
             for i in 0..nrw_j {
                 let ibj = P::nm(j, i) as usize;
-                let mut msg = zn[ibj];
-                let mn_ibj = P::mn(ibj);
-                for kk in 0..NCW {
-                    if mn_ibj[kk] as usize == j {
-                        msg -= tov[ibj * NCW + kk];
-                    }
-                }
-                toc[j * max_row + i] = msg;
+                let e = j * max_row + i;
+                toc[e] = zn[ibj] - tov[c2v_idx[e] as usize];
             }
         }
 
-        for i in 0..m_checks {
-            let nrw_i = P::nrw(i) as usize;
-            for k_ in 0..nrw_i {
-                tanhtoc[i * max_row + k_] = (-toc[i * max_row + k_] / 2.0).tanh();
-            }
+        for (t, &c) in tanhtoc.iter_mut().zip(toc.iter()) {
+            *t = tanh_approx(-c / 2.0);
         }
 
-        for j in 0..n {
-            let mn_j = P::mn(j);
-            for k_ in 0..NCW {
-                let ichk = mn_j[k_] as usize;
-                let nrw_ichk = P::nrw(ichk) as usize;
-                let mut tmn = 1.0f32;
-                for s in 0..nrw_ichk {
-                    let bit = P::nm(ichk, s) as usize;
-                    if bit != j {
-                        tmn *= tanhtoc[ichk * max_row + s];
-                    }
-                }
-                tov[j * NCW + k_] = 2.0 * platanh(-tmn);
+        let width = max_row - 1;
+        for e in 0..n * NCW {
+            let mut tmn = 1.0f32;
+            for &t in &prod_idx[e * width..(e + 1) * width] {
+                tmn *= tanhtoc[t as usize];
             }
+            tov[e] = 2.0 * platanh(-tmn);
         }
     }
 
@@ -729,6 +729,14 @@ pub struct BpScratch<P: LdpcParams, T: LlrScalar> {
     /// [`Self::ensure_tanhtoc`] on first use; NMS-only/embedded callers
     /// that never touch the `SumProduct` path pay zero extra bytes.
     tanhtoc: Vec<T>,
+    /// `SumProduct` index tables (built with `tanhtoc`, see [`Self::ensure_tanhtoc`]): for check
+    /// edge `j * MAX_ROW + i`, the index into `tov` of the entry the check-to-variable update
+    /// subtracts; and for variable edge `(bit * NCW + k)`, the `MAX_ROW - 1` indices into
+    /// `tanhtoc` its product runs over, padded with the `1.0` slot. They replace a search over
+    /// `mn` and a `bit != j` test per term with the same arithmetic in the same order (a
+    /// product by `1.0` is exact), so every message is bit-identical.
+    c2v_idx: Vec<u16>,
+    prod_idx: Vec<u16>,
     min1: Vec<T>,
     min2: Vec<T>,
     idx_min1: Vec<u32>,
@@ -761,6 +769,8 @@ impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
             tov: vec![T::ZERO; n * NCW],
             toc: vec![T::ZERO; m_checks * max_row],
             tanhtoc: Vec::new(),
+            c2v_idx: Vec::new(),
+            prod_idx: Vec::new(),
             min1: vec![T::POS_INF_LIKE; m_checks],
             min2: vec![T::POS_INF_LIKE; m_checks],
             idx_min1: vec![0u32; m_checks],
@@ -789,7 +799,8 @@ impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
         // toc's semantics (every valid index gets unconditionally
         // overwritten before it's read each iteration; this reset is
         // defensive, matching toc's, not load-bearing).
-        for v in self.tanhtoc.iter_mut() {
+        let tanh_edges = P::M * P::MAX_ROW;
+        for v in self.tanhtoc.iter_mut().take(tanh_edges) {
             *v = T::ZERO;
         }
         for v in self.min1.iter_mut() {
@@ -813,7 +824,40 @@ impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
     #[inline]
     fn ensure_tanhtoc(&mut self) {
         if self.tanhtoc.is_empty() {
-            self.tanhtoc = vec![T::ZERO; P::M * P::MAX_ROW];
+            // One slot past the edges holds `1.0`: the padding of `prod_idx`.
+            self.tanhtoc = vec![T::ZERO; P::M * P::MAX_ROW + 1];
+            let one_slot = P::M * P::MAX_ROW;
+            self.tanhtoc[one_slot] = T::from_f32(1.0);
+            let mut c2v = vec![0u16; P::M * P::MAX_ROW];
+            for j in 0..P::M {
+                for i in 0..P::nrw(j) as usize {
+                    let ibj = P::nm(j, i) as usize;
+                    let mut found = None;
+                    for (kk, &c) in P::mn(ibj).iter().enumerate() {
+                        if c as usize == j {
+                            debug_assert!(found.is_none(), "bit {ibj} in check {j} twice");
+                            found = Some(ibj * NCW + kk);
+                        }
+                    }
+                    c2v[j * P::MAX_ROW + i] = found.expect("bit not in its check's mn") as u16;
+                }
+            }
+            let width = P::MAX_ROW - 1;
+            let mut prod = vec![one_slot as u16; P::N * NCW * width];
+            for j in 0..P::N {
+                for (k_, &c) in P::mn(j).iter().enumerate() {
+                    let ichk = c as usize;
+                    let mut q = 0;
+                    for s in 0..P::nrw(ichk) as usize {
+                        if P::nm(ichk, s) as usize != j {
+                            prod[(j * NCW + k_) * width + q] = (ichk * P::MAX_ROW + s) as u16;
+                            q += 1;
+                        }
+                    }
+                }
+            }
+            self.c2v_idx = c2v;
+            self.prod_idx = prod;
         }
     }
 
@@ -1090,6 +1134,23 @@ pub fn bp_decode_nms_with_scratch<T: LlrScalar>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `tanh_approx` stays within 4e-7 of the exact `tanh` over the range BP reaches and beyond,
+    /// is odd, and saturates at +-1.
+    #[test]
+    fn tanh_approx_matches_tanh() {
+        let mut x = -12.0f32;
+        let mut worst = 0.0f64;
+        while x < 12.0 {
+            let e = (x as f64).tanh();
+            worst = worst.max((tanh_approx(x) as f64 - e).abs());
+            assert_eq!(tanh_approx(-x), -tanh_approx(x));
+            x += 1.0e-3;
+        }
+        assert!(worst < 4.0e-7, "max abs error {worst:e}");
+        assert_eq!(tanh_approx(0.0), 0.0);
+        assert!((tanh_approx(50.0) - 1.0).abs() < 1.0e-6);
+    }
 
     #[test]
     fn decode_perfect_llr_all_zeros() {

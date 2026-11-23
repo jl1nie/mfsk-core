@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### FT8 BP (SumProduct): index tables and a vectorisable `tanh` approximation (#761)
+
+- `bp_decode_generic_kind_with_scratch` and `bp_llr_zsum_ap_with_scratch` searched `mn` for the edge to subtract and tested `bit != j` on every term of each check's product. Both are now tables built once per `BpScratch` (padded with a `1.0` slot, so each product has a fixed length): the same arithmetic in the same order, **bit-identical**. The `tanh` of the half-message cache is a rational approximation with no libm call (`tanh_approx`, Eigen's coefficients, absolute error 3.5e-7 against 4.6e-8 for libm `f32`), one loop over all edges that vectorises. **A divergence from the WSJT-X BPs, which call `tanh`**, marked in the code; it is the same on every target.
+- Measured (Apple arm64, one thread, `qso3_busy.wav`, base and new binaries alternated three times, repeatable to 1 ms): `Fast` 68 -> 63.5, `Normal` 240 -> 228, `Deep` 474 -> 426 ms. The BP split before: `tanh` 38 %, the product 31 %, the check-to-variable update 20 %. Over the 26 vendored recordings at three depths, the decoded message set is identical in all 78 runs (the tables alone: rows identical to the last digit). Tier A+B green on aarch64. Not run on x86 or a Cortex-A72; **the tier C FT8 sweep is not run here** (`scripts/run-sensitivity-sweeps.sh ft8` before the release this is in).
+
 ### Subtract on aarch64: the FFT is zero-padded to a length rustfft's NEON path is fast at (#761)
 
 - `subtract` and its residual score ran a 180 000-point FFT pair (`2^5 3^2 5^4`, `NFFT = NMAX` in `subtractft8.f90`). On an Apple M-series core rustfft's NEON path takes 1.2-1.5 ms for that length and 0.47 ms for 196 608 (`2^16 * 3`); the pair was 97 % of a warm `subtract` call there (20 % on x86). On aarch64 the buffer is now zero-padded to the next `2^a * {1, 3, 5}` (a pure power of 3 measured slower); other targets are unchanged and bit-identical. **A divergence from `subtractft8.f90`**, marked in the code: same taps, more zero tail, so the output differs by float rounding.
