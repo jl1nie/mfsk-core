@@ -58,7 +58,7 @@ rust-version = "1.93"
 # Distribution build of the binaries (`mfsk-serve`, `skimmer`): `cargo install --profile dist ...`.
 # Not `release`, so the merge gate's dozens of `--release` test binaries do not each pay a fat-LTO
 # link. Measured on `mfsk-serve bench qso3_busy.wav` (Apple arm64, one thread, three alternations):
-# 4-5 % faster at every depth (`Deep`'s last checkpoint 181 -> 172 ms), output identical on 78 decodes
+# 3.6-5 % faster at every depth (`Deep`'s last checkpoint 181 -> 172 ms), output identical on 78 decodes
 # (#761). Build time 50 s against 14 s for `mfsk-serve` on that machine.
 [profile.dist]
 inherits = "release"

@@ -686,13 +686,28 @@ mod fft_lpf {
     /// path handles the `5^4` poorly: measured on an Apple M-series core, a 180 000-point forward
     /// FFT takes 1.2-1.5 ms and a 196 608-point (`2^16 * 3`) one 0.47 ms, and the FFT pair is 97 %
     /// of a warm `subtract` call there (20 % on x86, where the odd length costs nothing; #761).
-    /// So on aarch64 the buffer is zero-padded to the next `2^a * {1, 3, 5}`. **A divergence from
+    /// So on aarch64 the buffer is zero-padded to [`fast_fft_len`]`(n)`. **A divergence from
     /// `subtractft8.f90`**: the kernel is the same time-domain taps and a longer zero tail only
-    /// adds room before the circular wrap, so the result differs by float rounding, not by
-    /// algorithm. Elsewhere the length is `n`, unchanged and bit-identical.
+    /// adds room before the circular wrap. For a full slot (`n = 180 000`, frame 151 680) that is
+    /// a difference of float rounding: neither length wraps the ±`lpf_half` kernel onto the frame.
+    /// For a buffer no longer than the frame (`n = nframe`) it is more: at `n` the kernel wraps
+    /// between the frame's two ends, padded it does not, so aarch64 is the one that matches
+    /// WSJT-X there (`NFFT = NMAX` > `NFRAME + NFILT`), and the two targets differ by more than
+    /// rounding near those ends. Elsewhere the length is `n`, unchanged and bit-identical.
     pub(super) fn fft_len(n: usize) -> usize {
-        if !cfg!(target_arch = "aarch64") || n == 0 {
-            return n;
+        if cfg!(target_arch = "aarch64") {
+            fast_fft_len(n)
+        } else {
+            n
+        }
+    }
+
+    /// The smallest `2^a * m >= n`, `m` in `{1, 3, 5}` (0 for 0): the lengths rustfft's NEON path
+    /// is fast at (a pure power of 3, 186 624 for FT8, measured as slow as 180 000). Separate from
+    /// [`fft_len`] so every target's tests check it.
+    pub(super) fn fast_fft_len(n: usize) -> usize {
+        if n == 0 {
+            return 0;
         }
         let mut best = usize::MAX;
         let mut p2 = 1usize;
@@ -867,8 +882,10 @@ mod fft_lpf {
         // `nfft >= nframe` the frame always fits, the circular convolution
         // has room for the kernel, and the existing clamps below are
         // correct exactly as written. A full slot is unaffected: there
-        // `audio.len() > nframe` already, so `nfft` does not move and the
-        // output stays bit-identical (`full_slot_output_is_pinned`).
+        // `audio.len() > nframe` already, so `nfft` does not move (except
+        // that `fft_len` pads it on aarch64, where `full_slot_output_is_pinned`
+        // allows the rounding that moves; #761). At `nfft == nframe` the
+        // kernel does wrap between the frame's ends; see `fft_len`.
         let nfft = audio.len().max(nframe);
         if is_degenerate(audio.len(), nframe, lpf_half) {
             return;
@@ -934,15 +951,17 @@ mod fft_lpf {
     }
 
     /// In-band residual power after a trial subtraction, `sqq` in
-    /// `subtractft8.f90::sqf`. Computes a full-length forward FFT of
-    /// `audio` (real input, zero imaginary — the Fortran side gets the
-    /// same positive-frequency half-spectrum via a real-FFT/equivalence
-    /// trick) and sums `|X(k)|^2` over the bins spanning
+    /// `subtractft8.f90::sqf`. A real-input forward FFT of `audio` (as
+    /// `sqf`'s `four2a(...,-1,0)`; a complex FFT of the zero-imaginary
+    /// signal until #761) and the sum of `|X(k)|^2` over the bins spanning
     /// `[freq_hz - 1.5*tone_spacing_hz, freq_hz + 8.5*tone_spacing_hz]`
     /// — the candidate's own tone band. Used only to *rank* three trial
-    /// offsets against each other, so the missing real-FFT packing is
-    /// immaterial (both sides of that symmetric band are scaled
-    /// identically for every trial).
+    /// offsets against each other.
+    ///
+    /// Not as `sqf` does it, and not marked until the #761 review: `sqf`
+    /// zeroes `x` and copies only the frame-aligned samples (`x(i)=dd(j)` for
+    /// `i` in `1..nframe`), so it scores the residual under the frame; this
+    /// scores the whole buffer. Left as it is: changing it changes results.
     ///
     /// `nframe` is passed rather than derived so this scores on the same
     /// grid [`apply_at_offset`] subtracted on: `sqf` runs inside the same
@@ -1409,6 +1428,35 @@ mod refine_dt_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `fast_fft_len` (the aarch64 subtract FFT length, #761) on every target: FT8's full slot and
+    /// frame, the edges, and that it is the smallest `2^a * {1, 3, 5}` not below `n`.
+    #[cfg(feature = "fft-rustfft")]
+    #[test]
+    fn fast_fft_len_is_the_next_2a_135() {
+        use super::fft_lpf::fast_fft_len;
+        assert_eq!(fast_fft_len(0), 0);
+        assert_eq!(fast_fft_len(1), 1);
+        assert_eq!(fast_fft_len(180_000), 196_608);
+        assert_eq!(fast_fft_len(151_680), 163_840);
+        assert_eq!(fast_fft_len(196_608), 196_608);
+        assert_eq!(fast_fft_len(196_609), 262_144);
+        let ok = |v: usize| {
+            let mut v = v;
+            while v.is_multiple_of(2) {
+                v /= 2;
+            }
+            matches!(v, 1 | 3 | 5)
+        };
+        for n in 1..5_000usize {
+            let f = fast_fft_len(n);
+            assert!(f >= n && ok(f), "n={n} -> {f}");
+            assert!(
+                !(n..f).any(ok),
+                "n={n}: a smaller length than {f} qualifies"
+            );
+        }
+    }
 
     /// Regression test for `subtract_tones` start-clipping with negative DT.
     ///

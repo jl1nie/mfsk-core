@@ -28,30 +28,20 @@ pub use crate::engine::BpKind;
 /// crate are uniform with `NCW = 3`.
 const NCW: usize = 3;
 
-/// `lib/platanh.f90` at v3.3.0-beta1, in `f32`: the piecewise-linear `atanh`
-/// every WSJT-X BP calls (`decode174_91`, `decode240_101`, `decode240_74`,
-/// `bpdecode128_90`, ...). Slopes 1/0.83, 1/0.322, 1/0.0524, 1/0.0012, then
-/// clamped at ±7.
-///
-/// This was `x.atanh()` clamped at ±4.6 until #658. Swapping it moved nothing
-/// measurable (tier C, same corpora, six suites, one binary switched by an
-/// environment variable: FT8 -2 net decodes of 592, FT4 +4 of 555, FST4 -1 of
-/// 1881, FT8 ITU 0 of 1314, FT8 busy 0 of 4441 with one more unexpected decode,
-/// MSK144 identical; no 50 % crossing moved by 0.5 dB, the largest by 0.36 dB, in
-/// FST4-300 CCIR-poor, where a cell holds 20 trials). The six suites
-/// took 139 s against 167 s (one run each, not a controlled timing); the
-/// piecewise form needs no `atanh`. FT8 again with 100 trials a cell (5200 files,
-/// seeded `ft8sim`): 2561 against 2559 decodes, 12 gained and 14 lost (sign test
-/// p = 0.85), no unexpected decode either way, every crossing within 0.04 dB.
 /// `tanh` for the `SumProduct` half-message cache: a rational approximation (a degree-13 odd
 /// numerator over a degree-6 even denominator, Eigen's `ptanh_float` coefficients) with no libm
 /// call, so a loop of it vectorises. **A divergence from `decode174_91.f90` and the other WSJT-X
-/// BPs, which call `tanh`**: absolute error against the exact function is 3.5e-7 (a libm `f32`
-/// `tanh`: 4.6e-8) over all of `f32`, saturating at 1 beyond |x| = 7.9. The value goes through a
-/// product and `platanh`, whose last slope is 1/0.0012, so it is the tier A+B corpora that say
-/// whether it matters (#761). Written with separate multiply and add, not `mul_add`: without the
-/// `fma` target feature `mul_add` is a library call, and without it the result is the same on
-/// every target.
+/// BPs, which call `tanh`** (#761). Measured over every `f32` in `[0, 9]` against `f64` `tanh`
+/// (the function is odd; beyond 7.905 the input is clamped): absolute error at most 4.95e-7, at
+/// x = 5.7797, where a libm `f32` `tanh` is within 4.87e-8. The output is clamped to `[-1, 1]`
+/// (unclamped, the rational form gives 1.0000001 at x = 7.9037843, the only such `f32`). The value goes through a
+/// product and [`platanh`], which is piecewise linear with a last slope of 1/0.0012 and maps
+/// everything above 0.9998 to 7, so an error of 5e-7 is at most about 4e-4 in a message; the
+/// tier A+B corpora and the tier C sweeps are what say whether it matters. Written with separate
+/// multiply and add, not `mul_add`: without the `fma` target feature `mul_add` is a library call,
+/// and without it the result is the same on every target. This runs wherever the `SumProduct`
+/// kernel does — FT8, FT4, FST4, FST4W and MSK144 by default (`FecOpts::default()`), the
+/// embedded FT4 path included.
 #[inline]
 pub(crate) fn tanh_approx(x: f32) -> f32 {
     let x = x.clamp(-7.905_311, 7.905_311);
@@ -67,9 +57,24 @@ pub(crate) fn tanh_approx(x: f32) -> f32 {
     q = q * x2 + 1.185_347e-4;
     q = q * x2 + 2.268_434_6e-3;
     q = q * x2 + 4.893_525e-3;
-    (x * p) / q
+    ((x * p) / q).clamp(-1.0, 1.0)
 }
 
+/// `lib/platanh.f90` at v3.3.0-beta1, in `f32`: the piecewise-linear `atanh`
+/// every WSJT-X BP calls (`decode174_91`, `decode240_101`, `decode240_74`,
+/// `bpdecode128_90`, ...). Slopes 1/0.83, 1/0.322, 1/0.0524, 1/0.0012, then
+/// clamped at ±7.
+///
+/// This was `x.atanh()` clamped at ±4.6 until #658. Swapping it moved nothing
+/// measurable (tier C, same corpora, six suites, one binary switched by an
+/// environment variable: FT8 -2 net decodes of 592, FT4 +4 of 555, FST4 -1 of
+/// 1881, FT8 ITU 0 of 1314, FT8 busy 0 of 4441 with one more unexpected decode,
+/// MSK144 identical; no 50 % crossing moved by 0.5 dB, the largest by 0.36 dB, in
+/// FST4-300 CCIR-poor, where a cell holds 20 trials). The six suites
+/// took 139 s against 167 s (one run each, not a controlled timing); the
+/// piecewise form needs no `atanh`. FT8 again with 100 trials a cell (5200 files,
+/// seeded `ft8sim`): 2561 against 2559 decodes, 12 gained and 14 lost (sign test
+/// p = 0.85), no unexpected decode either way, every crossing within 0.04 dB.
 #[inline]
 pub(crate) fn platanh(x: f32) -> f32 {
     let mut isign = 1.0f32;
@@ -273,7 +278,9 @@ pub fn bp_decode_generic_kind_with_scratch<P: LdpcParams>(
     let max_row = P::MAX_ROW;
 
     scratch.reset();
-    // Every kind reads `c2v_idx`, which is built with `tanhtoc`; this path is `f32` host code.
+    // Every kind reads `c2v_idx`, which is built with `tanhtoc`, so a min-sum kind grows
+    // `tanhtoc` too here (2.3 KB for FT8). This function is the `f32` path every protocol's
+    // default `FecOpts` takes, the embedded FT4 path included.
     scratch.ensure_tanhtoc();
     let BpScratch {
         tov,
@@ -726,8 +733,11 @@ pub struct BpScratch<P: LdpcParams, T: LlrScalar> {
     toc: Vec<T>,
     /// `SumProduct`-kernel tanh half-message cache — see
     /// [`bp_decode_generic_kind_with_scratch`]. Empty until grown by
-    /// [`Self::ensure_tanhtoc`] on first use; NMS-only/embedded callers
-    /// that never touch the `SumProduct` path pay zero extra bytes.
+    /// [`Self::ensure_tanhtoc`] on first use; callers that only use
+    /// [`bp_decode_generic_nms_with_scratch`] pay zero extra bytes.
+    /// [`bp_decode_generic_kind_with_scratch`] grows it for every kind, as
+    /// it reads `c2v_idx`. Its last slot is `1.0`, the padding `prod_idx`
+    /// points at; [`Self::reset`] leaves that slot alone.
     tanhtoc: Vec<T>,
     /// `SumProduct` index tables (built with `tanhtoc`, see [`Self::ensure_tanhtoc`]): for check
     /// edge `j * MAX_ROW + i`, the index into `tov` of the entry the check-to-variable update
@@ -823,6 +833,11 @@ impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
     /// see [`Self::reset`]'s comment).
     #[inline]
     fn ensure_tanhtoc(&mut self) {
+        // The tables hold indices as `u16`: every index must fit.
+        const {
+            assert!(P::M * P::MAX_ROW < u16::MAX as usize);
+            assert!(P::N * NCW < u16::MAX as usize);
+        }
         if self.tanhtoc.is_empty() {
             // One slot past the edges holds `1.0`: the padding of `prod_idx`.
             self.tanhtoc = vec![T::ZERO; P::M * P::MAX_ROW + 1];
@@ -1139,17 +1154,76 @@ mod tests {
     /// is odd, and saturates at +-1.
     #[test]
     fn tanh_approx_matches_tanh() {
-        let mut x = -12.0f32;
+        // Every f32 in [0, 9] was checked once (#761): max 4.95e-7 at 5.7797. Here: that point,
+        // a 1e-5 grid over [-10, 10], oddness and the clamp to [-1, 1].
+        let worst_x = 5.779_699_3f32;
+        let at_worst = (tanh_approx(worst_x) as f64 - (worst_x as f64).tanh()).abs();
+        assert!(
+            at_worst > 4.0e-7 && at_worst < 5.0e-7,
+            "at x={worst_x}: {at_worst:e}"
+        );
         let mut worst = 0.0f64;
-        while x < 12.0 {
-            let e = (x as f64).tanh();
-            worst = worst.max((tanh_approx(x) as f64 - e).abs());
-            assert_eq!(tanh_approx(-x), -tanh_approx(x));
-            x += 1.0e-3;
+        let mut i = -1_000_000i32;
+        while i <= 1_000_000 {
+            let x = i as f32 * 1.0e-5;
+            let a = tanh_approx(x);
+            worst = worst.max((a as f64 - (x as f64).tanh()).abs());
+            assert_eq!(tanh_approx(-x), -a);
+            assert!(a.abs() <= 1.0, "tanh_approx({x}) = {a}");
+            i += 1;
         }
-        assert!(worst < 4.0e-7, "max abs error {worst:e}");
+        assert!(worst < 5.0e-7, "max abs error {worst:e}");
         assert_eq!(tanh_approx(0.0), 0.0);
-        assert!((tanh_approx(50.0) - 1.0).abs() < 1.0e-6);
+        assert_eq!(tanh_approx(7.95), 1.0);
+        assert_eq!(tanh_approx(50.0), 1.0);
+        assert_eq!(tanh_approx(-50.0), -1.0);
+    }
+
+    /// The `SumProduct` index tables against the searches they replaced (`mn` for the edge to
+    /// subtract, `bit != j` for each product term), for every code that reaches the kernel.
+    fn check_sp_tables<P: LdpcParams>() {
+        let mut s = BpScratch::<P, f32>::new();
+        s.ensure_tanhtoc();
+        let one_slot = P::M * P::MAX_ROW;
+        assert_eq!(s.tanhtoc.len(), one_slot + 1);
+        assert_eq!(s.tanhtoc[one_slot], 1.0);
+        s.reset();
+        assert_eq!(s.tanhtoc[one_slot], 1.0, "reset must keep the 1.0 slot");
+        for j in 0..P::M {
+            for i in 0..P::nrw(j) as usize {
+                let ibj = P::nm(j, i) as usize;
+                let want: Vec<usize> = (0..NCW)
+                    .filter(|&kk| P::mn(ibj)[kk] as usize == j)
+                    .map(|kk| ibj * NCW + kk)
+                    .collect();
+                assert_eq!(want.len(), 1, "check {j} slot {i}");
+                assert_eq!(s.c2v_idx[j * P::MAX_ROW + i] as usize, want[0]);
+            }
+        }
+        let width = P::MAX_ROW - 1;
+        for j in 0..P::N {
+            for k_ in 0..NCW {
+                let ichk = P::mn(j)[k_] as usize;
+                let mut want: Vec<usize> = (0..P::nrw(ichk) as usize)
+                    .filter(|&s_| P::nm(ichk, s_) as usize != j)
+                    .map(|s_| ichk * P::MAX_ROW + s_)
+                    .collect();
+                want.resize(width, one_slot);
+                let got: Vec<usize> = s.prod_idx[(j * NCW + k_) * width..][..width]
+                    .iter()
+                    .map(|&t| t as usize)
+                    .collect();
+                assert_eq!(got, want, "bit {j} edge {k_}");
+            }
+        }
+    }
+
+    #[test]
+    fn sum_product_tables_match_the_searches() {
+        check_sp_tables::<Ldpc174_91Params>();
+        check_sp_tables::<super::super::params::Ldpc240_101Params>();
+        check_sp_tables::<super::super::params::Ldpc240_74Params>();
+        check_sp_tables::<super::super::params::Ldpc128_90Params>();
     }
 
     #[test]
@@ -1224,9 +1298,8 @@ mod tests {
         }
     }
 
-    /// Same reuse check for the `NormalizedMinSum` kernel. `tanhtoc` is
-    /// only grown for `SumProduct`, so this also confirms the NMS path
-    /// stays correct with `tanhtoc` left empty.
+    /// Same reuse check for the `NormalizedMinSum` kernel, which reads the
+    /// `c2v_idx` table built with `tanhtoc` (grown for every kind since #761).
     #[test]
     fn scratch_bp_matches_unpooled_normalized_min_sum() {
         let mut scratch = BpScratch::<Ldpc174_91Params, f32>::new();
