@@ -103,10 +103,10 @@
 //! `gen_ft8wave.f90`; the reference is within 1.7e-5 of the exact waveform where it was within 7e-4).
 //! Only `ft8_eme_delay.txt` was rewritten: its rows moved in the last digits of `snr_db` and
 //! `sync_score` (8 of 20 rows), `K1BZM DK8NE -10`, the faintest, among them: it is found at 244.25 Hz / DT 2.51 s, not
-//! 244.75 Hz / 2.50 s, with 17 hard errors, not 15 (`jt9`: 18). The other 20 FT8 and IQ-FT8 fixtures
+//! 244.75 Hz / 2.50 s, with 17 hard errors, not 15 (`jt9`: 18). The other 24 FT8 and IQ-FT8 fixtures
 //! stay inside [`Tol::PLATFORM`] and were not rewritten; no message appeared or went in any of them.
-//! Over the 26 vendored recordings at three depths (78 decodes, 1 183 rows) the message sets are the
-//! same and no `freq_hz`/`dt_sec` moved; 303 rows moved in `snr_db`, 30 by more than 0.05 dB and
+//! Over the 26 vendored recordings at three depths (78 decodes, 1 183 rows; `scripts/compare-serve-decodes.py`)
+//! the message sets are the same and, outside this fixture, no `freq_hz`/`dt_sec` moved; 303 rows moved in `snr_db`, 30 by more than 0.05 dB and
 //! 3 by more than 0.2 dB (at most 0.46, on `qso3_busy.wav`'s `K1BZM DK8NE -10`); against `jt9`'s
 //! SNR on the 389 rows both decode the mean error is +0.196 -> +0.195 dB and its SD 1.744 -> 1.746.
 //!

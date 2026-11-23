@@ -198,9 +198,11 @@ const STREAM_RENORM_PERIOD: u32 = 4096;
 #[cfg(feature = "std")]
 const RECURRENCE_BLOCK: usize = 256;
 
-/// The largest modulation increment (radians per sample) the recurrence's three-term series for
-/// `exp(i d)` is used at: its error is `d^5 / 120`, 8e-8 at 0.1, below `f32` rounding. FT8's is
-/// `dphi_peak * 7` = 0.023. A shape above it keeps the `cos`/`sin` loop.
+/// The largest modulation increment (radians per sample, either sign) the recurrence's three-term
+/// series for `exp(i d)` is used at. One step's error is `d^5 / 120`, 8e-8 at 0.1, below `f32` rounding,
+/// but it has the same sign every step and adds up inside a block: against the `f64` waveform the
+/// error is 8e-6 at FT8's 0.023 (`dphi_peak * 7`) and 2.1e-5 at 0.1 (measured; a test runs a shape at
+/// 0.092). A shape above the bound keeps the `cos`/`sin` loop.
 #[cfg(feature = "std")]
 const RECURRENCE_MAX_MODULATION: f32 = 0.1;
 
@@ -741,6 +743,14 @@ fn fill_cos_sin_by_recurrence(
 ///
 /// Both `out_cos` and `out_sin` must have length
 /// [`synth_output_len`]`(tones.len(), cfg.samples_per_symbol)`.
+///
+/// # Numerics
+///
+/// With `std`, and while the modulation increment `|dphi_peak * largest tone|` is at most 0.1 rad per
+/// sample, the phase comes from an anchored phasor recurrence (#762) and is within about 2e-5 of the
+/// exact waveform; otherwise, and without `std`, from one `cos` and one `sin` per sample of an `f32`
+/// phase, which is within about 7e-4 over a full FT8 frame. The two differ in the last bits, so the
+/// output is not the same with and without `std`.
 pub fn synth_complex_f32_into(
     out_cos: &mut [f32],
     out_sin: &mut [f32],
@@ -799,13 +809,17 @@ pub fn synth_complex_f32_into(
     // single-precision `phi` summed over the whole frame, for every sample, and this did too: 0.55 ms
     // of a 1.25 ms `subtract` on x86, and an `f32` phase carrying 7e-4 of rounding by the end of the
     // frame. The recurrence below takes the phase of every 256th sample exactly (an `f64` sum) and
-    // rotates a phasor by the carrier and the modulation in between: 0.3 ms in all, and 1.7e-5 from
-    // the exact waveform. A shape whose modulation the series does not cover, and a build without
-    // `std` (no `f64` libm assumed), keep the loop.
+    // rotates a phasor by the carrier and the modulation in between: 0.39 ms in all on x86, and
+    // 1.7e-5 from the exact waveform. A shape whose modulation the series does not cover keeps the
+    // loop, and so does a build without `std`. The `std` gate is not a statement about embedded
+    // targets: the M5Stack apps enable `std`, so they take the recurrence, but their FT8 decode runs
+    // no subtraction (`decode_pipeline.rs`: no OSD, no SIC, no AP) and nothing there reaches this.
+    // The recurrence does an `f64` add per sample and an `f64` `sin_cos` per block, which an
+    // `f32`-only FPU does in software: not measured on any board.
     #[cfg(feature = "std")]
     let max_tone = f32::from(tones.iter().copied().max().unwrap_or(0));
     #[cfg(feature = "std")]
-    let use_recurrence = dphi_peak * max_tone <= RECURRENCE_MAX_MODULATION;
+    let use_recurrence = (dphi_peak * max_tone).abs() <= RECURRENCE_MAX_MODULATION;
     #[cfg(not(feature = "std"))]
     let use_recurrence = false;
 
@@ -1049,6 +1063,7 @@ mod tests {
     /// from the ramps within 5e-5 of the `f64` form, and no further from it than the loop, whose `f32`
     /// phase carries about 7e-4 by the end of a full frame; and within 2e-3 of the loop's output
     /// everywhere, the ramps included (the loop's own error is most of that).
+    #[cfg(feature = "std")]
     #[test]
     fn complex_synthesis_is_closer_to_the_exact_waveform_than_the_libm_loop() {
         let mut state = 0x2545_F491_4F6C_DD1Du64;
@@ -1119,6 +1134,19 @@ mod tests {
                 1,
                 1500.0,
             ),
+            // The modulation at 0.092 rad per sample (hmod 4: `dphi_peak * 7`), just under the bound
+            // `RECURRENCE_MAX_MODULATION`, where the series' error adds up most inside a block.
+            (
+                GfskCfg {
+                    sample_rate: 12_000.0,
+                    samples_per_symbol: 1920,
+                    bt: 2.0,
+                    hmod: 4.0,
+                    ramp_samples: 240,
+                },
+                79,
+                1500.0,
+            ),
         ];
         for (cfg, nsym, f0) in shapes {
             let t = pseudo_random_tones(&mut state, nsym);
@@ -1167,13 +1195,13 @@ mod tests {
 
     /// A modulation the three-term series does not cover keeps the `cos`/`sin` loop, bit for bit:
     /// `hmod` 8 makes the increment `dphi_peak * 7` = 0.18 rad, above `RECURRENCE_MAX_MODULATION`.
-    #[test]
-    fn complex_synthesis_keeps_the_libm_loop_where_the_series_does_not_reach() {
+    /// A modulation the three-term series does not cover keeps the `cos`/`sin` loop, bit for bit.
+    fn assert_libm_loop_kept(hmod: f32) {
         let cfg = GfskCfg {
             sample_rate: 12_000.0,
             samples_per_symbol: 1920,
             bt: 2.0,
-            hmod: 8.0,
+            hmod,
             ramp_samples: 240,
         };
         let mut state = 0x9E37_79B9_7F4A_7C15u64;
@@ -1191,8 +1219,21 @@ mod tests {
                     .iter()
                     .zip(&want_s)
                     .all(|(a, b)| a.to_bits() == b.to_bits()),
-            "the loop's bits changed"
+            "hmod {hmod}: the loop's bits changed"
         );
+    }
+
+    /// `hmod` 8 makes the increment `dphi_peak * 7` = 0.18 rad, above `RECURRENCE_MAX_MODULATION`.
+    #[test]
+    fn complex_synthesis_keeps_the_libm_loop_where_the_series_does_not_reach() {
+        assert_libm_loop_kept(8.0);
+    }
+
+    /// The bound is on the magnitude: `GfskCfg::hmod` is public and a negative one (the sign of the
+    /// modulation reversed) at `-8` is as far outside the series as `+8` (the reviewer's finding).
+    #[test]
+    fn complex_synthesis_keeps_the_libm_loop_for_a_negative_modulation_too() {
+        assert_libm_loop_kept(-8.0);
     }
 
     #[test]
