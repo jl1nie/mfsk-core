@@ -103,6 +103,11 @@
   literal outside the crate stops compiling. `NEGATIVE_DT_PAD` stays, unused; `WSPRD_NPOINTS` (114 s) is new and `decode_scan` cuts its audio to it
   (`NPOINTS_MAX` is unchanged). Embedded: the pipelines pad their own buffer; the literal in `wspr_dual_core.rs` is updated, not built or flashed here.
 
+### Skimmer
+
+- **Skimmer 1.1.1 is the skimmer on `mfsk-core` 0.16.2** (tag `skimmer-v1.1.1`; the four version files and `package.json` agree; no skimmer code change). It takes the library by path, so its decode side gets 0.16.2's: FT8 decoding 35-41 % faster on x86 at one thread (SumProduct BP's index tables and rational `tanh`, real-input FFTs, `subtract`'s reference recurrence, its work buffers kept per thread, `refine_dt`'s parallel trials; on aarch64 `subtract`'s FFT length), WSPR following `wsprd`, and the three deliberate divergences from WSJT-X the release notes name (#761, #762).
+  Checked: `skimmer-core` and `sdr-io` tests (release), `cargo check` of the workspace; not checked: a live SpyServer / rtl_tcp session, the GUI build, the installers (the tag run builds them), a Raspberry Pi.
+
 ## 0.16.1 — FT4 is sent where WSJT-X sends it: `tx_buffer_start` is `Modulator.cpp`'s `delay_ms` (3600 samples, 0.300 s), not the DT = 0 placement (#749)
 
 ### Changed — transmit
