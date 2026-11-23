@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.16.2 — FT8 decodes 35-41 % faster on x86 (one thread) and faster on Apple arm64: BP tables and a rational `tanh`, real-input FFTs, `subtract` (a reference recurrence, buffers kept per thread, an aarch64 FFT length), `refine_dt` in parallel; `mfsk-serve`; WSPR follows `wsprd` (#760, #761, #762)
 
 ### Subtract keeps its two largest buffers per thread, so a decode does not depend on glibc's `mmap` threshold (#761)
 
