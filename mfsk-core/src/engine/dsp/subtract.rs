@@ -680,6 +680,33 @@ mod fft_lpf {
         (forward, inverse)
     }
 
+    /// Length of the FFT that does the circular convolution for a buffer of `n` samples.
+    ///
+    /// `subtractft8.f90` uses `NFFT = NMAX = 180 000 = 2^5 3^2 5^4`. On aarch64, rustfft's NEON
+    /// path handles the `5^4` poorly: measured on an Apple M-series core, a 180 000-point forward
+    /// FFT takes 1.2-1.5 ms and a 196 608-point (`2^16 * 3`) one 0.47 ms, and the FFT pair is 97 %
+    /// of a warm `subtract` call there (20 % on x86, where the odd length costs nothing; #761).
+    /// So on aarch64 the buffer is zero-padded to the next `2^a * {1, 3, 5}`. **A divergence from
+    /// `subtractft8.f90`**: the kernel is the same time-domain taps and a longer zero tail only
+    /// adds room before the circular wrap, so the result differs by float rounding, not by
+    /// algorithm. Elsewhere the length is `n`, unchanged and bit-identical.
+    pub(super) fn fft_len(n: usize) -> usize {
+        if !cfg!(target_arch = "aarch64") || n == 0 {
+            return n;
+        }
+        let mut best = usize::MAX;
+        let mut p2 = 1usize;
+        while p2 < n * 2 {
+            for m in [1usize, 3, 5] {
+                if p2 * m >= n {
+                    best = best.min(p2 * m);
+                }
+            }
+            p2 *= 2;
+        }
+        best
+    }
+
     /// Per-edge-distance boost factor, `endcorrection(j)` in
     /// `subtractft8.f90` (`j` there is 1-indexed 1..=lpf_half+1; here
     /// `d = j-1` is the 0-indexed distance from the frame edge,
@@ -849,6 +876,7 @@ mod fft_lpf {
         let i_lo = (-signed_start).clamp(0, nframe as i64) as usize;
         let i_hi = (audio.len() as i64 - signed_start).clamp(0, nframe as i64) as usize;
 
+        let nfft = fft_len(nfft);
         let mut cfilt = vec![Complex32::new(0.0, 0.0); nfft];
         for i in i_lo..i_hi {
             let j = (signed_start + i as i64) as usize;
@@ -915,6 +943,7 @@ mod fft_lpf {
         if nfft == 0 {
             return 0.0;
         }
+        let nfft = fft_len(nfft);
         let mut buf: Vec<Complex32> = audio
             .iter()
             .map(|&s| Complex32::new(s as f32, 0.0))

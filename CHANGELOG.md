@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Subtract on aarch64: the FFT is zero-padded to a length rustfft's NEON path is fast at (#761)
+
+- `subtract` and its residual score ran a 180 000-point FFT pair (`2^5 3^2 5^4`, `NFFT = NMAX` in `subtractft8.f90`). On an Apple M-series core rustfft's NEON path takes 1.2-1.5 ms for that length and 0.47 ms for 196 608 (`2^16 * 3`); the pair was 97 % of a warm `subtract` call there (20 % on x86). On aarch64 the buffer is now zero-padded to the next `2^a * {1, 3, 5}` (a pure power of 3 measured slower); other targets are unchanged and bit-identical. **A divergence from `subtractft8.f90`**, marked in the code: same taps, more zero tail, so the output differs by float rounding.
+- Measured (Apple arm64, AC, one thread, `qso3_busy.wav`, base and new binaries alternated three times): one FFT pair 2.4 -> 1.0 ms, `refine_dt` 14.3 -> 6.4 ms; a whole call `Fast` 99 -> 68-97, `Normal` 398-780 -> 240-315, `Deep` 638-698 -> 476-544 ms, the same rows. This Mac swings by up to 2x between runs; read the direction, not the ratios. Tier A+B green on aarch64. Not measured on a Cortex-A72; x86 not re-run.
+
 ### FT8's subtract reference: a phasor recurrence, a deliberate divergence from `gen_ft8wave.f90` (#762)
 
 - `synth_complex_f32_into` takes the reference's `cos`/`sin` from a phasor recurrence anchored every 256 samples by an exact `f64` phase (one rotation per sample, the carrier's and the modulation's multiplied into one first), where `gen_ft8wave.f90` and this crate called `cos` and `sin` on an `f32` phase for every sample. The reference is within 1.7e-5 of the exact waveform where it was within 7e-4; 0.607 -> 0.389 ms, one `subtract` 1.25 -> 1.04 ms (x86, one thread). A shape with modulation above 0.1 rad per sample (either sign) and a build without `std` keep the loop, bit for bit. The M5Stack apps enable `std` and so take the recurrence, but their FT8 decode runs no subtraction; an `f64` add per sample and an `f64` `sin_cos` per block would be software on an `f32`-only FPU, and are not measured on any board. Accepted on the condition that the tests show no problem; the divergence is marked in the code and recorded in #762.
