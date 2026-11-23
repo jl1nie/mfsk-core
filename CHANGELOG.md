@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### FT8's subtract reference: a phasor recurrence, a deliberate divergence from `gen_ft8wave.f90` (#762)
+
+- `synth_complex_f32_into` takes the reference's `cos`/`sin` from a phasor recurrence anchored every 256 samples by an exact `f64` phase (one rotation per sample, the carrier's and the modulation's multiplied into one first), where `gen_ft8wave.f90` and this crate called `cos` and `sin` on an `f32` phase for every sample. The reference is within 1.7e-5 of the exact waveform where it was within 7e-4; 0.607 -> 0.389 ms, one `subtract` 1.25 -> 1.04 ms (x86, one thread). A shape with modulation above 0.1 rad per sample and a build without `std` keep the loop, bit for bit. Accepted on the condition that the tests show no problem; the divergence is marked in the code and recorded in #762.
+- What moved: `full_slot_output_is_pinned` re-recorded (2 821 of 180 000 samples, each by 1) and `ft8_eme_delay.txt` (its faintest row, `K1BZM DK8NE -10`, 244.75 -> 244.25 Hz, 15 -> 17 hard errors; `jt9`: 18). Over the 26 vendored recordings at three depths the decoded messages are the same in all 78 runs, no frequency or DT moves, and the SNR against `jt9` on 389 rows is +0.196 -> +0.195 dB, SD 1.744 -> 1.746. **Run the tier C FT8 sweep before the release this is in** (`scripts/run-sensitivity-sweeps.sh ft8`): it is not run here.
+
 ### Subtract: the end-correction table is built once, and `refine_dt` builds its reference once (#761)
 
 - `subtract_tones_lpf` (FT8, FT4, and every other user of `engine::dsp::subtract`) rebuilt `end_correction(lpf_half)` on every call: `lpf_half + 1` sums of up to `lpf_half + 1` taps, about two million sequentially dependent f32 adds for FT8's 2000, for a table that depends on nothing but `lpf_half`. `subtractft8.f90` builds it once; so does this now, by the same function, so every value is bit-identical (a test pins the bits; tier A+B: 172 binaries, 1397 passed, no fixture moved).

@@ -236,6 +236,12 @@ fn late_attach_subtracts_the_whole_overlap() {
 /// samples, by at most 2 (the input frame moved by at most 2 LSB at 3000 peak, -94 dB against WSJT-X's
 /// v3.3.0-beta6 generator). The distances below were measured against the old pin, and the new one has not been
 /// measured on aarch64. The pin is the subtract's, not the synthesiser's.
+///
+/// **Re-recorded again at #762** (x86_64 Linux, `MFSK_WRITE_SUBTRACT_PIN=1`), when the subtract's reference
+/// waveform became an `f64`-anchored phasor recurrence instead of one `cos`/`sin` per sample of an `f32`
+/// phase (a deliberate divergence from `gen_ft8wave.f90`, recorded in #762). Against the previous pin 2 821
+/// of the 180 000 samples differ, each by 1 (the reference is within 1.7e-5 of the exact waveform where it
+/// was within 7e-4). Not measured on aarch64.
 const PINNED_FULL_SLOT: &str = asset_path!("ft8_subtract_full_slot.bin");
 
 /// How far a platform may sit from the pin (#579's rule: a few times the
@@ -286,6 +292,14 @@ fn full_slot_output_is_pinned() {
         FT8_LPF_HALF,
         true,
     );
+    // `MFSK_WRITE_SUBTRACT_PIN=1` records this output as the pin (what the doc on `PINNED_FULL_SLOT`
+    // says happened at #726 and #762); a pin is re-recorded only for a deliberate change of what the
+    // subtract is built on, with the distance from the old pin written there.
+    if std::env::var_os("MFSK_WRITE_SUBTRACT_PIN").is_some() {
+        let bytes: Vec<u8> = audio.iter().flat_map(|s| s.to_le_bytes()).collect();
+        std::fs::write(PINNED_FULL_SLOT, bytes).unwrap();
+        return;
+    }
     assert_eq!(audio.len(), pinned.len());
     let diffs: Vec<(usize, i32)> = audio
         .iter()

@@ -98,6 +98,18 @@
 //! `wsprd.c` printing `decodes[i].snr`) to four decimals; before they were 0.010-0.121 dB off (`G8VDQ IO91 37`
 //! -23.149 -> -23.270, `wsprd` -23.2695). Why the pad moved them is not measured (it also cut the recording's last 3 s).
 //!
+//! A tenth (#762, 2026-11-23): FT8's subtraction reference takes its `cos`/`sin` from an `f64`-anchored
+//! phasor recurrence, not one libm call per sample of an `f32` phase (a deliberate divergence from
+//! `gen_ft8wave.f90`; the reference is within 1.7e-5 of the exact waveform where it was within 7e-4).
+//! Only `ft8_eme_delay.txt` was rewritten: its rows moved in the last digits of `snr_db` and
+//! `sync_score` (8 of 20 rows), `K1BZM DK8NE -10`, the faintest, among them: it is found at 244.25 Hz / DT 2.51 s, not
+//! 244.75 Hz / 2.50 s, with 17 hard errors, not 15 (`jt9`: 18). The other 20 FT8 and IQ-FT8 fixtures
+//! stay inside [`Tol::PLATFORM`] and were not rewritten; no message appeared or went in any of them.
+//! Over the 26 vendored recordings at three depths (78 decodes, 1 183 rows) the message sets are the
+//! same and no `freq_hz`/`dt_sec` moved; 303 rows moved in `snr_db`, 30 by more than 0.05 dB and
+//! 3 by more than 0.2 dB (at most 0.46, on `qso3_busy.wav`'s `K1BZM DK8NE -10`); against `jt9`'s
+//! SNR on the 389 rows both decode the mean error is +0.196 -> +0.195 dB and its SD 1.744 -> 1.746.
+//!
 //! Row format, one per line, sorted. Frame family (FT8/FT4/FST4): text,
 //! then `freq_hz`, `dt_sec`, `snr_db`, `sync_score` as f32 bit patterns in
 //! hex, then `hard_errors` and `pass`. Other families and the IQ path: the

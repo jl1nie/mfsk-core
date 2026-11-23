@@ -192,6 +192,18 @@ pub const fn synth_output_len(nsym: usize, samples_per_symbol: usize) -> usize {
 /// same period [`super::ddc`]'s mixer uses, for the same reason.
 const STREAM_RENORM_PERIOD: u32 = 4096;
 
+/// Samples per block of [`synth_complex_f32_into`]'s phasor recurrence: the phase is taken afresh
+/// from an `f64` sum at the start of each, so an error cannot grow past one block's worth (256
+/// rotations of about 6e-8 each, 1.7e-5 at the worst, measured).
+#[cfg(feature = "std")]
+const RECURRENCE_BLOCK: usize = 256;
+
+/// The largest modulation increment (radians per sample) the recurrence's three-term series for
+/// `exp(i d)` is used at: its error is `d^5 / 120`, 8e-8 at 0.1, below `f32` rounding. FT8's is
+/// `dphi_peak * 7` = 0.023. A shape above it keeps the `cos`/`sin` loop.
+#[cfg(feature = "std")]
+const RECURRENCE_MAX_MODULATION: f32 = 0.1;
+
 /// A GMFSK waveform produced in chunks, holding no buffer of its own.
 ///
 /// **Why this exists.** [`synth_f32_into`] builds the whole waveform
@@ -674,6 +686,53 @@ pub fn synth_f32_fst4_into(
     }
 }
 
+/// `amplitude * cos(phi_k)` and `amplitude * sin(phi_k)` into `out_cos`/`out_sin`, where `phi_k` is
+/// the sum of `carrier_step + modulation[j]` over `j < k`: [`synth_complex_f32_into`]'s phase, by a
+/// phasor recurrence anchored every [`RECURRENCE_BLOCK`] samples (#762).
+///
+/// Per sample the phasor is multiplied by one rotation, `exp(i carrier_step) * exp(i modulation)`,
+/// the second factor from a three-term series (valid while `|modulation| <=`
+/// [`RECURRENCE_MAX_MODULATION`]). The two factors are multiplied into one rotation first, which
+/// does not depend on the phasor, so the chain through the phasor is a single complex multiply and
+/// not two. At the start of every block the phasor is replaced by `exp(i phase)`, the phase an `f64`
+/// sum of the steps before it: the rounding of one block's rotations (about 6e-8 each) cannot add up
+/// across the frame, and neither can the carrier's `f32` rounding.
+#[cfg(feature = "std")]
+fn fill_cos_sin_by_recurrence(
+    out_cos: &mut [f32],
+    out_sin: &mut [f32],
+    modulation: &[f32],
+    carrier_step: f64,
+    amplitude: f32,
+) {
+    let (carrier_sin, carrier_cos) = carrier_step.sin_cos();
+    let (car_r, car_i) = (carrier_cos as f32, carrier_sin as f32);
+    let mut phase = 0.0f64;
+    let blocks = modulation.chunks(RECURRENCE_BLOCK);
+    let outs = out_cos
+        .chunks_mut(RECURRENCE_BLOCK)
+        .zip(out_sin.chunks_mut(RECURRENCE_BLOCK));
+    for (block, (oc, os)) in blocks.zip(outs) {
+        let (sn, cs) = phase.sin_cos();
+        let (mut pr, mut pi) = (cs as f32, sn as f32);
+        // `f64`: the increments vary smoothly, so the rounding of an `f32` running sum is biased and
+        // adds up across blocks (1e-3 rad by the end of a frame, measured).
+        let mut sum = 0.0f64;
+        for ((&md, c), s) in block.iter().zip(oc.iter_mut()).zip(os.iter_mut()) {
+            *c = amplitude * pr;
+            *s = amplitude * pi;
+            let md2 = md * md;
+            let (mr, mi) = (1.0 - 0.5 * md2 + md2 * md2 / 24.0, md - md2 * md / 6.0);
+            let (rr, ri) = (car_r * mr - car_i * mi, car_r * mi + car_i * mr);
+            let (nr, ni) = (pr * rr - pi * ri, pr * ri + pi * rr);
+            pr = nr;
+            pi = ni;
+            sum += f64::from(md);
+        }
+        phase += sum + block.len() as f64 * carrier_step;
+    }
+}
+
 /// Complex GFSK synthesis: writes both `cos(phi)` and `sin(phi)` into
 /// caller-provided buffers using the same phase progression as
 /// [`synth_f32_into`]. Used by signal-cancellation paths that need an
@@ -736,17 +795,43 @@ pub fn synth_complex_f32_into(
     for (d, &p) in dphi[ofs..ofs + 2 * nsps].iter_mut().zip(pulse.iter()) {
         *d += dphi_peak * tones[nsym - 1] as f32 * p;
     }
-    for d in dphi.iter_mut() {
-        *d += twopi * f0_hz * dt;
-    }
+    // **A divergence from `gen_ft8wave.f90` (#762).** The Fortran takes `cos(phi)` and `sin(phi)` of a
+    // single-precision `phi` summed over the whole frame, for every sample, and this did too: 0.55 ms
+    // of a 1.25 ms `subtract` on x86, and an `f32` phase carrying 7e-4 of rounding by the end of the
+    // frame. The recurrence below takes the phase of every 256th sample exactly (an `f64` sum) and
+    // rotates a phasor by the carrier and the modulation in between: 0.3 ms in all, and 1.7e-5 from
+    // the exact waveform. A shape whose modulation the series does not cover, and a build without
+    // `std` (no `f64` libm assumed), keep the loop.
+    #[cfg(feature = "std")]
+    let max_tone = f32::from(tones.iter().copied().max().unwrap_or(0));
+    #[cfg(feature = "std")]
+    let use_recurrence = dphi_peak * max_tone <= RECURRENCE_MAX_MODULATION;
+    #[cfg(not(feature = "std"))]
+    let use_recurrence = false;
 
-    let mut phi = 0.0f32;
-    for k in 0..nwave {
-        out_cos[k] = amplitude * phi.cos();
-        out_sin[k] = amplitude * phi.sin();
-        phi += dphi[nsps + k];
-        if phi > twopi {
-            phi -= twopi;
+    if use_recurrence {
+        #[cfg(feature = "std")]
+        fill_cos_sin_by_recurrence(
+            out_cos,
+            out_sin,
+            &dphi[nsps..nsps + nwave],
+            // `f64` pi: `f64::from(twopi)` is `2 pi` rounded to `f32`, 1.9e-8 off, which over the
+            // 119 000 rad of a frame at 1500 Hz is 2e-3 rad of drift.
+            2.0 * core::f64::consts::PI * f64::from(f0_hz) / f64::from(cfg.sample_rate),
+            amplitude,
+        );
+    } else {
+        for d in dphi.iter_mut() {
+            *d += twopi * f0_hz * dt;
+        }
+        let mut phi = 0.0f32;
+        for k in 0..nwave {
+            out_cos[k] = amplitude * phi.cos();
+            out_sin[k] = amplitude * phi.sin();
+            phi += dphi[nsps + k];
+            if phi > twopi {
+                phi -= twopi;
+            }
         }
     }
 
@@ -853,8 +938,8 @@ mod tests {
         }
     }
 
-    /// `synth_complex_f32_into` before its `dphi` build lost the per-element bound checks: the
-    /// indexed loops, as they were.
+    /// `synth_complex_f32_into` as it was before the recurrence (#762): the indexed `dphi` build and
+    /// the `cos`/`sin` loop, which a shape the series does not cover still runs.
     fn complex_synthesis_with_indexed_dphi(
         tones: &[u8],
         f0_hz: f32,
@@ -917,21 +1002,56 @@ mod tests {
         (c, s)
     }
 
-    /// The `zip` form of the `dphi` build changes no sample of the complex waveform, for FT8's,
-    /// FT4's and FST4's shapes and for one and two symbols (the end pulses overlap).
+    /// The waveform `synth_complex_f32_into` aims at: the phase is the exact (`f64`) sum of the carrier
+    /// step and of the very `f32` modulation increments the synthesis builds (same pulse table, same
+    /// expression, same order), so what differs from it is how the phase is generated and nothing
+    /// else. No ramp envelope.
+    fn exact_complex_waveform(tones: &[u8], f0_hz: f32, cfg: &GfskCfg) -> (Vec<f64>, Vec<f64>) {
+        let nsps = cfg.samples_per_symbol;
+        let nsym = tones.len();
+        let pulse = pulse_table(cfg.bt, nsps);
+        let dphi_peak = 2.0 * PI * cfg.hmod / nsps as f32;
+        let mut dmod = vec![0.0f32; (nsym + 2) * nsps];
+        for (j, &tone) in tones.iter().enumerate() {
+            for i in 0..3 * nsps {
+                dmod[j * nsps + i] += dphi_peak * pulse[i] * tone as f32;
+            }
+        }
+        for i in 0..2 * nsps {
+            dmod[i] += dphi_peak * tones[0] as f32 * pulse[nsps + i];
+            dmod[nsym * nsps + i] += dphi_peak * tones[nsym - 1] as f32 * pulse[i];
+        }
+        let step = 2.0 * core::f64::consts::PI * f64::from(f0_hz) / f64::from(cfg.sample_rate);
+        let nwave = nsym * nsps;
+        let (mut c, mut s) = (vec![0f64; nwave], vec![0f64; nwave]);
+        let mut phi = 0f64;
+        for k in 0..nwave {
+            let (sn, cs) = phi.sin_cos();
+            c[k] = cs;
+            s[k] = sn;
+            phi += step + f64::from(dmod[nsps + k]);
+        }
+        (c, s)
+    }
+
+    fn pseudo_random_tones(state: &mut u64, n: usize) -> Vec<u8> {
+        (0..n)
+            .map(|_| {
+                *state ^= *state << 13;
+                *state ^= *state >> 7;
+                *state ^= *state << 17;
+                (*state % 8) as u8
+            })
+            .collect()
+    }
+
+    /// **The recurrence is closer to the exact waveform than the `cos`/`sin` loop was** (#762): away
+    /// from the ramps within 5e-5 of the `f64` form, and no further from it than the loop, whose `f32`
+    /// phase carries about 7e-4 by the end of a full frame; and within 2e-3 of the loop's output
+    /// everywhere, the ramps included (the loop's own error is most of that).
     #[test]
-    fn complex_synthesis_is_the_indexed_form_bit_for_bit() {
+    fn complex_synthesis_is_closer_to_the_exact_waveform_than_the_libm_loop() {
         let mut state = 0x2545_F491_4F6C_DD1Du64;
-        let mut tones = |n: usize| -> Vec<u8> {
-            (0..n)
-                .map(|_| {
-                    state ^= state << 13;
-                    state ^= state >> 7;
-                    state ^= state << 17;
-                    (state % 8) as u8
-                })
-                .collect()
-        };
         let shapes = [
             (
                 GfskCfg {
@@ -943,6 +1063,17 @@ mod tests {
                 },
                 79usize,
                 1500.0f32,
+            ),
+            (
+                GfskCfg {
+                    sample_rate: 12_000.0,
+                    samples_per_symbol: 1920,
+                    bt: 2.0,
+                    hmod: 1.0,
+                    ramp_samples: 240,
+                },
+                79,
+                217.3,
             ),
             (
                 GfskCfg {
@@ -990,25 +1121,78 @@ mod tests {
             ),
         ];
         for (cfg, nsym, f0) in shapes {
-            let t = tones(nsym);
+            let t = pseudo_random_tones(&mut state, nsym);
             let n = synth_output_len(nsym, cfg.samples_per_symbol);
             let (mut got_c, mut got_s) = (vec![0.0f32; n], vec![0.0f32; n]);
             synth_complex_f32_into(&mut got_c, &mut got_s, &t, f0, 1.0, &cfg);
-            let (want_c, want_s) = complex_synthesis_with_indexed_dphi(&t, f0, &cfg);
+            let (old_c, old_s) = complex_synthesis_with_indexed_dphi(&t, f0, &cfg);
+            let (exact_c, exact_s) = exact_complex_waveform(&t, f0, &cfg);
+
+            let nramp = cfg.ramp_samples.min(n / 2);
+            let err = |c: &[f32], s: &[f32]| {
+                (nramp..n - nramp)
+                    .map(|k| {
+                        (f64::from(c[k]) - exact_c[k])
+                            .abs()
+                            .max((f64::from(s[k]) - exact_s[k]).abs())
+                    })
+                    .fold(0f64, f64::max)
+            };
+            let (e_new, e_old) = (err(&got_c, &got_s), err(&old_c, &old_s));
+            let shape = format!(
+                "nsps {}, {nsym} symbols, bt {}, {f0} Hz",
+                cfg.samples_per_symbol, cfg.bt
+            );
+            assert!(
+                e_new < 5e-5,
+                "{shape}: error {e_new:.2e} from the exact waveform"
+            );
+            assert!(
+                e_new <= e_old * 1.5 + 1e-6,
+                "{shape}: new {e_new:.2e}, loop {e_old:.2e}"
+            );
+            let apart = (0..n)
+                .map(|k| (got_c[k] - old_c[k]).abs().max((got_s[k] - old_s[k]).abs()))
+                .fold(0f32, f32::max);
+            assert!(apart < 2e-3, "{shape}: {apart:.2e} from the loop's output");
             assert!(
                 got_c
                     .iter()
-                    .zip(&want_c)
-                    .all(|(a, b)| a.to_bits() == b.to_bits())
-                    && got_s
-                        .iter()
-                        .zip(&want_s)
-                        .all(|(a, b)| a.to_bits() == b.to_bits()),
-                "nsps {}, {nsym} symbols, bt {}",
-                cfg.samples_per_symbol,
-                cfg.bt
+                    .zip(&old_c)
+                    .any(|(a, b)| a.to_bits() != b.to_bits()),
+                "{shape}: identical to the loop, so the recurrence did not run"
             );
         }
+    }
+
+    /// A modulation the three-term series does not cover keeps the `cos`/`sin` loop, bit for bit:
+    /// `hmod` 8 makes the increment `dphi_peak * 7` = 0.18 rad, above `RECURRENCE_MAX_MODULATION`.
+    #[test]
+    fn complex_synthesis_keeps_the_libm_loop_where_the_series_does_not_reach() {
+        let cfg = GfskCfg {
+            sample_rate: 12_000.0,
+            samples_per_symbol: 1920,
+            bt: 2.0,
+            hmod: 8.0,
+            ramp_samples: 240,
+        };
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let t = pseudo_random_tones(&mut state, 20);
+        let n = synth_output_len(t.len(), cfg.samples_per_symbol);
+        let (mut got_c, mut got_s) = (vec![0.0f32; n], vec![0.0f32; n]);
+        synth_complex_f32_into(&mut got_c, &mut got_s, &t, 1500.0, 1.0, &cfg);
+        let (want_c, want_s) = complex_synthesis_with_indexed_dphi(&t, 1500.0, &cfg);
+        assert!(
+            got_c
+                .iter()
+                .zip(&want_c)
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+                && got_s
+                    .iter()
+                    .zip(&want_s)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "the loop's bits changed"
+        );
     }
 
     #[test]
