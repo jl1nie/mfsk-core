@@ -44,10 +44,17 @@ refine 13.8, BP 13.3, spectrogram 7.6 ms; `Deep` OSD 94.4, fine refine 48.5, BP 
 `ffcef959` table and `tanh` work). **OSD is what is left, with `subtract`.** OSD is GF(2) bit operations and BP a gather-heavy message passing, so a wider
 SIMD is not expected to help either; that has not been tried.
 
-**Open, not explained:** `Fast`'s `subtract` is 25.8 ms in the trace (17 calls, 1.5 ms each; three runs 25.5-26.6 ms) where it was 18.8 ms at `6c4e6d0e`
-(1.1 ms each), while one `subtract` call timed alone (command 3) is 1.05 ms both then and now, and the plain `subtract` path's code has not changed on
-x86 (`fft_len` returns the length it is given there). `Normal` 78.7 -> 84.3 ms moves the same way, `Deep` does not. The whole call still fell. A cause has
-not been looked for.
+**Explained, and fixed in `subtract` (not elsewhere):** `Fast`'s `subtract` was 25.8 ms in the trace (17 calls, 1.5 ms each) where it was 18.8 ms at
+`6c4e6d0e`, while one `subtract` call timed alone is 1.05 ms. It is glibc's `malloc`: `subtract` allocated its two largest buffers on every call (`cfilt`,
+1.44 MB, and rustfft's scratch, about as large), and an allocation above the `mmap` threshold takes fresh pages and page-faults on all of them. The
+threshold rises by itself when a larger `mmap`ed block is freed; the complex-FFT downsample cache's 1.5 MB temporaries did that until `405f6e08` made
+them 768 KB real-input ones, after which `cfilt` was above it. Bisected to that commit and, in it, to `downsample.rs`; with `MALLOC_MMAP_THRESHOLD_` swept
+the step falls between 1.0 and 1.5 MB, the size of `cfilt`. Both buffers are kept per thread now (`with_work` in `engine/dsp/subtract.rs`), so the decode
+no longer depends on the threshold: `Fast` 59.8 -> 51.0 ms with `subtract` 26.2 -> 18.2 ms, the same as with the threshold fixed at 1 GB; whole calls at
+one thread now `Fast` 50.5, `Normal` 174.3, `Deep` 383.6 ms (four threads 51.0 / 155.7 / 361.5). **Other large buffers are not fixed**: the
+reference waveform and `dphi` (about 0.6 MB each), `refine_dt`'s three 360 KB trial copies, and the spectrogram's arrays are above the default 128 KB
+threshold. With the threshold set to 256 KB `Fast` is 58.0 ms against 50.8, so a process that has not yet freed anything large (a process per slot)
+can still pay for them. They are to be fixed when they are found to matter, as these were. Linux/glibc only; not measured on Apple or on a Pi.
 
 At the checkpoints of `decode_prefix` (`Normal`: 70 / 40 / 78 ms, `Deep`: 155 / 50 / 192 ms) the middle one only subtracts (`subtract` is the
 whole of it). The checkpoints move work earlier; they do not remove it. What is left after the period ends is the last figure.

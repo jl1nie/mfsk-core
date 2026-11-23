@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Subtract keeps its two largest buffers per thread, so a decode does not depend on glibc's `mmap` threshold (#761)
+
+- `subtract` allocated `cfilt` (1.44 MB for a slot) and rustfft's scratch on every call. Above glibc's `mmap` threshold each call takes fresh pages and page-faults on all of them; the threshold had been raised past `cfilt` by the old complex downsample cache's temporaries until `405f6e08` made them smaller, and then x86's `Fast` decode went 52 -> 60 ms with `subtract` 18 -> 26 ms (17 calls). Bisected to that commit, to its `downsample.rs`, and by sweeping `MALLOC_MMAP_THRESHOLD_` (the step is between 1.0 and 1.5 MB). Both buffers are per-thread work buffers now; `cfilt` is zeroed each call and rustfft runs on `process_with_scratch`, so every sample is unchanged (a test runs a subtract after others of other lengths against a fresh thread; tier A+B: no fixture moved).
+- Measured (x86, one thread): `Fast` 59.8 -> 51.0 ms, the same as with the threshold fixed at 1 GB; `Normal` 185.5 -> 174.3, `Deep` 385.3 -> 383.6. Not done: the reference waveform, `dphi` (0.6 MB each), `refine_dt`'s trial copies and the spectrogram are above the default 128 KB threshold too (`Fast` is 58.0 ms at a 256 KB threshold); they are for when they are found to matter. Linux/glibc only; not measured on Apple or a Pi. Detail: `docs/notes/FT8_SLOT_PROFILE.md`.
+
 ### Review of the #761 work: `tanh_approx` clamped to `[-1, 1]`, tests for the tables and the FFT length, comments corrected
 
 - `tanh_approx` returned 1.0000001 near its input clamp; its output is clamped now. Over every `f32` in `[0, 9]` exactly one input gave more than 1 (7.9037843, and its negative); only that output changes (1.0000001 -> 1). A product that has it as a factor moves by one ulp; the sweeps for this release run on the clamped version. Its stated error was wrong: every `f32` in `[0, 9]` gives at most 4.95e-7 (at 5.7797), not 3.5e-7, and libm `f32` 4.87e-8; the test checks that point and a 1e-5 grid instead of a 1e-3 grid that missed it.

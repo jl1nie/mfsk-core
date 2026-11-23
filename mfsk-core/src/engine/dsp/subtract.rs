@@ -756,6 +756,32 @@ mod fft_lpf {
         ec
     }
 
+    /// The two largest buffers one [`apply_with_reference`] call needs, kept per thread (#761): `cfilt`
+    /// (`nfft` complex values, 1.44 MB for a slot) and rustfft's scratch (about as large). Allocated per call
+    /// they are above glibc's `mmap` threshold unless an earlier `free` of something larger has raised it, and
+    /// then every call takes fresh pages and page-faults on all of them: 18 -> 26 ms of a `Fast` decode's 17
+    /// subtractions on x86 (59.7 -> 51.1 ms with the threshold fixed above them), which the change of an
+    /// unrelated FFT's temporaries (`405f6e08`) was enough to cause. Kept, they are allocated once per thread
+    /// and a call overwrites them (`cfilt` is zeroed), so the output does not depend on what was there.
+    #[derive(Default)]
+    struct Work {
+        cfilt: Vec<Complex32>,
+        fft: Vec<Complex32>,
+    }
+
+    std::thread_local! {
+        static WORK: core::cell::RefCell<Work> = core::cell::RefCell::new(Work::default());
+    }
+
+    /// Run `f` on this thread's [`Work`]. It is taken out while `f` runs, so a nested call (there is none)
+    /// would get an empty one rather than a second borrow; a panic in `f` loses the buffers, not the thread.
+    fn with_work<R>(f: impl FnOnce(&mut Work) -> R) -> R {
+        let mut work = WORK.with(|w| core::mem::take(&mut *w.borrow_mut()));
+        let r = f(&mut work);
+        WORK.with(|w| *w.borrow_mut() = work);
+        r
+    }
+
     /// `(lpf_half, table)` for each `lpf_half` [`cached_end_correction`] has built.
     type EndCorrectionCache = Mutex<Vec<(usize, Arc<Vec<f32>>)>>;
 
@@ -911,43 +937,56 @@ mod fft_lpf {
         let i_hi = (audio.len() as i64 - signed_start).clamp(0, nframe as i64) as usize;
 
         let nfft = fft_len(nfft);
-        let mut cfilt = vec![Complex32::new(0.0, 0.0); nfft];
-        for i in i_lo..i_hi {
-            let j = (signed_start + i as i64) as usize;
-            let rx = audio[j] as f32;
-            // camp = audio * conjg(cref) = rx*(cref_re - j*cref_im)
-            cfilt[i] = Complex32::new(rx * cref_re[i], -rx * cref_im[i]);
-        }
+        with_work(|work| {
+            let cfilt = &mut work.cfilt;
+            cfilt.clear();
+            cfilt.resize(nfft, Complex32::new(0.0, 0.0));
+            for i in i_lo..i_hi {
+                let j = (signed_start + i as i64) as usize;
+                let rx = audio[j] as f32;
+                // camp = audio * conjg(cref) = rx*(cref_re - j*cref_im)
+                cfilt[i] = Complex32::new(rx * cref_re[i], -rx * cref_im[i]);
+            }
 
-        let cw = cached_window_fft(nfft, lpf_half);
-        let (forward, inverse) = cached_plans(nfft);
-        forward.process(&mut cfilt);
-        for (c, w) in cfilt.iter_mut().zip(cw.iter()) {
-            *c *= *w;
-        }
-        inverse.process(&mut cfilt);
+            let cw = cached_window_fft(nfft, lpf_half);
+            let (forward, inverse) = cached_plans(nfft);
+            // `Fft::process` allocates its scratch (about `nfft` complex values) on every call; the
+            // same transform on a scratch kept with `cfilt`, so neither is allocated per call.
+            let need = forward
+                .get_inplace_scratch_len()
+                .max(inverse.get_inplace_scratch_len());
+            if work.fft.len() < need {
+                work.fft.resize(need, Complex32::new(0.0, 0.0));
+            }
+            let scratch = &mut work.fft[..need];
+            forward.process_with_scratch(cfilt, scratch);
+            for (c, w) in cfilt.iter_mut().zip(cw.iter()) {
+                *c *= *w;
+            }
+            inverse.process_with_scratch(cfilt, scratch);
 
-        if endcorrection && lpf_half < nframe {
-            let ec = cached_end_correction(lpf_half);
-            for (d, &factor) in ec.iter().enumerate() {
-                cfilt[d] *= factor;
-                let end_idx = nframe - 1 - d;
-                if end_idx != d {
-                    cfilt[end_idx] *= factor;
+            if endcorrection && lpf_half < nframe {
+                let ec = cached_end_correction(lpf_half);
+                for (d, &factor) in ec.iter().enumerate() {
+                    cfilt[d] *= factor;
+                    let end_idx = nframe - 1 - d;
+                    if end_idx != d {
+                        cfilt[end_idx] *= factor;
+                    }
                 }
             }
-        }
 
-        // Subtract: audio[j] -= 2*Re[cfilt(i) * cref(i)] for i=0..nframe,
-        // j = signed_start + i (same `i_lo..i_hi` range as the camp build
-        // above — identical `j` formula, so identical bounds).
-        for i in i_lo..i_hi {
-            let j = (signed_start + i as i64) as usize;
-            let z = cfilt[i] * Complex32::new(cref_re[i], cref_im[i]);
-            let sub = 2.0 * z.re;
-            let v = audio[j] as f32 - sub;
-            audio[j] = v.clamp(-32_768.0, 32_767.0) as i16;
-        }
+            // Subtract: audio[j] -= 2*Re[cfilt(i) * cref(i)] for i=0..nframe,
+            // j = signed_start + i (same `i_lo..i_hi` range as the camp build
+            // above — identical `j` formula, so identical bounds).
+            for i in i_lo..i_hi {
+                let j = (signed_start + i as i64) as usize;
+                let z = cfilt[i] * Complex32::new(cref_re[i], cref_im[i]);
+                let sub = 2.0 * z.re;
+                let v = audio[j] as f32 - sub;
+                audio[j] = v.clamp(-32_768.0, 32_767.0) as i16;
+            }
+        });
     }
 
     /// In-band residual power after a trial subtraction, `sqq` in
@@ -1200,6 +1239,44 @@ mod fft_lpf {
                     (sig + noise).round() as i16
                 })
                 .collect()
+        }
+
+        /// The per-thread work buffers leave no trace: a subtract run after others of other lengths (a
+        /// shorter buffer needs a shorter `cfilt`, a longer one a longer) gives the bits a fresh thread gives.
+        #[test]
+        fn work_buffers_reused_across_calls_leave_no_trace() {
+            let cfg = ft8_cfg();
+            let mut state = 0x1234_5678_9ABC_DEF1u64;
+            let tones: Vec<u8> = (0..79)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    (state % 8) as u8
+                })
+                .collect();
+            let run = |len: usize, freq: f32, dt: f32| -> Vec<i16> {
+                let mut audio = recording(&tones, freq, dt, len, &cfg);
+                subtract_tones_lpf_fft(&mut audio, &tones, freq, dt, &cfg, 2000, true);
+                audio
+            };
+            let fresh = |len: usize, freq: f32, dt: f32| {
+                std::thread::scope(|s| s.spawn(|| run(len, freq, dt)).join().unwrap())
+            };
+            // On this thread, in an order that grows, shrinks and grows the buffers.
+            let a = run(180_000, 1500.0, 0.10);
+            let b = run(100_000, 900.0, 0.40);
+            let c = run(200_000, 1203.7, -0.30);
+            let a_again = run(180_000, 1500.0, 0.10);
+            assert_eq!(a, a_again, "the same call after others of other lengths");
+            assert_eq!(a, fresh(180_000, 1500.0, 0.10), "against a fresh thread");
+            assert_eq!(b, fresh(100_000, 900.0, 0.40), "the shorter buffer");
+            assert_eq!(c, fresh(200_000, 1203.7, -0.30), "the longer buffer");
+            assert_ne!(
+                a,
+                recording(&tones, 1500.0, 0.10, 180_000, &cfg),
+                "the subtract did something"
+            );
         }
 
         /// One reference for the four applications changes no sample: the search lands on the same
