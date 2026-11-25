@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Decoding one known candidate: `Alignment` and `decode_candidate` (replacing `SniperRequest`, mode by mode)
+
+- **`engine::alignment::Alignment`** (`start_sample`, `freq_hz`): where a candidate sits, for a decode that does no search (not `SyncCandidate`, a search's result). **`wspr::decode_candidate(WsprInput, &WsprCandidate)`** (`WsprInput::{audio, baseband}`; `WsprCandidate::new(at)` with `.drift_hz()`, `.nblocks()`, `.confirmed()`, `.refine_drift()`): what `wspr::SniperRequest` did, from a config struct and one function; `SniperRequest::decode` now calls it. JT65, JT9 and Q65 follow, then `SniperRequest` is `#[deprecated]` and the boards' WSPR path (`SniperRequest::baseband`) and the tests move over.
+- Each option is pinned where it decides (a clean signal ignores most): drift 3 Hz found only by the refine cascade, an empty ladder, OSD accepted only through a table that holds the callsign (sigma 45, seed 0); seven mutations caught. The golden tests that use the options are `#[ignore]`d and did not catch even a wrong start sample.
+
 ### Q65: the fast-fading metric one row at a time (`FastFadingStream`)
 
 - **`fec::qra::FastFadingStream`** (new): `intrinsics_fast_fading` for a decoder that cannot hold the wide-energy spectrogram (48 KB sub-mode A, 290 KB E): `push_row` per symbol, `finish` writes the `63 x 64` metric (16 128 B kept, whatever the sub-mode), no mean energy needed in advance (the noise variance divides the logits at the end). Probabilities equal `intrinsics_fast_fading`'s to float rounding (tolerance test over all sub-modes, both models, spreads across the table; six mutations caught), `FastFadingState` to the bit. Nothing existing changed; no decode moved. The SNR estimate still reads the wide energies again after the decode.

@@ -320,26 +320,25 @@ impl<'a> SniperRequest<'a> {
 
     /// `None` when the refined sync misses `minsync2`, Fano and OSD
     /// both fail, or the payload does not unpack.
+    ///
+    /// The one decode lives in [`super::decode_candidate`]: this builds its arguments.
     pub fn decode(&self) -> Option<WsprResult> {
-        let decimated;
-        let (idat, qdat): (&[f32], &[f32]) = match self.source {
-            Source::Audio(audio) => {
-                decimated = super::baseband::decimate_to_baseband(audio);
-                (&decimated.0, &decimated.1)
+        let input = match self.source {
+            Source::Audio(samples) => super::WsprInput::audio(samples, self.sample_rate),
+            Source::Baseband { idat, qdat } => {
+                super::WsprInput::baseband(idat, qdat, self.sample_rate)
             }
-            Source::Baseband { idat, qdat } => (idat, qdat),
         };
-        super::decode::decode_at_baseband_inner(
-            idat,
-            qdat,
-            self.sample_rate,
+        let mut cand = super::WsprCandidate::new(crate::engine::alignment::Alignment::new(
             self.start_sample,
             self.freq_hz,
-            self.drift_hz,
-            self.nblocks,
-            self.confirmed,
-            self.refine_drift,
-            super::decode::Ladder::DEFAULT,
-        )
+        ))
+        .drift_hz(self.drift_hz)
+        .nblocks(self.nblocks)
+        .refine_drift(self.refine_drift);
+        if let Some(table) = self.confirmed {
+            cand = cand.confirmed(table);
+        }
+        super::decode_candidate(input, &cand)
     }
 }

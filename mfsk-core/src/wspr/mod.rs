@@ -68,6 +68,8 @@ pub mod ddc;
 // is selected, so the `--features wspr` (TX-only embedded beacon)
 // build remains valid.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+mod candidate;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod decode;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub(crate) mod decode_request;
@@ -95,6 +97,8 @@ pub mod tx;
 #[cfg(all(feature = "std", any(feature = "fft-rustfft", feature = "fft-extern")))]
 pub mod wsprd_fmt;
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub use candidate::{WsprCandidate, WsprInput, decode_candidate};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use decode::{WsprCallsignTable, WsprResult};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
