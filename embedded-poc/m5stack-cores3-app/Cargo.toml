@@ -228,6 +228,10 @@ ft4-replay = ["ft4"]
 # it bakes is why this is opt-in rather than always linked.
 ft8-bench = []
 
+# OSD in FT8's stage 3 (`MFSK_FT8_OSD=1`, `decode_pipeline::FT8_OSD`): builds `mfsk-core/osd`, the OSD fallback in a build without
+# `fft-rustfft`. **Off.** Without it `DecodeDepth::osd` is a silent no-op, so `MFSK_FT8_OSD=1` without the feature does not compile.
+ft8-osd = ["mfsk-core/osd"]
+
 # The S3 plan's stage 1 (`docs/notes/S3_GATE_OSD_ABLATION.md`): FT8's hard-sync gate, `fine_sync_12k` and OSD against the
 # shipped pipeline, stage by stage, with the stack and heap figures. Also turns on `mfsk-core/osd` through
 # `embedded-shared`; the `ft8-bench` bin does not have OSD and is the reference to run beside it on the same board.

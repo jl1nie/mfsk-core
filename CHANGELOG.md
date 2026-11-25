@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### CoreS3 / S3 apps: the hard-sync gate and OSD as switches (off)
+
+- **`dual_core::DecodeConfig::hard_sync_gate`** (default `false`; `rx_wavsim`, `m5stack-s3-app`, `m5stack-core2-app` set it) picks pass 1 with `coarse_sync_gated_spec` on the SpecBundle's spectrogram and keeps the gate's order through pass 2. The CoreS3 app reads it from `MFSK_FT8_GATE=1`; `MFSK_FT8_OSD=1` (with the new `ft8-osd` feature, which builds `mfsk-core/osd`; without the feature it does not compile) sets `DecodeDepth::osd`. Both off by default, so the shipped behaviour is unchanged by inspection (the same calls with the same arguments).
+- On the host's mirror (`mirror_gate_and_osd`, 81 phases of `qso3_busy`): gate + OSD 8.81 decodes of 20 against 6.56, gate + OSD + fine sync 11.35, no unexplained decode. **Not run on a board**; its time, stack (OSD's ~9 KB against 16 KB) and internal-DRAM floor are what `ft8-gate-bench` is for. `docs/notes/S3_GATE_OSD_ABLATION.md`.
+
 ### FT8: the hard-sync gate from a spectrogram you already hold (`coarse_sync_gated_spec`)
 
 - **`ft8::decode_block::coarse_sync_gated_spec(spec, freq_min, freq_max, sync_min, keep, sync_lag_s, fill)`** (new, building-block tier): `coarse_sync_gated` read from a `Spectrogram`, which is what the boards' `stage1_inc` builds during capture; on a whole slot (`fill: None`) it returns `coarse_sync_gated`'s candidates bit for bit. `SpecFill { valid_rows, gate_block2 }` describes a streaming spectrogram: the hard-sync count skips unmeasured rows (they read as tone 0); `gate_block2 = true` is `PartialBlock2::Gate` and costs recall (116 / 168 against 216 / 269 of `jt9`'s 402 at 15 / 30 candidates), so the boards' default stays off. Existing callers are unchanged.

@@ -43,8 +43,9 @@ use alloc::vec::Vec;
 use mfsk_core::engine::sync::{bootstrap_dt_median, SyncCandidate};
 use mfsk_core::ft8::decode::{DecodeDepth, DecodeResult};
 use mfsk_core::ft8::decode_block::{
-    coarse_sync_with_lag, fine_sync_12k, process_candidates_into_with_cs_scratch_tuned,
-    refine_candidates_into, RefinedCandidate, Spectrogram,
+    coarse_sync_gated_spec, coarse_sync_with_lag, fine_sync_12k,
+    process_candidates_into_with_cs_scratch_tuned, refine_candidates_into, RefinedCandidate,
+    SpecFill, Spectrogram,
 };
 
 use crate::internal_pool::{cs_scratch_main, cs_scratch_worker};
@@ -321,6 +322,25 @@ pub struct DecodeConfig {
     /// decode on `qso2` falls from 4.96 to 4.65 without it, and
     /// `qso3_busy` from 8.29 to 8.00.
     pub fine_sync: bool,
+    /// Pick pass 1 by the hard-sync gate instead of by coarse score
+    /// ([`mfsk_core::ft8::decode_block::coarse_sync_gated_spec`]): the
+    /// candidates are the ones whose 21 Costas symbols mostly have the
+    /// expected tone as the strongest of the 8 bins, read from the same
+    /// spectrogram `stage1_inc` built, and **that order is the ranking**
+    /// (the first `max_cand` of the ready half and of the deferred half
+    /// go to pass 2, not the best by block-0 quality, which undoes it).
+    ///
+    /// **Off, and nothing measured on a board yet.** On the host's mirror
+    /// of this function (`mfsk-core/tests/ft8_embedded_pipeline_mirror.rs`,
+    /// `mirror_gate_and_osd`, 81 phases of `qso3_busy`) the gate alone adds
+    /// 0.4 decodes of 20 (6.56 to 6.98); with OSD (`depth`) it adds 2.25
+    /// (8.81), and with `fine_sync` as well 4.8 (11.35), with no unexplained
+    /// decode. Its own cost on the board is the unmeasured part: it scores
+    /// the whole band on one core from the spectrogram (the allsum
+    /// `stage1_inc` built is not used), where `coarse_sync_split_with_allsum`
+    /// splits the score over both cores. `FT8_BLOCK2_GATE` applies as for
+    /// the score search. `docs/notes/S3_GATE_OSD_ABLATION.md`.
+    pub hard_sync_gate: bool,
     /// Stop claiming stage-3 candidates this many milliseconds before
     /// this station's key-up, [`FT8_KEY_UP_AFTER_SLOT_END_US`] past the
     /// slot boundary. `0` leaves only [`budget_ms`](Self::budget_ms).
@@ -614,16 +634,34 @@ pub fn run_speculative_slot(
         }
     }
     pass2_timing_reset();
-    let pass1: Vec<SyncCandidate> = coarse_sync_split_with_allsum(
-        &spec.spec,
-        cfg.freq_min,
-        cfg.freq_max,
-        cfg.sync_min,
-        cfg.pass1_limit,
-        &spec.allsum_head,
-        &spec.allsum_tail,
-        FT8_BLOCK2_GATE.then_some(spec.valid_rows),
-    );
+    let pass1: Vec<SyncCandidate> = if cfg.hard_sync_gate {
+        coarse_sync_gated_spec(
+            &spec.spec,
+            cfg.freq_min,
+            cfg.freq_max,
+            cfg.sync_min,
+            cfg.pass1_limit,
+            Some(sync_lag_s()),
+            Some(SpecFill {
+                valid_rows: spec.valid_rows,
+                gate_block2: FT8_BLOCK2_GATE,
+            }),
+        )
+        .into_iter()
+        .map(|c| c.0)
+        .collect()
+    } else {
+        coarse_sync_split_with_allsum(
+            &spec.spec,
+            cfg.freq_min,
+            cfg.freq_max,
+            cfg.sync_min,
+            cfg.pass1_limit,
+            &spec.allsum_head,
+            &spec.allsum_tail,
+            FT8_BLOCK2_GATE.then_some(spec.valid_rows),
+        )
+    };
     let t_coarse_done = unsafe { esp_timer_get_time() };
 
     // Two-block candidates, counted and not acted on. See
@@ -801,6 +839,12 @@ pub fn run_speculative_slot(
         pass1.into_iter().partition(&is_ready);
     let n_ready = ready.len();
     let n_deferred = deferred.len();
+    // the gate's order is the ranking: its first candidates go to pass 2, not the best of them by block-0
+    // quality (`refine_candidates_into` re-ranks what it is given). The counts above stay what coarse found.
+    let (mut ready, mut deferred) = (ready, deferred);
+    if cfg.hard_sync_gate {
+        ready.truncate(early_budget);
+    }
 
     let mut n_early_refined = 0usize;
     // Decodes completed before the slot boundary — the ones in time to
@@ -941,6 +985,9 @@ pub fn run_speculative_slot(
         } else {
             cfg.max_cand.saturating_sub(n_early_refined)
         };
+        if cfg.hard_sync_gate {
+            deferred.truncate(max_cand_late);
+        }
         if max_cand_late > 0 && now_us() < deadline_us {
             let p2 = pass2_split(slot_audio, deferred, max_cand_late);
             let late = stage3_split(

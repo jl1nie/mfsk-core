@@ -207,6 +207,7 @@ where
             // Fine sync is measured on the CoreS3 only (2026-09-17);
             // this board's slot budget has not been checked against it.
             fine_sync: false,
+            hard_sync_gate: false,
             key_up_guard_ms: 0,
             // Off with the key-up guard: these boards do not transmit
             // and their wav_sim sources are not paced to a slot clock.

@@ -194,6 +194,38 @@ const FT8_FINE_SYNC: bool = match option_env!("MFSK_FT8_FINE_SYNC") {
     None => false,
 };
 
+/// `dual_core::DecodeConfig::hard_sync_gate` — pass 1 picked by the hard-sync gate from the spectrogram, its order the ranking.
+///
+/// **Off, and not measured on a board.** `MFSK_FT8_GATE=1` turns it on. On the host's mirror of this pipeline
+/// (`mirror_gate_and_osd`) it adds 0.4 decodes of 20 on `qso3_busy` alone and 2.25 together with OSD
+/// (`MFSK_FT8_OSD`), with no unexplained decode; its cost here is the unknown (it scores on one core).
+/// `docs/notes/S3_GATE_OSD_ABLATION.md`, and `ft8-gate-bench` is the bench that measures it.
+const FT8_HARD_SYNC_GATE: bool = match option_env!("MFSK_FT8_GATE") {
+    Some(s) => parse_u32(s) != 0,
+    None => false,
+};
+
+/// OSD in stage 3 (`DecodeDepth { osd: true, ..EMBEDDED }`). **Off.** `MFSK_FT8_OSD=1` turns it on and **needs
+/// `--features ft8-osd`** (which builds `mfsk-core/osd`); without the feature `DecodeDepth::osd` is a silent no-op, so a
+/// build that asks for it without it does not compile. OSD is a time and battery decision this board's own notes keep
+/// off (`CORES3_FT8_SLOT_BUDGET.md`): FT4 on an S3 measured +2 345 ms over 31 candidates for it, FT8's own cost on a
+/// board is unmeasured (`ft8-gate-bench`). Its arrays are on the stack (about 9 KB against 16 KB).
+const FT8_OSD: bool = match option_env!("MFSK_FT8_OSD") {
+    Some(s) => parse_u32(s) != 0,
+    None => false,
+};
+#[cfg(not(feature = "ft8-osd"))]
+const _: () = assert!(
+    !FT8_OSD,
+    "MFSK_FT8_OSD=1 needs --features ft8-osd (mfsk-core/osd); without it OSD silently does nothing"
+);
+
+/// The stage-3 depth: the board's `EMBEDDED`, with OSD when [`FT8_OSD`].
+const FT8_DEPTH: DecodeDepth = DecodeDepth {
+    osd: FT8_OSD,
+    ..DecodeDepth::EMBEDDED
+};
+
 /// `dual_core::DecodeConfig::fine_sync_min_slack_ms` — how much of the
 /// period must still be ahead for fine sync to earn its ~292 ms.
 ///
@@ -494,6 +526,12 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
              {FT8_SEARCH_LAG_WIDE_S:.2} s (old), arm N = {FT8_SEARCH_LAG_S:.2} s"
         );
     }
+    log::info!(
+        "decode pipeline: gate {} osd {} fine_sync {} (hard-sync gate / OSD / fine sync; see ft8-gate-bench)",
+        FT8_HARD_SYNC_GATE,
+        FT8_OSD,
+        FT8_FINE_SYNC
+    );
     log::info!(
         "decode pipeline: share_cand {}",
         if FT8_SHARE_CAND_AB == 0 {
@@ -918,9 +956,10 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
             max_cand: MAX_CAND,
             q_thresh: DEFAULT_Q_THRESH,
             bp_max_iter: mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
-            depth: DecodeDepth::EMBEDDED,
+            depth: FT8_DEPTH,
             budget_ms: FT8_BUDGET_MS,
             fine_sync: FT8_FINE_SYNC,
+            hard_sync_gate: FT8_HARD_SYNC_GATE,
             key_up_guard_ms: FT8_KEY_UP_GUARD_MS,
             fine_sync_min_slack_ms: FT8_FINE_SYNC_MIN_SLACK_MS,
             share_cand_budget: share_cand,

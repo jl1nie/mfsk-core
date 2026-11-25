@@ -116,6 +116,25 @@ What to read first: `us_fine` of `ship+fine` (the board's `fine_sync_split` is d
 count of candidates it may have been tried on), `stack_free_min` after `gate+fine` and after `gate+fine+osd` (OSD's stack against the 16 KB main task), and
 `min_free_internal` (the plan's floor is 12 KB).
 
+## In the board's pipeline, switched off (`dual_core.rs`, `decode_pipeline.rs`; **not run on a board**)
+
+`DecodeConfig::hard_sync_gate` (default `false`, every constructor sets it) replaces `coarse_sync_split_with_allsum` with `coarse_sync_gated_spec` on
+the SpecBundle's spectrogram (`SpecFill` from its `valid_rows`, the board's lag window, `FT8_BLOCK2_GATE` as before) and, with it on, takes the first
+`early_budget` of the ready half and the first `max_cand_late` of the deferred half to pass 2 so that the gate's order is not undone by
+`refine_candidates_into`'s re-rank (the mirror's `gate` arm does the same). With it off the code path is the same calls with the same arguments as before.
+
+The CoreS3 app has two compile-time knobs, both off, in the style of `MFSK_FT8_FINE_SYNC`: `MFSK_FT8_GATE=1` and `MFSK_FT8_OSD=1`. OSD needs
+`--features ft8-osd` (which builds `mfsk-core/osd`); **asking for it without the feature does not compile** (a `const` assertion), because without it
+`DecodeDepth::osd` silently does nothing and a log that says "osd" would lie. The start-up log says which are on (`decode pipeline: gate .. osd .. fine_sync ..`).
+To try it: `MFSK_FT8_GATE=1 MFSK_FT8_OSD=1 cargo build --release --features ft8-osd`.
+
+**Fine sync is off on the board** (`FT8_FINE_SYNC`: its ~292 ms did not fit the early path, `cut` rose and slots ran past key-up on a radio, 2026-09-19; and
+`FT8_FINE_SYNC_MIN_SLACK_MS` 2 s against a steady slack of 1.43 s keeps it unreachable). So the configuration that is practical today is the mirror's
+**gate + OSD without fine sync**: 8.81 decodes of 20 on `qso3_busy` against the shipped 6.56 (+2.25), the same 13 distinct known signals as the full arm. Whether the gate and OSD fit
+the board's time is exactly what `ft8-gate-bench` and then a radio say.
+
+What is not covered by any test: `dual_core.rs` runs only on the board (the mirror is a re-implementation of it, not a test of it).
+
 ## Caveats (read before relying on this)
 
 - **Host only.** LX7 times, PSRAM effects and the dual-core split are not in any of it. In particular `fine_sync_12k`
