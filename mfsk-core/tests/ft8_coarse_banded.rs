@@ -21,8 +21,8 @@ use common::load_wav_i16;
 
 use mfsk_core::ft8::decode_block::source::{CountingSource, SliceSource};
 use mfsk_core::ft8::decode_block::{
-    HARD_SYNC_POOL, coarse_sync, coarse_sync_banded, coarse_sync_gated, coarse_sync_gated_src,
-    compute_spectrogram,
+    HARD_SYNC_POOL, coarse_sync, coarse_sync_banded, coarse_sync_gated, coarse_sync_gated_spec,
+    coarse_sync_gated_src, compute_spectrogram,
 };
 
 macro_rules! asset_path {
@@ -151,5 +151,38 @@ fn gated_coarse_sync_from_a_source_is_the_slice_version_and_reads_forward() {
             c.samples_read as usize <= passes * (slot.len() + 2048),
             "{c:?}"
         );
+    }
+}
+
+/// The gate on a spectrogram the caller already holds (`stage1_inc`'s, on the boards) is the gate on the audio:
+/// the same candidates in the same order with the same hard-sync counts, to the bit, on a whole slot. A gate
+/// that read anything the spectrogram does not hold (the audio, another band's cells) or counted differently
+/// would differ.
+#[test]
+fn gated_coarse_sync_from_a_spectrogram_is_the_audio_version() {
+    for wav in [
+        asset_path!("qso3_busy.wav"),
+        asset_path!("websdr_test1.wav"),
+    ] {
+        let slot = load_wav_i16(wav);
+        let spec = compute_spectrogram(&slot, 3000.0);
+        for (sync_min, keep) in [(1.3f32, 15usize), (1.0, 30), (0.8, 300)] {
+            let from_audio = coarse_sync_gated(&slot, 200.0, 3000.0, sync_min, keep, 4);
+            let from_spec =
+                coarse_sync_gated_spec(&spec, 200.0, 3000.0, sync_min, keep, None, false);
+            assert!(
+                from_audio.len() >= 10,
+                "{wav}: only {} candidates",
+                from_audio.len()
+            );
+            assert_eq!(from_audio.len(), from_spec.len(), "{wav} {sync_min}");
+            for (a, b) in from_audio.iter().zip(&from_spec) {
+                assert_eq!(
+                    bits(std::slice::from_ref(&a.0)),
+                    bits(std::slice::from_ref(&b.0))
+                );
+                assert_eq!(a.1, b.1, "hard-sync count");
+            }
+        }
     }
 }

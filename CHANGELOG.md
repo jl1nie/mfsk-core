@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### FT8: the hard-sync gate from a spectrogram you already hold (`coarse_sync_gated_spec`)
+
+- **`ft8::decode_block::coarse_sync_gated_spec(spec, freq_min, freq_max, sync_min, keep, valid_rows, gate_block2)`** (new, building-block tier): `coarse_sync_gated` read from a `Spectrogram`, which is what the boards' `stage1_inc` builds during capture; on a whole slot it returns `coarse_sync_gated`'s candidates bit for bit. `valid_rows` is a streaming spectrogram's fill point: the hard-sync count skips unmeasured rows (they read as tone 0). `gate_block2 = true` is `PartialBlock2::Gate` and costs recall (116 / 168 against 216 / 269 of `jt9`'s 402 at 15 / 30 candidates), so the boards' default stays off. Existing callers are unchanged.
+- Measured (host, fixed-point, `docs/notes/S3_GATE_OSD_ABLATION.md`): the gate, `fine_sync_12k` and OSD on the ESP32 driver's own Goertzel path reach 221 / 267 of 402 and `qso3_busy` 13 / 14, against the driver's 131 / 144 and 7, at 283 M instructions a slot (the driver 308 M). **Not run on a board; nothing in `embedded-poc` calls it yet.**
+
 ### FT8 band baseband: one read of the audio, subtraction on the baseband (experimental)
 
 - **`ft8::decode_block::band_bb`** (`#[doc(hidden)]`, experimental): the whole band as one complex 3 kHz baseband (`i16`, 180 KB), built in a single forward pass (`BandStream::feed`); the coarse search (`coarse_sync_gated_band`), every candidate's `cd0` and the subtraction between passes (`BandBaseband::subtract`, `subtractft8.f90`'s algorithm, a sliding window) all work on it. `GfskStream` gains `peek_complex` and `skip`.

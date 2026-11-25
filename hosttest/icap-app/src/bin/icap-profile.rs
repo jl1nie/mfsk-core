@@ -36,7 +36,7 @@ fn main() {
                 i += 2;
             }
             "--variant" => {
-                variant = Some(profile::Variant::parse(&a[i + 1]).expect("--variant v0..v8"));
+                variant = Some(profile::Variant::parse(&a[i + 1]).expect("--variant v0..v13"));
                 i += 2;
             }
             "--band-sub" => {

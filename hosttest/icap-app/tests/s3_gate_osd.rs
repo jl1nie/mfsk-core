@@ -103,3 +103,41 @@ fn gate_fine_sync_and_osd_reach_the_fir_paths_recall() {
         assert!(qso3(Variant::V9, max_cand) >= q9, "qso3_busy");
     }
 }
+
+fn decodes(v: Variant, max_cand: usize) -> BTreeMap<String, Vec<(String, f32)>> {
+    let mut runs = BTreeMap::new();
+    for (stem, slot) in slots() {
+        runs.insert(stem, profile::run_slot_variant(&slot, v, max_cand).decodes);
+    }
+    runs
+}
+
+/// The gate read from the boards' own kind of spectrogram (`coarse_sync_gated_spec`).
+///
+/// - `V12`, on a whole slot's spectrogram, is `V9` to the decode: the same messages at the same frequencies, in
+///   the same order, in every recording (the gate on a spectrogram is the gate on the audio).
+/// - `V11`, on the spectrogram as the boards have it when they search (the last 10 of 184 rows not measured,
+///   zero; `valid_rows` given; block 2 scored on the rows there are), keeps the recall: measured 216 / 269 of 402
+///   at 15 / 30 candidates against `V9`'s 221 / 267, and the busy slot's 13 / 14.
+/// - `V13` is the same with block 2 **gated** (`PartialBlock2::Gate`, the boards' `FT8_BLOCK2_GATE`, off by
+///   default): 116 / 168. It refuses every lag whose block 2 is not covered, and the recordings' signals are late.
+///   That is why it is off, and it is pinned here so that turning it on is a decision, not a drift.
+#[test]
+fn the_gate_reads_the_boards_streaming_spectrogram() {
+    for (max_cand, floor11) in [(15usize, 216usize), (30, 269)] {
+        assert_eq!(
+            decodes(Variant::V12, max_cand),
+            decodes(Variant::V9, max_cand),
+            "max_cand {max_cand}: the gate on the spectrogram is not the gate on the audio"
+        );
+        let (_, h11) = hits(Variant::V11, max_cand);
+        let (_, h13) = hits(Variant::V13, max_cand);
+        println!("max_cand {max_cand}: V11 {h11}, V13 {h13}");
+        assert!(h11 >= floor11, "V11 {h11} < {floor11}");
+        assert!(
+            h13 * 10 < h11 * 8,
+            "gating block 2 costs recall (V13 {h13} against V11 {h11}): if this no longer holds, the boards' FT8_BLOCK2_GATE is worth revisiting"
+        );
+        assert!(qso3(Variant::V11, max_cand) >= if max_cand == 15 { 13 } else { 14 });
+    }
+}

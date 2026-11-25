@@ -637,14 +637,22 @@ impl CarrierPeaks {
 /// `nsync` (which is the same count on the complex symbol spectra, past `ft8b.f90`'s `nsync <= 6` bail-out).
 /// This is the cheap stand-in for ranking a long list without running the per-candidate DFTs on all of it, as
 /// `ft8_lib`'s `ft8_find_sync` does with its hard-sync count. Used only by [`coarse_sync_gated`].
-fn spec_hard_sync(spec: &Spectrogram, bin0: usize, dt_sec: f32, tstep: f32) -> u8 {
+fn spec_hard_sync(
+    spec: &Spectrogram,
+    bin0: usize,
+    dt_sec: f32,
+    tstep: f32,
+    valid_rows: usize,
+) -> u8 {
     let mut ok = 0u8;
     for &start in COSTAS_POS.iter() {
         for (n, &expect) in COSTAS.iter().enumerate() {
             let sym = (start + n) as f32;
             let t = TX_START_OFFSET_S + dt_sec + sym * (NSPS as f32 / SAMPLE_RATE_HZ);
             let j = (t / tstep).round();
-            if j < 0.0 || j as usize >= spec.n_time {
+            // a row past `valid_rows` is not measured yet (a streaming spectrogram is zero there): it is not a miss
+            // to count nor a hit for the tone 0 it would read as
+            if j < 0.0 || j as usize >= valid_rows.min(spec.n_time) {
                 continue;
             }
             let j = j as usize;
@@ -678,6 +686,7 @@ fn score_carriers(
     external_allsum: Option<&[CoarseAcc]>,
     partial: PartialBlock2,
     hard_sync: bool,
+    hard_sync_rows: usize,
 ) -> CarrierPeaks {
     let (jstrt, jz, tone_step_bins) = (g.jstrt, g.jz, g.tone_step_bins);
     let n_freq = ib - ia + 1;
@@ -1017,7 +1026,13 @@ fn score_carriers(
         if hard_sync {
             // the candidate's start as `select_candidates` reports it: `(lag + parabola - 0.5) * tstep`
             let at = |lag: i32, q: f32| {
-                spec_hard_sync(spec, ia + fi, (lag as f32 + q - 0.5) * g.tstep, g.tstep)
+                spec_hard_sync(
+                    spec,
+                    ia + fi,
+                    (lag as f32 + q - 0.5) * g.tstep,
+                    g.tstep,
+                    hard_sync_rows,
+                )
             };
             let ns_p = at(lag_p, quanta_primary[fi]);
             nsync_primary.push(ns_p);
@@ -1186,7 +1201,16 @@ fn coarse_sync_inner(
     ) else {
         return Vec::new();
     };
-    let peaks = score_carriers(spec, g.ia, g.ib, &g, external_allsum, partial, false);
+    let peaks = score_carriers(
+        spec,
+        g.ia,
+        g.ib,
+        &g,
+        external_allsum,
+        partial,
+        false,
+        spec.n_time,
+    );
     select_candidates(&peaks, &g, sync_min, max_cand)
 }
 
@@ -1287,6 +1311,45 @@ fn banded_peaks<A: AudioSource>(
     })
 }
 
+/// [`coarse_sync_gated`] from a spectrogram the caller already has: the boards' `stage1_inc` builds the `u16`
+/// spectrogram while the slot is captured, and the gate only reads it (the score, the lazy per-carrier `allsum`
+/// and the hard-sync count), so nothing is read from the audio and nothing is rebuilt. On a whole slot
+/// (`valid_rows == None`) the candidates are [`coarse_sync_gated`]'s, bit for bit.
+///
+/// `valid_rows` is the fill point of a **streaming** spectrogram: rows from it on are zero, not measured yet.
+/// The hard-sync count skips them (an unmeasured row reads as tone 0, a false hit wherever the Costas array has
+/// a 0). What the score does with a lag whose block 2 reaches them is `gate_block2`'s: `false` scores it on the
+/// rows there are, as the boards do (they keep the lag window inside the coverage, so no lag reaches them);
+/// `true` does not score it at all (`PartialBlock2::Gate`, the boards' `FT8_BLOCK2_GATE`, an experiment left
+/// open): it needs `valid_rows`, and drops every candidate whose block 2 is not covered, which on a slot
+/// whose signals are late is most of them.
+///
+/// A deliberate divergence from WSJT-X, as [`coarse_sync_gated`]'s: the order is by hard sync, not by score.
+pub fn coarse_sync_gated_spec(
+    spec: &Spectrogram,
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    keep: usize,
+    valid_rows: Option<usize>,
+    gate_block2: bool,
+) -> Vec<(SyncCandidate, u8)> {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::CoarseSync);
+    let Some(g) = sync_grid(spec.n_time, spec.n_freq, freq_min, freq_max, None) else {
+        return Vec::new();
+    };
+    let rows = valid_rows.map_or(spec.n_time, |r| r.min(spec.n_time));
+    let partial = match valid_rows {
+        Some(valid_rows) if gate_block2 => PartialBlock2::Gate { valid_rows },
+        _ => PartialBlock2::Score,
+    };
+    let peaks = score_carriers(spec, g.ia, g.ib, &g, None, partial, true, rows);
+    let mut pool = select_candidates_with_sync(&peaks, &g, sync_min, HARD_SYNC_POOL);
+    pool.sort_by_key(|c| core::cmp::Reverse(c.1));
+    pool.truncate(keep);
+    pool
+}
+
 /// [`banded_peaks`] with the spectrogram of a band of bins from `build(lo, hi)`: from the audio, or from the
 /// band baseband (`band_bb`).
 fn banded_peaks_with<B: FnMut(usize, usize) -> Spectrogram>(
@@ -1319,6 +1382,7 @@ fn banded_peaks_with<B: FnMut(usize, usize) -> Spectrogram>(
             None,
             PartialBlock2::Score,
             hard_sync,
+            band.n_time,
         ));
     }
     Some((peaks, g))
@@ -1377,7 +1441,7 @@ mod tests {
     use super::super::super::params::{COSTAS, COSTAS_POS};
     use super::{
         NSSY, PartialBlock2, Spectrogram, bounded_sync_lag_steps, coarse_sync_inner,
-        valid_trailing_symbol_count,
+        spec_hard_sync, valid_trailing_symbol_count,
     };
 
     /// Time rows in a standard 15 s FT8 spectrogram, on whichever grid
@@ -1390,6 +1454,11 @@ mod tests {
     /// — left the arithmetic they cover with **no** coverage on the
     /// grid that ships on hardware. Derive the expectations instead.
     const N_TIME: usize = 372;
+    /// Rows of the grid actually built (see above).
+    #[cfg(not(feature = "nstep-half"))]
+    const N_TIME_GRID: usize = 372;
+    #[cfg(feature = "nstep-half")]
+    const N_TIME_GRID: usize = 184;
 
     #[test]
     fn coarse_sync_accepts_wsjtx_lag_window_without_out_of_bounds_access() {
@@ -1506,6 +1575,50 @@ mod tests {
         assert_eq!(
             valid_trailing_symbol_count(base, last - base + 1, N_TIME),
             0
+        );
+    }
+
+    /// The hard-sync count of a **streaming** spectrogram skips the rows not measured yet. One candidate is
+    /// planted (every Costas symbol's tone is the strongest of the 8 bins, `dt` 0), then the rows from the second
+    /// symbol of block 2 on are zeroed, as a `stage1_inc` spectrogram is before its fill point: given the fill
+    /// point the count is the 14 of blocks 0 and 1 and the one symbol of block 2 whose row exists, 15; the
+    /// whole-slot count of the same cells is 16, because the unmeasured row of block 2's fourth symbol reads as
+    /// tone 0 and the Costas array has a 0 there. A count that ignores the fill point (or a gate that scores
+    /// the zero rows) gives 16.
+    #[test]
+    fn hard_sync_skips_the_rows_a_streaming_spectrogram_has_not_measured_yet() {
+        use super::super::types::NSTEP;
+        let (n_freq, n_time) = (64usize, N_TIME_GRID);
+        let tstep = NSTEP as f32 / 12_000.0;
+        let row_of = |sym: usize| ((0.5 + sym as f32 * 0.16) / tstep).round() as usize;
+        let bin0 = 20usize;
+        let mut data = vec![Default::default(); n_freq * n_time];
+        #[allow(clippy::unnecessary_cast)]
+        let loud = 1000 as super::super::spectrogram::SpecCell;
+        for &start in COSTAS_POS.iter() {
+            for (n, &tone) in COSTAS.iter().enumerate() {
+                data[row_of(start + n) * n_freq + bin0 + 2 * tone] = loud;
+            }
+        }
+        let whole = Spectrogram::from_parts(n_freq, n_time, data.clone());
+        assert_eq!(
+            spec_hard_sync(&whole, bin0, 0.0, tstep, n_time),
+            21,
+            "the planted candidate"
+        );
+        // the fill point: the row of block 2's second symbol and after are not measured
+        let fill = row_of(COSTAS_POS[2] + 1);
+        for row in fill..n_time {
+            for b in 0..n_freq {
+                data[row * n_freq + b] = Default::default();
+            }
+        }
+        let partial = Spectrogram::from_parts(n_freq, n_time, data);
+        assert_eq!(spec_hard_sync(&partial, bin0, 0.0, tstep, fill), 15);
+        assert_eq!(
+            spec_hard_sync(&partial, bin0, 0.0, tstep, n_time),
+            16,
+            "the zero rows read as tone 0"
         );
     }
 }

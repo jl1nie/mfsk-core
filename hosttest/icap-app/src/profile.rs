@@ -507,6 +507,9 @@ pub fn run_slot_band_sic_with(
 /// | `V8` | coarse score order | `fine_sync_12k` | Goertzel | no (the board with time to spare) |
 /// | `V9` | hard-sync gate, **the first `max_cand` by hard sync** (no pass-2 re-rank by block-0 quality) | `fine_sync_12k` | Goertzel | yes |
 /// | `V10` | as `V9` | `fine_sync_12k` | Goertzel | no |
+/// | `V12` | as `V9`, the gate read from the whole-slot spectrogram (`coarse_sync_gated_spec`, `None`) | `fine_sync_12k` | Goertzel | yes |
+/// | `V11` | as `V9`, the gate read from the spectrogram **as the boards have it when they search**: the last [`UNMEASURED_ROWS`] rows zero, `valid_rows` given, the lag window the boards' (the coverage ceiling), block 2 scored on the rows there are | `fine_sync_12k` | Goertzel | yes |
+/// | `V13` | as `V11` but with the default lag window and block 2 gated (`PartialBlock2::Gate`, the boards' open experiment) | `fine_sync_12k` | Goertzel | yes |
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant {
     V0,
@@ -520,6 +523,9 @@ pub enum Variant {
     V8,
     V9,
     V10,
+    V11,
+    V12,
+    V13,
 }
 
 impl Variant {
@@ -536,10 +542,17 @@ impl Variant {
             "v8" => Self::V8,
             "v9" => Self::V9,
             "v10" => Self::V10,
+            "v11" => Self::V11,
+            "v12" => Self::V12,
+            "v13" => Self::V13,
             _ => return None,
         })
     }
 }
+
+/// Rows of the spectrogram the boards have not measured when they search: `SPEC_EMIT_PAIR` 87 of 92 pairs of the
+/// 184-row `nstep-half` grid, so the last 10 (0.8 s). The fixed-point harness only.
+pub const UNMEASURED_ROWS: usize = 10;
 
 /// Candidates kept by the gate before the pass-2 re-rank: `pass1_limit` of the ESP32 driver.
 pub const GATE_KEEP: usize = 30;
@@ -584,34 +597,77 @@ pub fn run_slot_variant(slot: &[i16], v: Variant, max_cand: usize) -> Run {
         | Variant::V7
         | Variant::V8
         | Variant::V9
-        | Variant::V10 => {
+        | Variant::V10
+        | Variant::V11
+        | Variant::V12
+        | Variant::V13 => {
             #[cfg(feature = "fixed-point")]
             {
                 use mfsk_core::ft8::decode_block::{
-                    DEFAULT_Q_THRESH, coarse_sync, coarse_sync_gated, compute_spectrogram,
-                    fine_sync_12k, process_candidates_into, refine_candidates_into,
+                    DEFAULT_Q_THRESH, coarse_sync, coarse_sync_gated, coarse_sync_gated_spec,
+                    compute_spectrogram, fine_sync_12k, process_candidates_into,
+                    refine_candidates_into,
                 };
                 let keep = GATE_KEEP.max(max_cand);
                 let mut cands: Vec<_> = if v == Variant::V8 {
                     let spec = compute_spectrogram(slot, 3000.0);
                     coarse_sync(&spec, 200.0, 3000.0, SYNC_MIN, keep)
+                } else if matches!(v, Variant::V11 | Variant::V12 | Variant::V13) {
+                    let mut spec = compute_spectrogram(slot, 3000.0);
+                    let valid = if matches!(v, Variant::V11 | Variant::V13) {
+                        let valid = spec.n_time - UNMEASURED_ROWS;
+                        for row in valid..spec.n_time {
+                            let (lo, hi) = (row * spec.n_freq, (row + 1) * spec.n_freq);
+                            spec.data[lo..hi].fill(Default::default());
+                        }
+                        Some(valid)
+                    } else {
+                        None
+                    };
+                    coarse_sync_gated_spec(
+                        &spec,
+                        200.0,
+                        3000.0,
+                        SYNC_MIN,
+                        keep,
+                        valid,
+                        v == Variant::V13,
+                    )
+                    .into_iter()
+                    .map(|c| c.0)
+                    .collect()
                 } else {
                     coarse_sync_gated(slot, 200.0, 3000.0, SYNC_MIN, keep, 1)
                         .into_iter()
                         .map(|c| c.0)
                         .collect()
                 };
-                if matches!(v, Variant::V9 | Variant::V10) {
+                if matches!(v, Variant::V9 | Variant::V10 | Variant::V11 | Variant::V12) {
                     cands.truncate(max_cand);
                 }
                 if matches!(
                     v,
-                    Variant::V6 | Variant::V7 | Variant::V8 | Variant::V9 | Variant::V10
+                    Variant::V6
+                        | Variant::V7
+                        | Variant::V8
+                        | Variant::V9
+                        | Variant::V10
+                        | Variant::V11
+                        | Variant::V12
+                        | Variant::V13
                 ) {
                     cands = fine_sync_12k(slot, &cands);
                 }
                 let refined = refine_candidates_into(slot, cands, max_cand);
-                let depth = if matches!(v, Variant::V2 | Variant::V7 | Variant::V9) {
+                let depth = if matches!(
+                    v,
+                    Variant::V2
+                        | Variant::V7
+                        | Variant::V9
+                        | Variant::V11
+                        | Variant::V12
+                        | Variant::V13
+                ) {
                     osd_on
                 } else {
                     DecodeDepth::EMBEDDED

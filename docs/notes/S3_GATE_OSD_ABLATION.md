@@ -48,6 +48,24 @@ below V0's 308 M. The FIR variants are twice that (596-614 M). So the gate, `fin
 instruction count of the ESP32 driver, and the FIR path doubles it; this agrees with the operation count (the FIR cascade
 is about 3.0 M multiply-adds a candidate, Goertzel about 1.2 M iterations).
 
+## The gate on the boards' own spectrogram (`coarse_sync_gated_spec`)
+
+The boards build the `u16` spectrogram while the slot is captured (`stage1_inc`) and search it about 0.9 s before the slot ends
+(`SPEC_EMIT_PAIR` 87: rows 0..173 of 184 are measured, the rest zero). `coarse_sync_gated_spec` reads the gate from such a
+spectrogram, no audio. `hosttest/icap-app/tests/s3_gate_osd.rs`, 22 recordings (of 402) and `qso3_busy` (of 20), 15 / 30 candidates:
+
+| | 22 recordings | `qso3_busy` | |
+|---|---:|---:|---|
+| V9 gate from the audio | 221 / 267 | 13 / 14 | |
+| **V12** gate from a whole-slot spectrogram | 221 / 267 | 13 / 14 | **the same decodes as V9**, in every file |
+| **V11** gate from the boards' partial spectrogram (last 10 rows zero), block 2 scored on the rows there are | **216 / 269** | 13 / 14 | what the boards do (`valid_rows` not gated) |
+| V13 the same with block 2 **gated** (`PartialBlock2::Gate`, the boards' `FT8_BLOCK2_GATE`) | 116 / 168 | 11 / 14 | refuses every lag whose block 2 is not covered |
+
+So the gate survives the unmeasured tail: -5 and +2 decodes against the whole slot. Gating block 2 is what hurts (the boards keep it off), and the
+test pins that. The hard-sync count skips rows past the fill point (an unmeasured row reads as tone 0, a false hit wherever the Costas array has a 0;
+`hard_sync_skips_the_rows_a_streaming_spectrogram_has_not_measured_yet`). The harness here searches the whole slot's lag window (±1.0 s, the
+boards' too: `EMBEDDED_SYNC_LAG_S`) on a spectrogram with the tail zeroed; the boards' own search runs on `stage1_inc`'s buffers and was not run.
+
 ## Caveats (read before relying on this)
 
 - **Host only.** LX7 times, PSRAM effects and the dual-core split are not in any of it. In particular `fine_sync_12k`
@@ -56,8 +74,7 @@ is about 3.0 M multiply-adds a candidate, Goertzel about 1.2 M iterations).
 - The harness has **no per-message dedupe** between candidates (the boards' `run_speculative_slot` has `dedup_by_message`). V9's
   extras are two copies of a strong signal at another frequency (`PA3EPP SP8NFO` 150-250 Hz from `jt9`'s 906 Hz line); they
   are attested in `profile::ATTESTED_EXTRAS` with that reason.
-- The boards run `sync_min` 1.0 and the partial spectrogram of `SPEC_EMIT_PAIR` 87; the harness uses 1.3 and the whole slot.
-  The gate on a partial spectrogram is untested (plan risk 6).
+- The boards run `sync_min` 1.0; the harness uses 1.3. The partial spectrogram is covered above (V11).
 - V9 takes the first `max_cand` by hard sync *before* fine sync; the boards fine-sync all 30 of pass 1 when there is slack. Not the same flow.
 - OSD's cost on LX7 is unmeasured for FT8 (FT4 on an S3: +2 345 ms over 31 candidates; `FT4_BENCHMARK_LOG.md` §22). Here OSD is +10 / +19 decodes
   on the recordings and +3 / +4 on the busy slot.
@@ -66,5 +83,5 @@ is about 3.0 M multiply-adds a candidate, Goertzel about 1.2 M iterations).
 
 - **The S3 needs no FIR baseband for this recall.** Stage 1's arms become: B1 the ESP32 driver (V0), V8 (the board with time to spare), V10 (gate,
   no OSD), **V9 (gate + OSD)**; V4 stays as a reference only.
-- The new library item is the gate on the boards' own spectrogram (`coarse_sync_gated_spec`), and the pass-2 re-rank is bypassed for the gate's list.
+- The new library item, the gate on the boards' own spectrogram (`coarse_sync_gated_spec`), is in. The pass-2 re-rank is bypassed for the gate's list in the harness (V9 takes the first `max_cand` by hard sync before `fine_sync_12k`); on the boards that is `dual_core.rs`'s step 2 to change.
 - OSD is decided on the board: G1 (V10) against G2 (V9) costs, with the number of candidates that reach OSD.
