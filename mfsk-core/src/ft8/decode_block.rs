@@ -58,6 +58,8 @@
 // the tree is stage-shaped (spectrogram → coarse_sync →
 // fill_symbol_spectra → per-candidate processing). The parent file
 // owns only module declarations + re-exports + tests.
+#[doc(hidden)]
+pub mod band_bb;
 mod cd0_fir;
 mod coarse_sync;
 mod fill_symbol_spectra;
@@ -74,7 +76,7 @@ mod types;
 // `mfsk_core::ft8::decode_block::*` paths.
 pub use coarse_sync::{
     HARD_SYNC_POOL, PartialBlock2, coarse_allsum_len, coarse_sync, coarse_sync_banded,
-    coarse_sync_gated, coarse_sync_gated_src, coarse_sync_with_allsum,
+    coarse_sync_gated, coarse_sync_gated_band, coarse_sync_gated_src, coarse_sync_with_allsum,
     coarse_sync_with_allsum_and_lag, coarse_sync_with_allsum_lag_and_partial,
     coarse_sync_with_allsum_lag_and_rows, coarse_sync_with_lag, coarse_sync_with_lag_and_partial,
     precompute_coarse_allsum, precompute_coarse_allsum_into,

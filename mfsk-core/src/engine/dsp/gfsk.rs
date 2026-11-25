@@ -390,6 +390,21 @@ impl GfskStream {
         n
     }
 
+    /// The phasor `cos + j sin` of the sample about to be produced, the half-cosine envelope applied: the
+    /// complex form of what [`Self::fill_f32`] writes (its `sin` part). [`Self::skip`] moves on.
+    pub fn peek_complex(&self) -> (f32, f32) {
+        let e = self.envelope(self.k);
+        (self.phasor.0 * e, self.phasor.1 * e)
+    }
+
+    /// Move `n` samples on without producing them (stops at the end of the waveform). A reference at a
+    /// lower rate than the stream's (a baseband) reads every fourth sample with `peek_complex` and `skip(4)`.
+    pub fn skip(&mut self, n: usize) {
+        for _ in 0..n.min(self.remaining()) {
+            self.advance();
+        }
+    }
+
     /// [`Self::fill_f32`] straight to i16, with no intermediate buffer
     /// — the 607 KB temporary and the 82 ms copy `synth_i16_into`
     /// spends are what this exists to avoid.

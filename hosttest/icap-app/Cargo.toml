@@ -1,0 +1,25 @@
+[package]
+name        = "icap-app-hosttest"
+version.workspace = true
+rust-version.workspace = true
+edition     = "2024"
+license     = "GPL-3.0-only"
+publish     = false
+description = "Host-side ICAP profile: runs mfsk-core's embedded FT8 path (no fft-rustfft) on 8 kHz audio under a heap meter, against the 22 real recordings. Not a library."
+
+[dependencies]
+# The embedded decode path: `alloc` + `fft-extern`, no `fft-rustfft`, no `std` (f32; the ICAP radios have an FPU / NEON).
+# `fft-extern` needs the binary to define the planner factory: `src/fft_shim.rs` does, with rustfft.
+mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "ft8", "fft-extern"] }
+rustfft = "6"
+num-complex = { version = "0.4", default-features = false }
+
+[features]
+# The ICAP profile has OSD: the floors in `tests/icap_profile.rs` are for it.
+default = ["osd"]
+# The numeric path the ESP32 boards ship: u16 spectrogram, i16 symbol DFT, `nstep-half` (184 frames).
+# Needs the 16-bit FFT factory too (`fft_shim`).
+fixed-point = ["mfsk-core/fixed-point"]
+# The OSD fallback of the ICAP profile (`decode_block_low_mem` only; `decode_block` is the ESP32 driver and keeps
+# `DecodeDepth::EMBEDDED`).
+osd = ["mfsk-core/osd"]

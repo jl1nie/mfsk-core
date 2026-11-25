@@ -1324,6 +1324,29 @@ fn banded_peaks_with<B: FnMut(usize, usize) -> Spectrogram>(
     Some((peaks, g))
 }
 
+/// [`coarse_sync_gated`] from the band baseband: the spectrogram of each band of carriers is made from
+/// [`BandBaseband`](super::band_bb::BandBaseband)'s samples (`band_bb::spectrogram_bins`), the audio is not
+/// read. The candidates are the gated search's up to the baseband's rounding.
+pub fn coarse_sync_gated_band(
+    bb: &super::band_bb::BandBaseband,
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    keep: usize,
+    n_bands: usize,
+) -> Vec<(SyncCandidate, u8)> {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::CoarseSync);
+    let Some((peaks, g)) = banded_peaks_with(freq_min, freq_max, n_bands, true, |lo, hi| {
+        bb.spectrogram_bins(lo, hi)
+    }) else {
+        return Vec::new();
+    };
+    let mut pool = select_candidates_with_sync(&peaks, &g, sync_min, HARD_SYNC_POOL);
+    pool.sort_by_key(|c| core::cmp::Reverse(c.1));
+    pool.truncate(keep);
+    pool
+}
+
 /// Keep the requested symmetric lag window when the always-read middle Costas
 /// block fits. Only pathological overrides need clamping; the first and third
 /// blocks have the same conditional bounds as WSJT-X `sync8.f90`.

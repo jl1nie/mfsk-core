@@ -1,6 +1,6 @@
 [workspace]
 members  = [
-    "mfsk-core", "mfsk-ffi", "mfsk-ffi-abi", "hosttest/mfsk-app-shared",
+    "mfsk-core", "mfsk-ffi", "mfsk-ffi-abi", "hosttest/mfsk-app-shared", "hosttest/icap-app",
     # Sample apps: mfsk-skimmer's shared core and its CLI, and the
     # std-only IQ clients they build on (`apps/sdr-io`). The
     # Tauri GUI beside them (`apps/skimmer/gui`) is excluded below.
