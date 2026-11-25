@@ -409,9 +409,26 @@ fn decode_block_multipass<S: AudioSample>(
     ap_hint: Option<&ApHint>,
     strictness: DecodeStrictness,
     mut on_result: Option<&mut dyn FnMut(&DecodeResult)>,
-    _low_mem: Option<usize>,
+    low_mem: Option<usize>,
 ) -> Vec<DecodeResult> {
     use alloc::vec::Vec as AllocVec;
+    // `decode_block_low_mem` is the same decode in every build (a public function must not change meaning with a
+    // cargo feature): the host body routes it to the low-memory profile too, as the embedded one does below.
+    if let Some(coarse_bands) = low_mem {
+        return decode_low_mem_src(
+            &mut super::source::SliceSource(audio),
+            freq_min,
+            freq_max,
+            sync_min,
+            depth,
+            max_cand,
+            LowMem {
+                coarse_bands,
+                ..LowMem::default()
+            },
+            bp_max_iter,
+        );
+    }
     #[cfg(feature = "std")]
     let trace_stage = stage_trace_enabled();
     let mut work: AllocVec<i16> = audio.iter().map(|s| s.to_i16()).collect();

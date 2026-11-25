@@ -1,6 +1,6 @@
 # Mid-range embedded FT8: keep the band as one baseband (evaluation)
 
-2026-11-25. An experiment, not a design: nothing here is decided, and nothing is committed. It answers one question for
+2026-11-25. An experiment, not a design: nothing here is decided (committed, unpushed, 2026-11-25). It answers one question for
 the targets between the ESP32 line and a PC: **what should a decoder keep between its phases when it cannot hold the
 slot?** It follows `ICAP_EMBEDDED_ANALYSIS.md`, which found that the gap to ICAP's own `ft8dec` was what each phase
 leaves in RAM, not the algorithms.
@@ -161,7 +161,7 @@ The merge gate (tier A+B) is 1422 passed, 0 failed (1417 before, plus these 5). 
 
 ## 5. Things the work turned up
 
-- **The ESP32 boards do not build at `main`** (since `2ad660fe`, #761, 2026-11-23): `ft8/stage_timing.rs` uses
+- **The ESP32 boards did not build at `main`** (fixed in `0b85995b`; since `2ad660fe`, #761, 2026-11-23): `ft8/stage_timing.rs` uses
   `AtomicU64`, which Xtensa lacks. Host CI never compiles `embedded-poc`, so nothing noticed. With that one type
   swapped, temporarily and since restored, `cargo check --release` passes for `m5stack-cores3-app`, `-s3-app`,
   `-core2-app` and `m5stack-s3` **with this work's changes**. Not flashed.

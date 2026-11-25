@@ -98,7 +98,7 @@ impl CellScale {
 
 /// The total scale-down of the 3840-point `i16` spectrogram FFT: esp-dsp's 256-point `sc16` kernel halves at
 /// each of its 8 stages, the 15-point step of the mixed-radix plan (`Plan3840Sc16`) does not scale. Measured:
-/// with it the band spectrogram's strongest cell is the audio's to 3 % (`the_band_spectrogram_is_the_audios`).
+/// with it the band spectrogram's main-lobe cells are the audio's to 3 % (`the_band_spectrogram_is_the_audios`), measured against the **host's** fixed-point spectrogram (`Plan3840Sc16`, documented as bit-exact to the board's esp-dsp kernel but not checked on one).
 #[cfg(feature = "fixed-point")]
 const FIXED_FFT_SCALE: f32 = 256.0;
 
@@ -167,7 +167,10 @@ impl BandBaseband {
     }
 
     /// Subtract the signal of `tones` (tone 0 at `freq_hz`, frame start `0.5 + dt_sec` s) from the baseband:
-    /// `subtractft8.f90`'s algorithm on the baseband (`docs/notes/MIDRANGE_EMBEDDED_EVAL.md` §4). The GFSK
+    /// `subtractft8.f90`'s algorithm on the baseband (**divergences from it**: it runs on the 3 kHz complex baseband, not on 12 kHz real
+    /// audio, so there is no factor 2 of the real signal's; its `NFILT` window is 1000 taps at 3 kHz for WSJT-X's 4000 at 12 kHz; and the
+    /// `cos^2` filter slides in O(1) per sample instead of the frequency-domain convolution of `cw`, to the same result, tested
+    /// against the direct convolution to 2 LSB) (`docs/notes/MIDRANGE_EMBEDDED_EVAL.md` §4). The GFSK
     /// reference `r` at the baseband's rate comes from [`GfskStream`] (every fourth sample of the 12 kHz
     /// waveform, carrier `freq_hz - 1600`); its complex amplitude is `cos^2`-lowpassed `bb * conj(r)` (width
     /// `NFILT = 4000` at 12 kHz, 1000 here: [`SUB_H`] each side), with the truncated window's weight
@@ -747,7 +750,7 @@ mod tests {
     }
 
     /// The spectrogram made from the band baseband is the audio's, cell for cell, where there is a signal: on
-    /// the cells above 100x the median power the ratio is within 10 % on the main lobes (above 3000x) and 35 % on
+    /// the cells above 100x the median power the ratio is within 6 % on the main lobes (above 3000x; 3 % measured) and 35 % on
     /// the side lobes of the rectangular window (whose frame edges the filters round), and the noise power
     /// agrees to 10 %. A scale off by the 16 of the quarter-rate
     /// frame, a wrong centre bin or a frame grid off by one baseband sample moves it far more. Runs in the

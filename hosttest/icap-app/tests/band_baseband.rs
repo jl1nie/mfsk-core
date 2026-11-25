@@ -45,10 +45,24 @@ const THREE_PASS_30: usize = 353;
 #[cfg(feature = "fixed-point")]
 const THREE_PASS_30: usize = 350;
 
-/// Decodes `jt9` lacks, no other decoder lists, and nothing attests: `EA8PP JH0INP PM96` (websdr_test7, f32)
-/// and `EA8ESB JM5WSV OP12` (websdr_test5, fixed-point), each at about 940 Hz, found in the subtraction passes.
-/// Possible phantoms (a CRC-14 match is 1 in 16 384 per attempt); not investigated further. One per build.
-const MAX_UNEXPLAINED: usize = 1;
+/// Decodes `jt9` lacks, no other decoder lists, and nothing attests, **by identity** (debt, not a count): `EA8PP JH0INP PM96`
+/// (websdr_test7, f32) and `EA8ESB JM5WSV OP12` (websdr_test5, fixed-point), each at about 940 Hz, found in the subtraction
+/// passes. Possible phantoms (a CRC-14 match is 1 in 16 384 per attempt, and the LDPC parity must also hold, which this does not
+/// quantify); **both sit near 940 Hz in different recordings, which is not what chance matches would do and has not been
+/// explained**. A different unexplained decode fails, one of these disappearing does not.
+const UNEXPLAINED_DEBT: &[(&str, &str)] = &[
+    ("websdr_test7", "EA8PP JH0INP PM96"),
+    ("websdr_test5", "EA8ESB JM5WSV OP12"),
+];
+
+fn assert_only_known_debt(s: &profile::Score, what: &str) {
+    for (stem, msg) in &s.unexplained_list {
+        assert!(
+            UNEXPLAINED_DEBT.contains(&(stem.as_str(), msg.as_str())),
+            "{what}: a new unexplained decode: {stem} '{msg}' (known debt: {UNEXPLAINED_DEBT:?})"
+        );
+    }
+}
 
 fn slots() -> Vec<(String, Vec<i16>)> {
     profile::stems()
@@ -92,11 +106,7 @@ fn one_read_of_the_audio_meets_the_floor() {
         s.hits, s.reference, s.extras, s.unexplained
     );
     assert!(s.hits >= ONE_PASS_30, "recall {} < {ONE_PASS_30}", s.hits);
-    assert!(
-        s.unexplained <= MAX_UNEXPLAINED,
-        "{} unexplained",
-        s.unexplained
-    );
+    assert_only_known_debt(&s, "one pass");
 }
 
 /// Three passes with the subtraction on the baseband: more of `jt9`'s decodes than ICAP's own decoder finds
@@ -121,11 +131,7 @@ fn subtraction_on_the_baseband_meets_the_floor() {
             "max_cand {max_cand}: recall {} < {floor}",
             s.hits
         );
-        assert!(
-            s.unexplained <= MAX_UNEXPLAINED,
-            "max_cand {max_cand}: {} unexplained",
-            s.unexplained
-        );
+        assert_only_known_debt(&s, &format!("three passes, {max_cand} candidates"));
     }
 }
 
@@ -179,11 +185,7 @@ fn subtraction_without_f64_keeps_the_recall() {
         "recall {} < {THREE_PASS_15}",
         s.hits
     );
-    assert!(
-        s.unexplained <= MAX_UNEXPLAINED,
-        "{} unexplained",
-        s.unexplained
-    );
+    assert_only_known_debt(&s, "f32 subtraction");
 
     let slot12 = wav::load_i16(profile::asset_path("qso3_busy"));
     let slot = resample(&resample(&slot12, 12_000, 8_000), 8_000, 12_000);

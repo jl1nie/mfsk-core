@@ -155,7 +155,7 @@ response test at the aliasing frequencies (`cd0_fir.rs`), and a weak-signal coun
 4. **Take the native rate of the target** (8 kHz here) where the protocol code allows it. A rate conversion in front
    of a 12 kHz decoder costs compute twice (the conversion, then 1.5x the samples).
 5. **Rank candidates cheaply and widely, evaluate few.** The coarse score ranks the ghosts of a strong signal above
-   weaker real ones (`qso3_busy`: first 30 by score hold 9 real signals, by hard sync 21). A hard-sync count read from
+   weaker real ones (`qso3_busy`: first 30 by score hold 9 real signals, by hard sync 21; measured once by hand, no test pins it). A hard-sync count read from
    the spectrogram (no DFT, no audio) is the gate; both ft8dec and `jt9`'s `ft8b` have one.
 6. **Test filters at the frequencies that alias, and test sensitivity near the threshold.** A clean, strong signal
    passes a wrong filter and a wrong symbol grid. Mutation-check the new tests (this round: 6 filter/grid mutations;

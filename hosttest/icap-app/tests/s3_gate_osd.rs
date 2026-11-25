@@ -94,12 +94,9 @@ fn gate_fine_sync_and_osd_reach_the_fir_paths_recall() {
             "V9: a decode jt9 lacks that is not attested"
         );
         // the finding itself: the cheap pieces keep 9 tenths of the FIR path's gain over the ESP32 driver
-        assert!(
-            (h9 - h0) * 10 >= (h4 - h0) * 9,
-            "V9 gains {} of V4's {}",
-            h9 - h0,
-            h4 - h0
-        );
+        // i64: a V9 below V0 must fail here, not wrap
+        let (g9, g4) = (h9 as i64 - h0 as i64, h4 as i64 - h0 as i64);
+        assert!(g9 * 10 >= g4 * 9, "V9 gains {g9} of V4's {g4}");
         assert!(qso3(Variant::V9, max_cand) >= q9, "qso3_busy");
     }
 }
@@ -130,7 +127,12 @@ fn the_gate_reads_the_boards_streaming_spectrogram() {
             decodes(Variant::V9, max_cand),
             "max_cand {max_cand}: the gate on the spectrogram is not the gate on the audio"
         );
-        let (_, h11) = hits(Variant::V11, max_cand);
+        let (s11, h11) = hits(Variant::V11, max_cand);
+        assert_eq!(
+            s11.unexplained, 0,
+            "V11 (the gate on the boards' partial spectrogram): {:?}",
+            s11.unexplained_list
+        );
         let (_, h13) = hits(Variant::V13, max_cand);
         println!("max_cand {max_cand}: V11 {h11}, V13 {h13}");
         assert!(h11 >= floor11, "V11 {h11} < {floor11}");

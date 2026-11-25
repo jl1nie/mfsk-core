@@ -21,8 +21,9 @@ use common::load_wav_i16;
 
 use mfsk_core::ft8::decode_block::source::{CountingSource, SliceSource};
 use mfsk_core::ft8::decode_block::{
-    HARD_SYNC_POOL, coarse_sync, coarse_sync_banded, coarse_sync_gated, coarse_sync_gated_spec,
-    coarse_sync_gated_src, compute_spectrogram,
+    HARD_SYNC_POOL, LowMem, coarse_sync, coarse_sync_banded, coarse_sync_gated,
+    coarse_sync_gated_spec, coarse_sync_gated_src, compute_spectrogram, decode_block_low_mem,
+    decode_block_low_mem_src,
 };
 
 macro_rules! asset_path {
@@ -185,4 +186,40 @@ fn gated_coarse_sync_from_a_spectrogram_is_the_audio_version() {
             }
         }
     }
+}
+
+/// `decode_block_low_mem` is the low-memory decode in **every** build: here, with `fft-rustfft` (where `decode_block` is
+/// the host's 3-pass decoder), it gives what `decode_block_low_mem_src` gives over a `SliceSource`, not `decode_block`'s.
+/// A host body that ignored the low-memory request (it did, once) would give the 3-pass decoder's messages and frequencies
+/// instead, and differ.
+#[test]
+fn the_low_memory_decode_is_the_same_decode_in_every_build() {
+    use mfsk_core::ft8::decode::DecodeDepth;
+    let slot = load_wav_i16(asset_path!("qso3_busy.wav"));
+    let key = |r: &[mfsk_core::ft8::decode::DecodeResult]| -> Vec<(Vec<u8>, u32, u32)> {
+        r.iter()
+            .map(|d| {
+                (
+                    d.message77().to_vec(),
+                    d.freq_hz.to_bits(),
+                    d.dt_sec.to_bits(),
+                )
+            })
+            .collect()
+    };
+    let a = decode_block_low_mem(&slot, 200.0, 3000.0, 1.3, DecodeDepth::EMBEDDED, 15, 4);
+    let b = decode_block_low_mem_src(
+        &mut SliceSource(&slot[..]),
+        200.0,
+        3000.0,
+        1.3,
+        DecodeDepth::EMBEDDED,
+        15,
+        LowMem {
+            coarse_bands: 4,
+            ..LowMem::default()
+        },
+    );
+    assert!(!a.is_empty(), "the busy slot decodes something");
+    assert_eq!(key(&a), key(&b));
 }

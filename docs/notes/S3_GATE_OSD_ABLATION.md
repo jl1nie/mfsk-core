@@ -43,7 +43,7 @@ attempt postmortem": PSRAM bandwidth) and which costs more instructions than Goe
 - Re-ranking the gate's list by block-0 quality (the pass-2 step of the boards) **costs** recall at 15 candidates: V7 185 against V9 221.
 - **V9 has 94 % / 91 % of V4's recall gain over V0 on the recordings and all of it on `qso3_busy`**, with no FIR baseband.
 
-**Cost** (instructions per slot, `qso3_busy`, 12 kHz input so the harness's resampler is not counted; host, not LX7): V9 283 M is
+**Cost** (reproduce: `/usr/bin/time -l target/fx/release/icap-profile --rate 12000 --max-cand 15 --variant vN --wav embedded-poc/assets/qso3_busy.wav` repeated 21 times and once, the difference over 20; instructions per slot, `qso3_busy`, 12 kHz input so the harness's resampler is not counted; host, not LX7): V9 283 M is
 below V0's 308 M. The FIR variants are twice that (596-614 M). So the gate, `fine_sync_12k` and OSD do not raise the
 instruction count of the ESP32 driver, and the FIR path doubles it; this agrees with the operation count (the FIR cascade
 is about 3.0 M multiply-adds a candidate, Goertzel about 1.2 M iterations).

@@ -188,6 +188,8 @@ pub struct Score {
     pub extras: usize,
     /// Of those, the ones not in [`ATTESTED_EXTRAS`]: phantoms until shown otherwise.
     pub unexplained: usize,
+    /// `(recording, message)` of each of them, so that a test can pin **which** decodes are debt, not how many.
+    pub unexplained_list: Vec<(String, String)>,
 }
 
 /// Pair each decode with an unused reference line of the same message within [`FTOL_HZ`]; a decode with
@@ -213,6 +215,7 @@ pub fn score(runs: &BTreeMap<String, Vec<(String, f32)>>) -> Score {
                     s.extras += 1;
                     if !ATTESTED_EXTRAS.iter().any(|a| a.0 == stem && a.1 == m) {
                         s.unexplained += 1;
+                        s.unexplained_list.push((stem.clone(), m.clone()));
                     }
                 }
             }

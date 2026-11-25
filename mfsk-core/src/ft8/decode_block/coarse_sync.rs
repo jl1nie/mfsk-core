@@ -1201,6 +1201,14 @@ fn coarse_sync_inner(
     ) else {
         return Vec::new();
     };
+    // `profile-coarse`: the sub-stage timing the boards read (`embedded-poc/m5stack-s3/logs/*.log`), as before the
+    // per-carrier rewrite. `allsum` is 0 here: the boards pass `stage1_inc`'s (`external_allsum`, built during capture), and
+    // without one it is made carrier by carrier inside `score`.
+    #[cfg(all(
+        feature = "profile-coarse",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
+    let t_setup = std::time::Instant::now();
     let peaks = score_carriers(
         spec,
         g.ia,
@@ -1211,7 +1219,27 @@ fn coarse_sync_inner(
         false,
         spec.n_time,
     );
-    select_candidates(&peaks, &g, sync_min, max_cand)
+    #[cfg(all(
+        feature = "profile-coarse",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
+    let t_score = std::time::Instant::now();
+    let cands = select_candidates(&peaks, &g, sync_min, max_cand);
+    #[cfg(all(
+        feature = "profile-coarse",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
+    {
+        let t_end = std::time::Instant::now();
+        let (n_freq, n_lag) = (g.ib - g.ia + 1, 2 * g.jz + 1);
+        let score_us = (t_score - t_setup).as_micros();
+        let post_us = (t_end - t_score).as_micros();
+        let total_us = (t_end - t_setup).as_micros();
+        eprintln!(
+            "[coarse_sync prof] n_freq={n_freq} n_lag={n_lag}  allsum=0 score={score_us} dedupe+sort={post_us}  total={total_us} us"
+        );
+    }
+    cands
 }
 
 /// [`coarse_sync`] from the audio, **one band of carriers at a time**: each band's spectrogram
@@ -1249,7 +1277,8 @@ pub const HARD_SYNC_POOL: usize = 300;
 /// count (of 21).
 ///
 /// Why: the coarse score ranks the ghosts of a strong signal above weaker real ones (on `qso3_busy.wav` the
-/// first 30 by score hold 9 real signals and 20 ghosts of strong ones; the first 30 by hard sync, 21 real),
+/// first 30 by score hold 9 real signals and 20 ghosts of strong ones; the first 30 by hard sync, 21 real: measured once by hand, no test
+/// pins it),
 /// so a short list by score misses real signals that a short list by hard sync keeps. The per-candidate
 /// DFT stages then see 15-30 candidates that are mostly real. **A deliberate divergence from WSJT-X**, see
 /// `spec_hard_sync` below; the decodes still pass `ft8b`'s own gates (the 21-symbol `nsync`, BP/CRC).

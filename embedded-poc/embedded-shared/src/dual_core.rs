@@ -824,7 +824,10 @@ pub fn run_speculative_slot(
     let is_ready = |c: &SyncCandidate| SpecBundle::audio_end_for_dt(c.dt_sec) <= snap_fill;
     // See `DecodeConfig::share_cand_budget`. `pass1` is in coarse-score
     // order (`coarse_sync_split_with_allsum` sorts before truncating),
-    // so its first `max_cand` entries are the set to divide.
+    // so its first `max_cand` entries are the set to divide. With
+    // `hard_sync_gate` it is in hard-sync order instead (the gate's
+    // ranking); the first `max_cand` are then the gate's, which is the
+    // set that goes to pass 2.
     let (early_budget, late_budget) = if cfg.share_cand_budget {
         let early = pass1
             .iter()

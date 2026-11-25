@@ -17,14 +17,15 @@
 //!   figure to set against that estimate (indirect calls and the IDF's C leaves are not in it),
 //! - the minimum free internal DRAM and PSRAM since boot, after each arm.
 //!
-//! Every arm runs the same stage 3 (`process_candidates_into_with_cs_scratch_tuned`, one candidate at a time, the
+//! Every arm searches the same lag window (`SYNC_LAG_S`). The timed stage 3 includes the per-candidate `vec![c]` and the growth of the
+//! results (small, and the same in every arm). Every arm runs the same stage 3 (`process_candidates_into_with_cs_scratch_tuned`, one candidate at a time, the
 //! `cs` scratch in internal DRAM from `internal_pool`, as `dual_core::stage3_split` does), so the arms differ only in
 //! how candidates are picked and refined, and in OSD. Each runs twice; the second is the one to read (the first
 //! pays for cold caches and first allocations).
 //!
 //! | arm | pass 1 | fine sync | OSD |
 //! |---|---|---|---|
-//! | `ship` | coarse score order (`coarse_sync`), 30 | no | no |
+//! | `ship` | coarse score order (`coarse_sync_with_lag`, the board's lag window), 30 | no | no |
 //! | `ship+fine` | as `ship` | `fine_sync_12k` on the 30 | no |
 //! | `gate` | `coarse_sync_gated_spec`, the first `MAX_CAND` | no | no |
 //! | `gate+fine` | as `gate` | `fine_sync_12k` on the `MAX_CAND` | no |
@@ -50,7 +51,8 @@ use alloc::vec::Vec;
 use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::ft8::decode::{DecodeDepth, DecodeResult};
 use mfsk_core::ft8::decode_block::{
-    DEFAULT_Q_THRESH, RefinedCandidate, coarse_sync, coarse_sync_gated_spec, compute_spectrogram,
+    DEFAULT_Q_THRESH, RefinedCandidate, coarse_sync_gated_spec, coarse_sync_with_lag,
+    compute_spectrogram,
     fine_sync_12k, process_candidates_into_with_cs_scratch_tuned, refine_candidates_into,
 };
 use mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER;
@@ -164,7 +166,9 @@ fn run_arm(slot: &[i16], arm: Arm) -> Out {
         .map(|c| c.0)
         .collect()
     } else {
-        coarse_sync(&spec, FREQ_MIN, FREQ_MAX, SYNC_MIN, PASS1_LIMIT)
+        // the same lag window as the gate arms (`coarse_sync` alone would use the crate's 2.5 s default, which the board
+        // does not search)
+        coarse_sync_with_lag(&spec, FREQ_MIN, FREQ_MAX, SYNC_MIN, PASS1_LIMIT, SYNC_LAG_S)
     };
     drop(spec);
     let t2 = now_us();
@@ -185,7 +189,8 @@ fn run_arm(slot: &[i16], arm: Arm) -> Out {
         osd: arm.osd,
         ..DecodeDepth::EMBEDDED
     };
-    // SAFETY: one caller at a time (the bench runs on the main task, no worker); the arena was reserved at boot.
+    // SAFETY: one caller at a time (the bench runs on the one `gate_bench` thread, no worker, and nothing else claims the
+    // `Ft8Scratch` arena); the arena was reserved at boot, before this thread's stack was taken.
     let cs = unsafe { internal_pool::cs_scratch_main() };
     let mut results: Vec<DecodeResult> = Vec::new();
     for c in refined {
