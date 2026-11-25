@@ -10,7 +10,7 @@ description = "Host-side ICAP profile: runs mfsk-core's embedded FT8 path (no ff
 [dependencies]
 # The embedded decode path: `alloc` + `fft-extern`, no `fft-rustfft`, no `std` (f32; the ICAP radios have an FPU / NEON).
 # `fft-extern` needs the binary to define the planner factory: `src/fft_shim.rs` does, with rustfft.
-mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "ft8", "fft-extern"] }
+mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "ft8", "fft-extern", "internal-testing"] }
 rustfft = "6"
 num-complex = { version = "0.4", default-features = false }
 

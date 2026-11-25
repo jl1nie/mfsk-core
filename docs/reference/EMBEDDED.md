@@ -216,6 +216,7 @@ Feature reference:
 | `nstep-half` | NSTEP = NSPS/2 (vs WSJT-X-faithful NSPS/4) for the spectrogram column rate. | Auto-enabled by `fixed-point`. Don't enable independently on a host build unless you're explicitly simulating the embedded path. |
 | `parallel` | Rayon-parallel candidate processing. | Host only. Always off on embedded (no `std::thread`). |
 | `profile-coarse` | Always emits coarse_sync sub-stage timings to stderr. | Diagnosis only. |
+| `osd` | FT8's OSD fallback in a build without `fft-rustfft` (with it, OSD is always there). Without it `DecodeDepth::osd` is **ignored without an error**: check `ft8::decode_block::osd_available()`, a `const fn`, in a compile-time assert. | A board that wants OSD in stage 3. **OSD needs about 25 KB of stack** (measured from the ELF's static frames: `process_candidates_into_with_cs_scratch_tuned` 9.6 KB, `osd_strategy::try_fallback` 5.2 KB, `osd_npre` 10.3 KB), so the CoreS3's 16 KB `dsp_worker` and main stacks must be raised first (`S3_GATE_OSD_ABLATION.md`). |
 
 ## The FFT extern Rust contract
 

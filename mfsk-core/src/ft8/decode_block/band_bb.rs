@@ -15,6 +15,9 @@
 //! the centre) puts the last ~100 Hz of each end at less than full gain, and the audio's own band is 0-6 kHz.
 //!
 //! Not WSJT-X: `ft8_downsample.f90` makes each `cd0` from one big FFT of the slot.
+// Experimental, reached through `__internal::ft8_band_bb` (the `internal-testing` feature): without it nothing outside
+// this module uses the parts of it that are for the host measurements.
+#![cfg_attr(not(feature = "internal-testing"), allow(dead_code))]
 
 use alloc::vec::Vec;
 
@@ -23,7 +26,9 @@ use alloc::vec::Vec;
 use num_traits::Float;
 
 use super::cd0_fir::{BLOCK, Cd0, Cd0Filters, Scratch};
-use super::source::AudioSource;
+/// The gate on the band baseband's spectrogram (re-exported with the rest of this module in `__internal::ft8_band_bb`).
+pub use super::coarse_sync::coarse_sync_gated_band;
+use super::source::PcmSource;
 use super::spectrogram::{SpecCell, Spectrogram};
 use super::types::SAMPLE_RATE_HZ;
 use crate::engine::dsp::fir_decimate::{FirStage, design_lowpass_kaiser};
@@ -141,7 +146,7 @@ pub struct BandBaseband {
 
 impl BandBaseband {
     /// Build it from one forward read of `src`.
-    pub fn from_source<A: AudioSource>(f: &BandFilters, src: &mut A) -> Self {
+    pub fn from_source<A: PcmSource>(f: &BandFilters, src: &mut A) -> Self {
         let mut s = BandStream::new(f);
         let mut at = 0i64;
         let mut block = [0i16; 1024];
@@ -596,7 +601,7 @@ impl BandStream {
 }
 
 /// Decode the candidates `gated` from the band baseband (their `cd0`s cut from it, nothing read from the
-/// audio): [`decode_block_low_mem_src`](super::decode_block_low_mem_src)'s candidate loop.
+/// audio): [`decode_block_low_mem`](super::decode_block_low_mem)'s candidate loop.
 pub fn decode_band(
     bb: &BandBaseband,
     f: &BandFilters,
@@ -652,8 +657,10 @@ pub fn decode_band_sic(
     let mut all: Vec<DecodeResult> = Vec::new();
     let mut rep = SicReport::default();
     for _ in 0..passes {
-        let gated =
-            super::coarse_sync_gated_band(bb, freq_min, freq_max, sync_min, max_cand, bands);
+        let gated = coarse_sync_gated_band(
+            bb,
+            &super::GatedSearch::new(freq_min, freq_max, sync_min, max_cand).bands(bands),
+        );
         let found = decode_band(bb, f, &gated, depth, group);
         let fresh: Vec<DecodeResult> = found
             .into_iter()

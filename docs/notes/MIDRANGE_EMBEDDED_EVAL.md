@@ -18,13 +18,13 @@ Pi Zero 2 W. The ESP32 line (PSRAM holds the slot, compute is dear) is not chang
 
 The only thing asked of the input is **the samples in order, once** (`BandStream::feed`). A live stream, a slot in
 RAM and a file read forward are the same to it: a test feeds one slice, single samples and uneven chunks and gets
-the same bytes. Re-reading (`AudioSource`, `CountingSource`) is kept only to measure the method that needs it.
+the same bytes. Re-reading (`PcmSource`, `CountingSource`) is kept only to measure the method that needs it.
 
 ## 2. Three ways to spend the memory
 
 | | what stays in RAM after the audio is read | audio reads |
 |---|---|---|
-| **A** (`decode_block_low_mem_src`, the ICAP profile of the last note) | a band of the spectrogram at a time; 4 candidates' 200 Hz basebands | 13 sweeps |
+| **A** (`decode_block_low_mem`, the ICAP profile of the last note) | a band of the spectrogram at a time; 4 candidates' 200 Hz basebands | 13 sweeps |
 | **B** (ICAP's `ft8dec`) | a u8 log waterfall of the whole band, 166 KiB | 3 (one per pass) |
 | **C** (`ft8::decode_block::band_bb`, new) | **the whole band as one complex baseband**, 3 kHz, `i16` pairs, 180 KB (any input rate) | **1** |
 
@@ -228,7 +228,7 @@ The merge gate (tier A+B) is 1422 passed, 0 failed (1417 before, plus these 5). 
 
 ## 7. If this is adopted: a sketch, not a decision
 
-1. `BandStream` / `BandBaseband` and the `AudioSource` family move to `engine/` and take the protocol's constants
+1. `BandStream` / `BandBaseband` and the `PcmSource` family move to `engine/` and take the protocol's constants
    (`NSPS`, `NDOWN`, tone spacing) instead of FT8's; the FIR design is derived, not copied.
 2. `cd0_fir` and `engine/dsp/ddc.rs` share their filter stages (today three copies of the same cascade logic:
    `Stage`, `FirStage`, `StreamingComplexDdc`).

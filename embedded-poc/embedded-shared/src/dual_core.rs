@@ -43,7 +43,7 @@ use alloc::vec::Vec;
 use mfsk_core::engine::sync::{bootstrap_dt_median, SyncCandidate};
 use mfsk_core::ft8::decode::{DecodeDepth, DecodeResult};
 use mfsk_core::ft8::decode_block::{
-    coarse_sync_gated_spec, coarse_sync_with_lag, fine_sync_12k,
+    GatedSearch, coarse_sync_gated_spec, coarse_sync_with_lag, fine_sync_12k,
     process_candidates_into_with_cs_scratch_tuned, refine_candidates_into, RefinedCandidate,
     SpecFill, Spectrogram,
 };
@@ -637,15 +637,11 @@ pub fn run_speculative_slot(
     let pass1: Vec<SyncCandidate> = if cfg.hard_sync_gate {
         coarse_sync_gated_spec(
             &spec.spec,
-            cfg.freq_min,
-            cfg.freq_max,
-            cfg.sync_min,
-            cfg.pass1_limit,
-            Some(sync_lag_s()),
-            Some(SpecFill {
-                valid_rows: spec.valid_rows,
-                gate_block2: FT8_BLOCK2_GATE,
-            }),
+            &GatedSearch::new(cfg.freq_min, cfg.freq_max, cfg.sync_min, cfg.pass1_limit)
+                .lag_s(Some(sync_lag_s()))
+                .fill(Some(
+                    SpecFill::new(spec.valid_rows).gate_block2(FT8_BLOCK2_GATE),
+                )),
         )
         .into_iter()
         .map(|c| c.0)

@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 
 use icap_app_hosttest::{fft_shim, profile, resample::resample, wav};
-use mfsk_core::ft8::decode_block::band_bb::SubMode;
+use mfsk_core::__internal::ft8_band_bb::SubMode;
 
 #[path = "../../../mfsk-core/tests/common/ft8_qso3.rs"]
 #[allow(dead_code)]

@@ -440,6 +440,13 @@ pub mod __internal {
             process_candidate_basic, process_candidate_precomputed, refine_candidate_position,
         };
     }
+    /// FT8's band baseband (`ft8::decode_block::band_bb`): the whole band as one 3 kHz baseband, one read of the
+    /// audio, the subtraction on it. Experimental, measured in `hosttest/icap-app` and
+    /// `docs/notes/MIDRANGE_EMBEDDED_EVAL.md`; no semver.
+    #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+    pub mod ft8_band_bb {
+        pub use crate::ft8::decode_block::band_bb::*;
+    }
     /// `engine::protocol` items reopened for the same tests.
     pub mod protocol {
         pub use crate::engine::protocol::bp_pooled::BpPooledFec;

@@ -34,7 +34,7 @@ use num_traits::Float;
 
 use super::super::params::NN;
 use super::fill_symbol_spectra::{SymMask, sym_in_mask};
-use super::source::AudioSource;
+use super::source::PcmSource;
 use super::types::{SAMPLE_RATE_HZ, TX_START_OFFSET_S};
 use crate::engine::dsp::fir_decimate::{FirStage, design_lowpass_kaiser};
 use crate::engine::dsp::nco::Rotor;
@@ -243,7 +243,7 @@ impl Cd0 {
 
 /// Build the basebands of `freqs` (tone-0 frequencies, Hz) from one forward read of `src`: a [`Cd0Stream`]
 /// each, all fed from the same blocks.
-pub(super) fn build_group<A: AudioSource>(f: &Cd0Filters, src: &mut A, freqs: &[f32]) -> Vec<Cd0> {
+pub(super) fn build_group<A: PcmSource>(f: &Cd0Filters, src: &mut A, freqs: &[f32]) -> Vec<Cd0> {
     let mut streams: Vec<Cd0Stream> = freqs.iter().map(|&fr| Cd0Stream::new(f, fr)).collect();
     // every stream starts at the same sample here (the slot's origin), so the read is one sweep from there
     let mut at = streams.first().map_or(0, |s| s.origin());

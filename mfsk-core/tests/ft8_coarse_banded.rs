@@ -21,10 +21,24 @@ use common::load_wav_i16;
 
 use mfsk_core::ft8::decode_block::source::{CountingSource, SliceSource};
 use mfsk_core::ft8::decode_block::{
-    HARD_SYNC_POOL, LowMem, coarse_sync, coarse_sync_banded, coarse_sync_gated,
-    coarse_sync_gated_spec, coarse_sync_gated_src, compute_spectrogram, decode_block_low_mem,
-    decode_block_low_mem_src,
+    GatedSearch, HARD_SYNC_POOL, LowMem, coarse_sync, coarse_sync_banded, coarse_sync_gated,
+    coarse_sync_gated_spec, compute_spectrogram, decode_block_low_mem,
 };
+
+/// The gate over a slot in memory.
+fn gated(
+    slot: &[i16],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    keep: usize,
+    bands: usize,
+) -> Vec<(mfsk_core::engine::sync::SyncCandidate, u8)> {
+    coarse_sync_gated(
+        &mut SliceSource(slot),
+        &GatedSearch::new(freq_min, freq_max, sync_min, keep).bands(bands),
+    )
+}
 
 macro_rules! asset_path {
     ($asset:literal) => {
@@ -82,7 +96,7 @@ fn gated_coarse_sync_is_the_same_for_any_number_of_bands_and_is_a_reordering() {
     let spec = compute_spectrogram(&slot, 3000.0);
     let pool = coarse_sync(&spec, 200.0, 3000.0, 1.3, HARD_SYNC_POOL);
     for keep in [15usize, 30] {
-        let one = coarse_sync_gated(&slot, 200.0, 3000.0, 1.3, keep, 1);
+        let one = gated(&slot, 200.0, 3000.0, 1.3, keep, 1);
         assert_eq!(one.len(), keep);
         assert!(
             one.windows(2).all(|w| w[0].1 >= w[1].1),
@@ -102,7 +116,7 @@ fn gated_coarse_sync_is_the_same_for_any_number_of_bands_and_is_a_reordering() {
             );
         }
         for bands in [2usize, 3, 7, 40] {
-            let b = coarse_sync_gated(&slot, 200.0, 3000.0, 1.3, keep, bands);
+            let b = gated(&slot, 200.0, 3000.0, 1.3, keep, bands);
             let key =
                 |v: &[(mfsk_core::engine::sync::SyncCandidate, u8)]| -> Vec<((u32, u32, u32), u8)> {
                     v.iter()
@@ -114,7 +128,7 @@ fn gated_coarse_sync_is_the_same_for_any_number_of_bands_and_is_a_reordering() {
     }
 }
 
-/// The coarse search from an `AudioSource`, as the radio runs it: the same candidates as from the slice,
+/// The coarse search from an `PcmSource`, as the radio runs it: the same candidates as from the slice,
 /// to the bit, and the reads are the ones it can afford: forward only (a restart per band, no more) and a
 /// few passes' worth of bytes. Counted with the radio's cost model (`CountingSource`): an 8 kHz slot is 233 KB,
 /// and the number printed is that times the passes (one per band, plus one for the fixed-point build's gain).
@@ -122,9 +136,12 @@ fn gated_coarse_sync_is_the_same_for_any_number_of_bands_and_is_a_reordering() {
 fn gated_coarse_sync_from_a_source_is_the_slice_version_and_reads_forward() {
     let slot = load_wav_i16(asset_path!("qso3_busy.wav"));
     for bands in [1usize, 4] {
-        let want = coarse_sync_gated(&slot, 200.0, 3000.0, 1.3, 30, bands);
+        let want = gated(&slot, 200.0, 3000.0, 1.3, 30, bands);
         let mut src = CountingSource::new(SliceSource(&slot[..]));
-        let got = coarse_sync_gated_src(&mut src, 200.0, 3000.0, 1.3, 30, bands);
+        let got = coarse_sync_gated(
+            &mut src,
+            &GatedSearch::new(200.0, 3000.0, 1.3, 30).bands(bands),
+        );
         let key =
             |v: &[(mfsk_core::engine::sync::SyncCandidate, u8)]| -> Vec<((u32, u32, u32), u8)> {
                 v.iter()
@@ -168,9 +185,9 @@ fn gated_coarse_sync_from_a_spectrogram_is_the_audio_version() {
         let slot = load_wav_i16(wav);
         let spec = compute_spectrogram(&slot, 3000.0);
         for (sync_min, keep) in [(1.3f32, 15usize), (1.0, 30), (0.8, 300)] {
-            let from_audio = coarse_sync_gated(&slot, 200.0, 3000.0, sync_min, keep, 4);
+            let from_audio = gated(&slot, 200.0, 3000.0, sync_min, keep, 4);
             let from_spec =
-                coarse_sync_gated_spec(&spec, 200.0, 3000.0, sync_min, keep, None, None);
+                coarse_sync_gated_spec(&spec, &GatedSearch::new(200.0, 3000.0, sync_min, keep));
             assert!(
                 from_audio.len() >= 10,
                 "{wav}: only {} candidates",
@@ -188,12 +205,12 @@ fn gated_coarse_sync_from_a_spectrogram_is_the_audio_version() {
     }
 }
 
-/// `decode_block_low_mem` is the low-memory decode in **every** build: here, with `fft-rustfft` (where `decode_block` is
-/// the host's 3-pass decoder), it gives what `decode_block_low_mem_src` gives over a `SliceSource`, not `decode_block`'s.
-/// A host body that ignored the low-memory request (it did, once) would give the 3-pass decoder's messages and frequencies
-/// instead, and differ.
+/// `LowMem::coarse_bands` changes memory and time only: the low-memory decode gives the same messages, frequencies and
+/// times for one band, four or seven (a coarse search that depended on the split, or a band edge that lost a carrier,
+/// would differ). It is not `decode_block`'s: a decode that ignored the low-memory profile would give the 3-pass
+/// decoder's list.
 #[test]
-fn the_low_memory_decode_is_the_same_decode_in_every_build() {
+fn the_low_memory_decode_does_not_depend_on_the_band_split() {
     use mfsk_core::ft8::decode::DecodeDepth;
     let slot = load_wav_i16(asset_path!("qso3_busy.wav"));
     let key = |r: &[mfsk_core::ft8::decode::DecodeResult]| -> Vec<(Vec<u8>, u32, u32)> {
@@ -207,19 +224,20 @@ fn the_low_memory_decode_is_the_same_decode_in_every_build() {
             })
             .collect()
     };
-    let a = decode_block_low_mem(&slot, 200.0, 3000.0, 1.3, DecodeDepth::EMBEDDED, 15, 4);
-    let b = decode_block_low_mem_src(
-        &mut SliceSource(&slot[..]),
-        200.0,
-        3000.0,
-        1.3,
-        DecodeDepth::EMBEDDED,
-        15,
-        LowMem {
-            coarse_bands: 4,
-            ..LowMem::default()
-        },
-    );
+    let run = |bands: usize| {
+        decode_block_low_mem(
+            &mut SliceSource(&slot[..]),
+            200.0,
+            3000.0,
+            1.3,
+            DecodeDepth::EMBEDDED,
+            15,
+            LowMem::new(bands, 4),
+        )
+    };
+    let a = run(4);
     assert!(!a.is_empty(), "the busy slot decodes something");
-    assert_eq!(key(&a), key(&b));
+    for bands in [1usize, 7] {
+        assert_eq!(key(&a), key(&run(bands)), "{bands} bands");
+    }
 }

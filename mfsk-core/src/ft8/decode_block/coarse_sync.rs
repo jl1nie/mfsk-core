@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 use num_traits::Float;
 
 use super::super::params::{COSTAS, COSTAS_POS, NSPS, NTONES};
-use super::source::{AudioSource, SliceSource};
+use super::source::{PcmSource, SliceSource};
 use super::spectrogram::{
     CoarseAcc, Spectrogram, compute_spectrogram_bins_src, spectrogram_gain, spectrogram_n_freq,
 };
@@ -1282,37 +1282,24 @@ pub const HARD_SYNC_POOL: usize = 300;
 /// so a short list by score misses real signals that a short list by hard sync keeps. The per-candidate
 /// DFT stages then see 15-30 candidates that are mostly real. **A deliberate divergence from WSJT-X**, see
 /// `spec_hard_sync` below; the decodes still pass `ft8b`'s own gates (the 21-symbol `nsync`, BP/CRC).
-pub fn coarse_sync_gated<S: AudioSample>(
-    audio: &[S],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    keep: usize,
-    n_bands: usize,
+///
+/// The audio comes from a [`PcmSource`] (a slot in memory is `SliceSource`), the form the radio needs: the slot is
+/// never held. It is read forward `search.bands` times, plus once more in the fixed-point build for the slot's
+/// peak (a value the capture could hand over instead).
+pub fn coarse_sync_gated<A: PcmSource>(
+    src: &mut A,
+    search: &GatedSearch,
 ) -> Vec<(SyncCandidate, u8)> {
-    coarse_sync_gated_src(
-        &mut SliceSource(audio),
+    let GatedSearch {
         freq_min,
         freq_max,
         sync_min,
         keep,
-        n_bands,
-    )
-}
-
-/// [`coarse_sync_gated`] from an [`AudioSource`], the form the radio needs: the slot is never held. It reads
-/// the source forward `n_bands` times, plus once more in the fixed-point build for the slot's peak (a value
-/// the capture could hand over instead). The candidates are the slice version's, bit for bit.
-pub fn coarse_sync_gated_src<A: AudioSource>(
-    src: &mut A,
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    keep: usize,
-    n_bands: usize,
-) -> Vec<(SyncCandidate, u8)> {
+        bands,
+        ..
+    } = *search;
     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::CoarseSync);
-    let Some((peaks, g)) = banded_peaks(src, freq_min, freq_max, n_bands, true) else {
+    let Some((peaks, g)) = banded_peaks(src, freq_min, freq_max, bands, true) else {
         return Vec::new();
     };
     let mut pool = select_candidates_with_sync(&peaks, &g, sync_min, HARD_SYNC_POOL);
@@ -1325,7 +1312,7 @@ pub fn coarse_sync_gated_src<A: AudioSource>(
 /// Score every carrier of the band `freq_min..freq_max` a band at a time (the spectrogram of each is built,
 /// scored and dropped before the next), with the hard-sync count when `hard_sync`. Reads `src` once for the
 /// slot's gain (fixed-point build) and once for each band, forward.
-fn banded_peaks<A: AudioSource>(
+fn banded_peaks<A: PcmSource>(
     src: &mut A,
     freq_min: f32,
     freq_max: f32,
@@ -1343,6 +1330,7 @@ fn banded_peaks<A: AudioSource>(
 /// The fill state of a **streaming** spectrogram, for [`coarse_sync_gated_spec`]: rows from `valid_rows` on are
 /// zero, not measured yet (the boards' `stage1_inc` emits at `SPEC_EMIT_PAIR` 87, rows `0..174` of 184).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SpecFill {
     /// Rows `0..valid_rows` hold a measurement.
     pub valid_rows: usize,
@@ -1350,6 +1338,80 @@ pub struct SpecFill {
     /// boards' `FT8_BLOCK2_GATE`, an experiment left open). `false`: it is scored on the rows there are, as the
     /// boards do (they keep the lag window inside the coverage, so no lag reaches them).
     pub gate_block2: bool,
+}
+
+impl SpecFill {
+    /// A spectrogram measured on rows `0..valid_rows`, the boards' way (`gate_block2` off).
+    pub const fn new(valid_rows: usize) -> Self {
+        Self {
+            valid_rows,
+            gate_block2: false,
+        }
+    }
+
+    /// Set [`gate_block2`](Self::gate_block2).
+    pub const fn gate_block2(mut self, on: bool) -> Self {
+        self.gate_block2 = on;
+        self
+    }
+}
+
+/// What the hard-sync gate searches: the carrier band, the score floor, how many candidates it keeps, and,
+/// for the forms that need them, how the spectrogram is built or read. One value serves
+/// [`coarse_sync_gated`] (from a [`PcmSource`]), [`coarse_sync_gated_spec`] (from a spectrogram you hold) and
+/// the band baseband's; each reads the fields that are its own and says which.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct GatedSearch {
+    /// Lower edge of the carrier search, Hz.
+    pub freq_min: f32,
+    /// Upper edge of the carrier search, Hz.
+    pub freq_max: f32,
+    /// Minimum normalised Costas score.
+    pub sync_min: f32,
+    /// Candidates kept, after the reorder by hard sync.
+    pub keep: usize,
+    /// Bands the spectrogram is built in, one read of the audio each (`coarse_sync_gated`, and the band
+    /// baseband's). Default 4, [`LowMem`](super::LowMem)'s.
+    pub bands: usize,
+    /// The lag window, s (`coarse_sync_gated_spec` only; `None`: the crate's default, as the audio form uses).
+    pub lag_s: Option<f32>,
+    /// The fill state of a streaming spectrogram (`coarse_sync_gated_spec` only; `None`: a whole slot).
+    pub fill: Option<SpecFill>,
+}
+
+impl GatedSearch {
+    /// The search of `freq_min..freq_max` Hz at `sync_min`, keeping `keep` candidates; four bands, the default
+    /// lag window, a whole slot.
+    pub const fn new(freq_min: f32, freq_max: f32, sync_min: f32, keep: usize) -> Self {
+        Self {
+            freq_min,
+            freq_max,
+            sync_min,
+            keep,
+            bands: 4,
+            lag_s: None,
+            fill: None,
+        }
+    }
+
+    /// Set [`bands`](Self::bands).
+    pub const fn bands(mut self, bands: usize) -> Self {
+        self.bands = bands;
+        self
+    }
+
+    /// Set [`lag_s`](Self::lag_s).
+    pub const fn lag_s(mut self, lag_s: Option<f32>) -> Self {
+        self.lag_s = lag_s;
+        self
+    }
+
+    /// Set [`fill`](Self::fill).
+    pub const fn fill(mut self, fill: Option<SpecFill>) -> Self {
+        self.fill = fill;
+        self
+    }
 }
 
 /// [`coarse_sync_gated`] from a spectrogram the caller already has: the boards' `stage1_inc` builds the `u16`
@@ -1366,13 +1428,17 @@ pub struct SpecFill {
 /// A deliberate divergence from WSJT-X, as [`coarse_sync_gated`]'s: the order is by hard sync, not by score.
 pub fn coarse_sync_gated_spec(
     spec: &Spectrogram,
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    keep: usize,
-    sync_lag_s: Option<f32>,
-    fill: Option<SpecFill>,
+    search: &GatedSearch,
 ) -> Vec<(SyncCandidate, u8)> {
+    let GatedSearch {
+        freq_min,
+        freq_max,
+        sync_min,
+        keep,
+        lag_s: sync_lag_s,
+        fill,
+        ..
+    } = *search;
     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::CoarseSync);
     let Some(g) = sync_grid(spec.n_time, spec.n_freq, freq_min, freq_max, sync_lag_s) else {
         return Vec::new();
@@ -1435,12 +1501,16 @@ fn banded_peaks_with<B: FnMut(usize, usize) -> Spectrogram>(
 /// read. The candidates are the gated search's up to the baseband's rounding.
 pub fn coarse_sync_gated_band(
     bb: &super::band_bb::BandBaseband,
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    keep: usize,
-    n_bands: usize,
+    search: &GatedSearch,
 ) -> Vec<(SyncCandidate, u8)> {
+    let GatedSearch {
+        freq_min,
+        freq_max,
+        sync_min,
+        keep,
+        bands: n_bands,
+        ..
+    } = *search;
     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::CoarseSync);
     let Some((peaks, g)) = banded_peaks_with(freq_min, freq_max, n_bands, true, |lo, hi| {
         bb.spectrogram_bins(lo, hi)

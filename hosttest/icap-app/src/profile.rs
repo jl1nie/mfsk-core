@@ -4,14 +4,14 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use mfsk_core::ft8::decode::DecodeDepth;
-use mfsk_core::ft8::decode_block::band_bb::{
+use mfsk_core::__internal::ft8_band_bb::coarse_sync_gated_band;
+use mfsk_core::__internal::ft8_band_bb::{
     BandBaseband, BandFilters, SubMode, decode_band, decode_band_sic,
 };
+use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::source::{CountingSource, ReadCost, SliceSource};
 use mfsk_core::ft8::decode_block::{
-    LowMem, coarse_sync_gated_band, coarse_sync_gated_src, decode_block, decode_block_low_mem,
-    decode_block_low_mem_src,
+    GatedSearch, LowMem, coarse_sync_gated, decode_block, decode_block_low_mem,
 };
 use mfsk_core::ft8::subtract::subtract_signal_lpf;
 use mfsk_core::msg::wsjt77::unpack77;
@@ -96,13 +96,13 @@ pub fn run_slot(slot: &[i16], max_cand: usize, low_mem_bands: Option<usize>) -> 
             max_cand,
         ),
         Some(bands) => decode_block_low_mem(
-            slot,
+            &mut SliceSource(slot),
             200.0,
             3000.0,
             SYNC_MIN,
             LOW_MEM_DEPTH,
             max_cand,
-            bands,
+            LowMem::new(bands, 4),
         ),
     };
     let ms = t.elapsed().as_secs_f64() * 1e3;
@@ -261,13 +261,13 @@ pub fn run_slot_sic(slot: &[i16], max_cand: usize, low_mem_bands: usize, passes:
     let mut subtract_ms = 0.0;
     for pass in 0..passes {
         let out = decode_block_low_mem(
-            &work,
+            &mut SliceSource(&work[..]),
             200.0,
             3000.0,
             SYNC_MIN,
             LOW_MEM_DEPTH,
             max_cand,
-            low_mem_bands,
+            LowMem::new(low_mem_bands, 4),
         );
         let fresh: Vec<_> = out
             .into_iter()
@@ -313,19 +313,19 @@ pub fn run_slot_sic(slot: &[i16], max_cand: usize, low_mem_bands: usize, passes:
     }
 }
 
-/// One decode through the radio's interface: the slot is only reachable through an `AudioSource`, read forward.
+/// One decode through the radio's interface: the slot is only reachable through an `PcmSource`, read forward.
 pub struct StreamRun {
     pub run: Run,
     /// What the reads cost on the radio (`CountingSource`): bytes moved, calls, restarts.
     pub cost: ReadCost,
 }
 
-/// [`run_slot`]'s low-memory profile as the radio runs it: `decode_block_low_mem_src` over a counted source.
+/// [`run_slot`]'s low-memory profile as the radio runs it: `decode_block_low_mem` over a counted source.
 pub fn run_slot_stream(slot: &[i16], max_cand: usize, cfg: LowMem) -> StreamRun {
     let mut src = CountingSource::new(SliceSource(slot));
     let base = heap::reset_peak();
     let t = Instant::now();
-    let out = decode_block_low_mem_src(
+    let out = decode_block_low_mem(
         &mut src,
         200.0,
         3000.0,
@@ -386,12 +386,17 @@ pub fn run_slot_band(
         let bb = BandBaseband::from_source(&f, &mut src);
         let ms_bb = ms(t1);
         let t2 = Instant::now();
-        let gated = coarse_sync_gated_band(&bb, 200.0, 3000.0, SYNC_MIN, max_cand, bands);
+        let gated = coarse_sync_gated_band(
+            &bb,
+            &GatedSearch::new(200.0, 3000.0, SYNC_MIN, max_cand).bands(bands),
+        );
         (gated, bb, ms(t2), ms_bb)
     } else {
         let t1 = Instant::now();
-        let gated =
-            coarse_sync_gated_src(&mut coarse_src, 200.0, 3000.0, SYNC_MIN, max_cand, bands);
+        let gated = coarse_sync_gated(
+            &mut coarse_src,
+            &GatedSearch::new(200.0, 3000.0, SYNC_MIN, max_cand).bands(bands),
+        );
         let ms_coarse = ms(t1);
         let t2 = Instant::now();
         let bb = BandBaseband::from_source(&f, &mut src);
@@ -414,12 +419,12 @@ pub fn run_slot_band(
         },
         cost: {
             let (a, b) = (coarse_src.cost(), src.cost());
-            ReadCost {
-                calls: a.calls + b.calls,
-                samples_read: a.samples_read + b.samples_read,
-                samples_skipped: a.samples_skipped + b.samples_skipped,
-                restarts: a.restarts + b.restarts + u64::from(!coarse_from_band),
-            }
+            let mut sum = ReadCost::default();
+            sum.calls = a.calls + b.calls;
+            sum.samples_read = a.samples_read + b.samples_read;
+            sum.samples_skipped = a.samples_skipped + b.samples_skipped;
+            sum.restarts = a.restarts + b.restarts + u64::from(!coarse_from_band);
+            sum
         },
         stage_ms: [ms_coarse, ms_bb, ms_cand],
         band_bytes: bb.data.len() * 4,
@@ -579,11 +584,17 @@ pub fn run_slot_variant(slot: &[i16], v: Variant, max_cand: usize) -> Run {
             max_cand,
         ),
         Variant::V3 => decode_block(slot, 200.0, 3000.0, SYNC_MIN, osd_on, max_cand),
-        Variant::V4 => {
-            decode_block_low_mem(slot, 200.0, 3000.0, SYNC_MIN, LOW_MEM_DEPTH, max_cand, 1)
-        }
+        Variant::V4 => decode_block_low_mem(
+            &mut SliceSource(slot),
+            200.0,
+            3000.0,
+            SYNC_MIN,
+            LOW_MEM_DEPTH,
+            max_cand,
+            LowMem::new(1, 4),
+        ),
         Variant::V5 => decode_block_low_mem(
-            slot,
+            &mut SliceSource(slot),
             200.0,
             3000.0,
             SYNC_MIN,
@@ -592,7 +603,7 @@ pub fn run_slot_variant(slot: &[i16], v: Variant, max_cand: usize) -> Run {
                 ..LOW_MEM_DEPTH
             },
             max_cand,
-            1,
+            LowMem::new(1, 4),
         ),
         Variant::V1
         | Variant::V2
@@ -607,9 +618,9 @@ pub fn run_slot_variant(slot: &[i16], v: Variant, max_cand: usize) -> Run {
             #[cfg(feature = "fixed-point")]
             {
                 use mfsk_core::ft8::decode_block::{
-                    DEFAULT_Q_THRESH, SpecFill, coarse_sync, coarse_sync_gated,
-                    coarse_sync_gated_spec, compute_spectrogram, fine_sync_12k,
-                    process_candidates_into, refine_candidates_into,
+                    DEFAULT_Q_THRESH, SpecFill, coarse_sync, coarse_sync_gated_spec,
+                    compute_spectrogram, fine_sync_12k, process_candidates_into,
+                    refine_candidates_into,
                 };
                 let keep = GATE_KEEP.max(max_cand);
                 let mut cands: Vec<_> = if v == Variant::V8 {
@@ -629,24 +640,21 @@ pub fn run_slot_variant(slot: &[i16], v: Variant, max_cand: usize) -> Run {
                     };
                     coarse_sync_gated_spec(
                         &spec,
-                        200.0,
-                        3000.0,
-                        SYNC_MIN,
-                        keep,
-                        None,
-                        fill.map(|valid_rows| SpecFill {
-                            valid_rows,
-                            gate_block2: v == Variant::V13,
-                        }),
+                        &GatedSearch::new(200.0, 3000.0, SYNC_MIN, keep).fill(fill.map(
+                            |valid_rows| SpecFill::new(valid_rows).gate_block2(v == Variant::V13),
+                        )),
                     )
                     .into_iter()
                     .map(|c| c.0)
                     .collect()
                 } else {
-                    coarse_sync_gated(slot, 200.0, 3000.0, SYNC_MIN, keep, 1)
-                        .into_iter()
-                        .map(|c| c.0)
-                        .collect()
+                    coarse_sync_gated(
+                        &mut SliceSource(slot),
+                        &GatedSearch::new(200.0, 3000.0, SYNC_MIN, keep).bands(1),
+                    )
+                    .into_iter()
+                    .map(|c| c.0)
+                    .collect()
                 };
                 if matches!(v, Variant::V9 | Variant::V10 | Variant::V11 | Variant::V12) {
                     cands.truncate(max_cand);

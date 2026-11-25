@@ -224,9 +224,8 @@ const FT8_OSD_STACKS_RAISED: bool = match option_env!("MFSK_FT8_OSD_STACKS_RAISE
     Some(s) => parse_u32(s) != 0,
     None => false,
 };
-#[cfg(not(feature = "ft8-osd"))]
 const _: () = assert!(
-    !FT8_OSD,
+    !FT8_OSD || mfsk_core::ft8::decode_block::osd_available(),
     "MFSK_FT8_OSD=1 needs --features ft8-osd (mfsk-core/osd); without it OSD silently does nothing"
 );
 const _: () = assert!(

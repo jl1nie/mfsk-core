@@ -134,7 +134,7 @@ All measured on the host, `qso3_busy` and the 22 recordings (jt9 reference), fix
 | OSD in the embedded build (`osd` feature) | 62.2 -> 67.2 % (22 rec.), qso3 10 -> 14, no new phantoms |
 | 200 Hz baseband by FIR cascade in place of Goertzel DFTs (`cd0_fir`) | 2.3x faster stage 3, recall equal or better (270 -> 282 of 402) |
 | stage A-C refinement on the baseband (`fine_refine_3stage`), no audio access after the baseband | recall -3 (282 -> 279), the audio is read only by the coarse passes and the group builds |
-| streaming through `AudioSource` (forward reads, counted) | SD 12.6 MB -> 4.7 MB per slot at group 4; recall unchanged |
+| streaming through `PcmSource` (forward reads, counted) | SD 12.6 MB -> 4.7 MB per slot at group 4; recall unchanged |
 
 *The first FIR design was wrong in a way a clean test did not see:* 9 and 17 taps left 990 Hz only 28 dB down (a hazard
 frequency that folds onto the tones). Strong, clean test signals decoded through it. What caught it was a frequency-
@@ -181,5 +181,5 @@ response test at the aliasing frequencies (`cd0_fir.rs`), and a weak-signal coun
   10 KB?) is worth in a window of 80 KiB. The ARM figures above are for a stub FFT.
 - **8 kHz native.** `Protocol` constants are 12 kHz; the FIR cascade and the spectrogram would take an `NDOWN` and an
   `NSPS` from them (FT4: `NDOWN` 18, 32 samples a symbol, as FT8's 60 and 32).
-- **FT4, WSPR, Q65 on the same footing.** The pieces that carry: `AudioSource`/`CountingSource`, the heap meter and
+- **FT4, WSPR, Q65 on the same footing.** The pieces that carry: `PcmSource`/`CountingSource`, the heap meter and
   `--diag`, `cd0_fir` (parameterised by the protocol's decimation), the hard-sync gate (by `SyncMode`), the OSD gate.

@@ -53,7 +53,8 @@
 use std::path::Path;
 
 use mfsk_core::ft8::decode::DecodeDepth;
-use mfsk_core::ft8::decode_block::{decode_block, decode_block_low_mem};
+use mfsk_core::ft8::decode_block::source::SliceSource;
+use mfsk_core::ft8::decode_block::{LowMem, decode_block, decode_block_low_mem};
 use mfsk_core::msg::wsjt77::unpack77;
 
 #[path = "common/ft8_qso3.rs"]
@@ -172,13 +173,13 @@ fn true_ship_driver_meets_fixed_golden_floor() {
 fn low_mem_messages(max_cand: usize, bands: usize) -> Vec<(String, bool)> {
     let slot = load_wav_i16(Path::new(QSO3_PATH));
     decode_block_low_mem(
-        &slot,
+        &mut SliceSource(&slot[..]),
         100.0,
         3000.0,
         1.3,
         DecodeDepth::EMBEDDED,
         max_cand,
-        bands,
+        LowMem::new(bands, 4),
     )
     .iter()
     .filter_map(|d| unpack77(d.message77()))
@@ -227,13 +228,13 @@ fn the_number_of_bands_changes_no_decode() {
     for max_cand in [15usize, 30] {
         let run = |bands| {
             decode_block_low_mem(
-                &slot,
+                &mut SliceSource(&slot[..]),
                 100.0,
                 3000.0,
                 1.3,
                 DecodeDepth::EMBEDDED,
                 max_cand,
-                bands,
+                LowMem::new(bands, 4),
             )
         };
         let a = run(1);
@@ -312,7 +313,15 @@ fn the_baseband_path_decodes_signals_off_every_grid() {
     ];
     for (i, c) in cases.iter().enumerate() {
         let slot = synth_slot(std::slice::from_ref(c), 3000, 10_000.0);
-        let out = decode_block_low_mem(&slot, 100.0, 3000.0, 1.3, DecodeDepth::EMBEDDED, 15, 3);
+        let out = decode_block_low_mem(
+            &mut SliceSource(&slot[..]),
+            100.0,
+            3000.0,
+            1.3,
+            DecodeDepth::EMBEDDED,
+            15,
+            LowMem::new(3, 4),
+        );
         let want = format!("{} {} {}", c.0, c.1, c.2);
         let hit = out
             .iter()
@@ -344,7 +353,15 @@ fn the_baseband_path_separates_neighbours() {
         ("CQ", "DL1XYZ", "JO62", 1585.0, -0.1),
     ];
     let slot = synth_slot(&sig, 3000, 6000.0);
-    let out = decode_block_low_mem(&slot, 100.0, 3000.0, 1.3, DecodeDepth::EMBEDDED, 15, 2);
+    let out = decode_block_low_mem(
+        &mut SliceSource(&slot[..]),
+        100.0,
+        3000.0,
+        1.3,
+        DecodeDepth::EMBEDDED,
+        15,
+        LowMem::new(2, 4),
+    );
     let msgs: Vec<String> = out.iter().filter_map(|d| unpack77(d.message77())).collect();
     for m in ["CQ K1ABC FN42", "CQ JA1ABC PM95", "CQ DL1XYZ JO62"] {
         assert!(msgs.iter().any(|x| x == m), "{m} not decoded; got {msgs:?}");
@@ -367,7 +384,15 @@ fn the_baseband_path_keeps_its_sensitivity() {
         let dt = ((n.next() * 0.3) % 1.0) as f32;
         let call = format!("K{}ABC", i % 10);
         let slot = synth_slot(&[("CQ", &call, "FN42", f, dt)], 3000, 26_000.0);
-        let out = decode_block_low_mem(&slot, 100.0, 3000.0, 1.3, DecodeDepth::EMBEDDED, 15, 3);
+        let out = decode_block_low_mem(
+            &mut SliceSource(&slot[..]),
+            100.0,
+            3000.0,
+            1.3,
+            DecodeDepth::EMBEDDED,
+            15,
+            LowMem::new(3, 4),
+        );
         let want = format!("CQ {call} FN42");
         if out
             .iter()

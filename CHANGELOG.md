@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Breaking: one shape for the new `ft8::decode_block` API (source, config structs, one entry per function)
+
+- **`source::AudioSource` is `PcmSource`** (it collided with `engine::sync::AudioSource`, the enum). **No `_src` twins**: `coarse_sync_gated` and `decode_block_low_mem` take a `&mut impl PcmSource` (`SliceSource(&slot)` for memory); the slice forms and `coarse_sync_gated_src` / `decode_block_low_mem_src` are gone. The host driver no longer carries a `low_mem` parameter (`decode_block_low_mem` always took the low-memory path).
+- **Config structs, not argument lists**: `GatedSearch::new(freq_min, freq_max, sync_min, keep)` with `.bands()`, `.lag_s()`, `.fill()` serves `coarse_sync_gated` and `coarse_sync_gated_spec` (7 positional arguments, two `Option`s, before). `LowMem`, `SpecFill`, `ReadCost` and `GatedSearch` are `#[non_exhaustive]` (`LowMem::new`, `SpecFill::new().gate_block2()`).
+- **`ft8::decode_block::osd_available()`** (`const fn`): without `fft-rustfft` and the `osd` feature `DecodeDepth::osd` is ignored with no error; the CoreS3 app's compile-time check now asks the library. `band_bb` and its gate are `__internal::ft8_band_bb` (experimental, no semver).
+- No decode moved (every floor unchanged); the FIR stage / mixer cost of the earlier unification is gone (`perf:` commit): A 0.59 s -> 0.53 s, C 1.18 s -> 1.19 s on `qso3_busy` x 21 (host, fixed-point). `Ft8Extras`-level exposure of the low-memory profile is **not** in this change (see `docs/notes/MIDRANGE_EMBEDDED_EVAL.md`).
+
 ### CoreS3 / S3 apps: the hard-sync gate and OSD as switches (off)
 
 - **`dual_core::DecodeConfig::hard_sync_gate`** (default `false`; `rx_wavsim`, `m5stack-s3-app`, `m5stack-core2-app` set it) picks pass 1 with `coarse_sync_gated_spec` on the SpecBundle's spectrogram and keeps the gate's order through pass 2. The CoreS3 app reads it from `MFSK_FT8_GATE=1`; `MFSK_FT8_OSD=1` (with the new `ft8-osd` feature, which builds `mfsk-core/osd`; without the feature it does not compile) sets `DecodeDepth::osd`. Both off by default: the **`dual_core.rs` path is the same calls with the same arguments** (by inspection; it has no host test). `MFSK_FT8_OSD=1` additionally needs `MFSK_FT8_OSD_STACKS_RAISED=1`: stage 3 with OSD needs ~25 KB of stack (the linked ELF) against 11 KB without it and the board's tasks have 16 KB.
@@ -19,7 +26,7 @@
 
 ### FT8 low-memory decode: the slot is read forward from a source, never held
 
-- **`decode_block_low_mem` / `decode_block_low_mem_src`** (`ft8::decode_block`, new, building-block tier): candidates picked by hard sync read from the spectrogram (`coarse_sync_gated[_src]`, a **divergence from `sync8.f90`'s score order**: the first 30 by score hold 9 real signals of `qso3_busy`, by hard sync 21), the spectrogram built a band at a time, each candidate's 200 Hz baseband by a FIR cascade (`cd0_fir`, a divergence from `ft8_downsample.f90`'s FFT) from `AudioSource` (`SliceSource`, `CountingSource`: what a forward-only SD card costs). New cargo feature `osd` (off): the OSD fallback in builds without `fft-rustfft`.
+- **`decode_block_low_mem`** (`ft8::decode_block`, new, building-block tier): candidates picked by hard sync read from the spectrogram (`coarse_sync_gated`, a **divergence from `sync8.f90`'s score order**: the first 30 by score hold 9 real signals of `qso3_busy`, by hard sync 21), the spectrogram built a band at a time, each candidate's 200 Hz baseband by a FIR cascade (`cd0_fir`, a divergence from `ft8_downsample.f90`'s FFT) from `PcmSource` (`SliceSource`, `CountingSource`: what a forward-only SD card costs). New cargo feature `osd` (off): the OSD fallback in builds without `fft-rustfft`.
 - Measured (host, `hosttest/icap-app`, ft8_lib's 22 recordings against `jt9`'s 402): 227 / 279 decoded at 15 / 30 candidates (fixed-point), against `decode_block`'s 131; peak heap 0.22 MB, independent of the candidate count. `decode_block`'s decodes are unchanged (bit-identical, tier A+B), **but `coarse_sync` no longer builds its 226 KB `sync2d` grid (peaks per carrier instead), so the ESP32 boards' heap use and `coarse_sync` time differ: not flashed**; the `profile-coarse` log line is kept (`allsum=0` on the boards, it is built during capture). Not run on any radio or board. Detail: `docs/notes/ICAP_EMBEDDED_ANALYSIS.md`.
 
 ### The ESP32 boards build again

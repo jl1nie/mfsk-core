@@ -51,7 +51,7 @@ use alloc::vec::Vec;
 use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::ft8::decode::{DecodeDepth, DecodeResult};
 use mfsk_core::ft8::decode_block::{
-    DEFAULT_Q_THRESH, RefinedCandidate, coarse_sync_gated_spec, coarse_sync_with_lag,
+    DEFAULT_Q_THRESH, GatedSearch, RefinedCandidate, coarse_sync_gated_spec, coarse_sync_with_lag,
     compute_spectrogram,
     fine_sync_12k, process_candidates_into_with_cs_scratch_tuned, refine_candidates_into,
 };
@@ -155,12 +155,7 @@ fn run_arm(slot: &[i16], arm: Arm) -> Out {
     let mut cands: Vec<SyncCandidate> = if arm.gate {
         coarse_sync_gated_spec(
             &spec,
-            FREQ_MIN,
-            FREQ_MAX,
-            SYNC_MIN,
-            PASS1_LIMIT,
-            Some(SYNC_LAG_S),
-            None,
+            &GatedSearch::new(FREQ_MIN, FREQ_MAX, SYNC_MIN, PASS1_LIMIT).lag_s(Some(SYNC_LAG_S)),
         )
         .into_iter()
         .map(|c| c.0)

@@ -15,7 +15,7 @@ fn main() {
     let mut band_coarse = false;
     let mut band_sic = 0usize;
     let mut variant: Option<profile::Variant> = None;
-    let mut sub = mfsk_core::ft8::decode_block::band_bb::SubMode::F64;
+    let mut sub = mfsk_core::__internal::ft8_band_bb::SubMode::F64;
     let mut band_ms = [0.0f64; 3];
     let (mut sd_bytes, mut sd_calls, mut sd_restarts, mut sd_max) = (0u64, 0u64, 0u64, 0u64);
     let mut wavs: Vec<String> = Vec::new();
@@ -40,7 +40,7 @@ fn main() {
                 i += 2;
             }
             "--band-sub" => {
-                use mfsk_core::ft8::decode_block::band_bb::SubMode;
+                use mfsk_core::__internal::ft8_band_bb::SubMode;
                 sub = match a[i + 1].as_str() {
                     "f64" => SubMode::F64,
                     "f32" => SubMode::F32,
@@ -112,10 +112,7 @@ fn main() {
                 let s = profile::run_slot_stream(
                     &slot,
                     max_cand,
-                    mfsk_core::ft8::decode_block::LowMem {
-                        coarse_bands: bands.unwrap_or(4),
-                        group,
-                    },
+                    mfsk_core::ft8::decode_block::LowMem::new(bands.unwrap_or(4), group),
                 );
                 println!(
                     "\n== {w}  (method A, max_cand {max_cand}, {:.0} ms, peak heap {} B, SD {} KB)",
@@ -248,10 +245,7 @@ fn main() {
             let s = profile::run_slot_stream(
                 &slot,
                 max_cand,
-                mfsk_core::ft8::decode_block::LowMem {
-                    coarse_bands: bands.unwrap_or(4),
-                    group,
-                },
+                mfsk_core::ft8::decode_block::LowMem::new(bands.unwrap_or(4), group),
             );
             sd_bytes += s.cost.bytes_moved();
             sd_calls += s.cost.calls;

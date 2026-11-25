@@ -52,9 +52,9 @@ use mfsk_core::engine::scalar::Cmplx;
 use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::ft8::decode::{DecodeDepth, DecodeResult};
 use mfsk_core::ft8::decode_block::{
-    DEFAULT_Q_THRESH, PartialBlock2, RefinedCandidate, SpecCell, SpecFill, coarse_sync_gated_spec,
-    coarse_sync_with_lag, coarse_sync_with_lag_and_partial, compute_spectrogram,
-    goertzel_window_end_sample, process_candidates_into_with_cs_scratch_tuned,
+    DEFAULT_Q_THRESH, GatedSearch, PartialBlock2, RefinedCandidate, SpecCell, SpecFill,
+    coarse_sync_gated_spec, coarse_sync_with_lag, coarse_sync_with_lag_and_partial,
+    compute_spectrogram, goertzel_window_end_sample, process_candidates_into_with_cs_scratch_tuned,
     refine_candidates_into,
 };
 use mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER;
@@ -614,15 +614,12 @@ fn coarse_gated(
 ) -> Vec<SyncCandidate> {
     coarse_sync_gated_spec(
         spec,
-        FREQ_MIN,
-        FREQ_MAX,
-        SYNC_MIN,
-        pass1_limit(),
-        Some(sync_lag_s()),
-        Some(SpecFill {
-            valid_rows: spec_valid_rows(),
-            gate_block2: matches!(partial, PartialBlock2::Gate { .. }),
-        }),
+        &GatedSearch::new(FREQ_MIN, FREQ_MAX, SYNC_MIN, pass1_limit())
+            .lag_s(Some(sync_lag_s()))
+            .fill(Some(
+                SpecFill::new(spec_valid_rows())
+                    .gate_block2(matches!(partial, PartialBlock2::Gate { .. })),
+            )),
     )
     .into_iter()
     .map(|c| c.0)

@@ -58,8 +58,7 @@
 // the tree is stage-shaped (spectrogram → coarse_sync →
 // fill_symbol_spectra → per-candidate processing). The parent file
 // owns only module declarations + re-exports + tests.
-#[doc(hidden)]
-pub mod band_bb;
+pub(crate) mod band_bb;
 mod cd0_fir;
 mod coarse_sync;
 mod fill_symbol_spectra;
@@ -75,12 +74,11 @@ mod types;
 // sibling modules under `ft8/`) see the same
 // `mfsk_core::ft8::decode_block::*` paths.
 pub use coarse_sync::{
-    HARD_SYNC_POOL, PartialBlock2, SpecFill, coarse_allsum_len, coarse_sync, coarse_sync_banded,
-    coarse_sync_gated, coarse_sync_gated_band, coarse_sync_gated_spec, coarse_sync_gated_src,
-    coarse_sync_with_allsum, coarse_sync_with_allsum_and_lag,
-    coarse_sync_with_allsum_lag_and_partial, coarse_sync_with_allsum_lag_and_rows,
-    coarse_sync_with_lag, coarse_sync_with_lag_and_partial, precompute_coarse_allsum,
-    precompute_coarse_allsum_into,
+    GatedSearch, HARD_SYNC_POOL, PartialBlock2, SpecFill, coarse_allsum_len, coarse_sync,
+    coarse_sync_banded, coarse_sync_gated, coarse_sync_gated_spec, coarse_sync_with_allsum,
+    coarse_sync_with_allsum_and_lag, coarse_sync_with_allsum_lag_and_partial,
+    coarse_sync_with_allsum_lag_and_rows, coarse_sync_with_lag, coarse_sync_with_lag_and_partial,
+    precompute_coarse_allsum, precompute_coarse_allsum_into,
 };
 pub use fill_symbol_spectra::{
     SymMask, fill_symbol_spectra, fill_symbol_spectra_generic, fill_symbol_spectra_goertzel,
@@ -91,10 +89,8 @@ pub use process_candidates::decode_block_streaming;
 /// Phase 1.7.7-Stick: fill-closure variant for host research /
 /// regression tests (spec-lookup vs BASIS dot product comparison).
 pub use process_candidates::process_candidates_into_with_cs_scratch_tuned_with_fill;
-pub use process_candidates::{LowMem, decode_block_low_mem_src};
-pub use process_candidates::{
-    RefinedCandidate, decode_block, decode_block_low_mem, decode_block_tuned, xsnr2_db_simple,
-};
+pub use process_candidates::{LowMem, decode_block_low_mem};
+pub use process_candidates::{RefinedCandidate, decode_block, decode_block_tuned, xsnr2_db_simple};
 #[cfg(feature = "fixed-point")]
 pub use process_candidates::{
     decode_block_into, decode_block_into_tuned, process_candidates_into,
@@ -119,6 +115,14 @@ pub(in crate::ft8) use process_candidates::{
 #[cfg(all(feature = "fft-rustfft", not(feature = "fixed-point")))]
 pub(in crate::ft8) use process_candidates::{apply_wsjtx_xsnr2, compute_xsig_wsjtx};
 pub use spectrogram::{SpecCell, Spectrogram, compute_spectrogram};
+
+/// Whether this build has FT8's OSD fallback: `DecodeDepth::osd` and `Tuning::osd` do something only if so. It is
+/// always there with `fft-rustfft`; a build without it has it with the `osd` feature, and otherwise the request is
+/// ignored, with no error. A `const`, so an application can refuse to build a configuration that asks for OSD
+/// and would silently not get it (`const _: () = assert!(!WANT_OSD || osd_available());`).
+pub const fn osd_available() -> bool {
+    cfg!(any(feature = "fft-rustfft", feature = "osd"))
+}
 pub use types::{AudioSample, DEFAULT_Q_THRESH, NFFT_SPEC};
 pub(in crate::ft8) use types::{LlrT, PassCtx};
 
@@ -133,6 +137,15 @@ mod tests {
     use crate::engine::scalar::Cmplx;
     use crate::engine::{MessageCodec, MessageFields};
     use crate::msg::Wsjt77Message;
+
+    /// `osd_available` says what the build has: with `fft-rustfft` the OSD fallback is there, and a `DecodeDepth` with
+    /// `osd` set finds a message that the same depth without it does not (a build that reported `true` and ignored
+    /// the request, or the reverse, is the silent no-op this function exists to rule out).
+    #[cfg(feature = "fft-rustfft")]
+    #[test]
+    fn osd_available_in_a_build_with_the_host_engine() {
+        assert!(osd_available());
+    }
 
     fn pack_cq() -> [u8; 77] {
         let bits = Wsjt77Message

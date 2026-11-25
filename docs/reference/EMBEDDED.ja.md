@@ -210,6 +210,7 @@ Feature リファレンス:
 | `nstep-half` | spectrogram カラムレートを NSTEP = NSPS/2 (WSJT-X 忠実な NSPS/4 でなく)。 | `fixed-point` で自動有効。host ビルドで組込パスを明示的に simulate する以外では独立に enable しない。 |
 | `parallel` | Rayon 並列 candidate 処理。 | Host 専用。組込では常に off (`std::thread` 無し)。 |
 | `profile-coarse` | coarse_sync sub-stage timing を常時 stderr 出力。 | 診断専用。 |
+| `osd` | `fft-rustfft` のないビルドでの FT8 の OSD フォールバック (ある場合は OSD は常に使える)。ないと `DecodeDepth::osd` は**エラーなしで無視される**: `ft8::decode_block::osd_available()` (`const fn`) をコンパイル時 assert に使う。 | stage 3 で OSD を使いたいボード。**OSD は約 25 KB のスタックを要する** (ELF の静的フレームから: `process_candidates_into_with_cs_scratch_tuned` 9.6 KB、`osd_strategy::try_fallback` 5.2 KB、`osd_npre` 10.3 KB)。CoreS3 の 16 KB の `dsp_worker` と main のスタックを先に上げる必要がある (`S3_GATE_OSD_ABLATION.md`)。 |
 
 ## FFT extern Rust 契約
 

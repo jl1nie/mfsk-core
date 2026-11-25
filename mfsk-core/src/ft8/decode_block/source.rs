@@ -8,7 +8,7 @@
 //! how far the decoder reads* is a cost of its own (`apps/digi-common/digiapp.c`: on a slow card the call
 //! overhead dominates).
 //!
-//! [`AudioSource`] is that interface: `read(start, out)`, zero outside the audio. [`SliceSource`] serves one
+//! [`PcmSource`] is that interface: `read(start, out)`, zero outside the audio. [`SliceSource`] serves one
 //! from memory (the host, the ESP32 drivers); [`CountingSource`] wraps a source and charges what the radio
 //! would: every sample read, every sample skipped to get to a read ahead, every restart behind the position.
 //! [`Window`] is the small forward cache a consumer reads through, so that overlapping reads (a spectrogram
@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 use super::types::AudioSample;
 
 /// Audio read forward from a store. Samples outside `0..len()` read as zero.
-pub trait AudioSource {
+pub trait PcmSource {
     /// Samples in the slot.
     fn len(&self) -> usize;
 
@@ -34,7 +34,7 @@ pub trait AudioSource {
 /// A slot in memory.
 pub struct SliceSource<'a, S: AudioSample>(pub &'a [S]);
 
-impl<S: AudioSample> AudioSource for SliceSource<'_, S> {
+impl<S: AudioSample> PcmSource for SliceSource<'_, S> {
     fn len(&self) -> usize {
         self.0.len()
     }
@@ -53,6 +53,7 @@ impl<S: AudioSample> AudioSource for SliceSource<'_, S> {
 
 /// What a decoder read, as the radio would be charged for it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ReadCost {
     /// `read` calls.
     pub calls: u64,
@@ -76,15 +77,15 @@ impl ReadCost {
     }
 }
 
-/// An [`AudioSource`] that counts what its reads would cost on the radio (see the module docs).
-pub struct CountingSource<A: AudioSource> {
+/// An [`PcmSource`] that counts what its reads would cost on the radio (see the module docs).
+pub struct CountingSource<A: PcmSource> {
     inner: A,
     /// The file position after the last read.
     pos: u64,
     cost: ReadCost,
 }
 
-impl<A: AudioSource> CountingSource<A> {
+impl<A: PcmSource> CountingSource<A> {
     pub fn new(inner: A) -> Self {
         Self {
             inner,
@@ -102,7 +103,7 @@ impl<A: AudioSource> CountingSource<A> {
     }
 }
 
-impl<A: AudioSource> AudioSource for CountingSource<A> {
+impl<A: PcmSource> PcmSource for CountingSource<A> {
     fn len(&self) -> usize {
         self.inner.len()
     }
@@ -128,9 +129,9 @@ impl<A: AudioSource> AudioSource for CountingSource<A> {
     }
 }
 
-/// A forward cache over an [`AudioSource`]: reads are served from the last block read where they overlap
+/// A forward cache over an [`PcmSource`]: reads are served from the last block read where they overlap
 /// it, and fetched from the source in blocks of at least `BLOCK` samples, forward, otherwise.
-pub struct Window<'a, A: AudioSource> {
+pub struct Window<'a, A: PcmSource> {
     src: &'a mut A,
     buf: Vec<i16>,
     /// Absolute index of `buf[0]`.
@@ -140,7 +141,7 @@ pub struct Window<'a, A: AudioSource> {
 /// Samples fetched from the source at a time (a multiple of the radio's 512-sample read).
 const BLOCK: usize = 1024;
 
-impl<'a, A: AudioSource> Window<'a, A> {
+impl<'a, A: PcmSource> Window<'a, A> {
     pub fn new(src: &'a mut A) -> Self {
         Self {
             src,

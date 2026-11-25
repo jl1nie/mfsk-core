@@ -13,7 +13,7 @@ use mfsk_core::ft8::decode_block::LowMem;
 /// What the radio's interface allows the decoder to ask of the SD card, and of the heap, for one slot. The
 /// radio reads forward, in calls of a few hundred samples, and can only restart a read by closing the file and
 /// reading through it again (`apps/digi-common/digiapp.c`); its data region is 240 KiB. The streaming pipeline
-/// (`decode_block_low_mem_src`) reads the slot only to build the coarse spectrogram (one forward sweep per
+/// (`decode_block_low_mem`) reads the slot only to build the coarse spectrogram (one forward sweep per
 /// band, plus one for the fixed-point build's gain) and to build the candidates' 200 Hz basebands (one per
 /// group of candidates); the refinement and the decoding run on those. So the sweeps are
 /// `gain + bands + ceil(candidates / group)`, nothing is read and thrown away, and the bytes are those sweeps.
@@ -27,10 +27,7 @@ use mfsk_core::ft8::decode_block::LowMem;
 ///   The f32 build is not held to it: its spectrogram is twice the size (`0.5 MB`, `decode_block`'s `SpecCell`).
 #[test]
 fn the_streaming_pipeline_stays_inside_the_radios_budget() {
-    let cfg = LowMem {
-        coarse_bands: 4,
-        group: 4,
-    };
+    let cfg = LowMem::new(4, 4);
     let max_cand = 30;
     let gain = usize::from(cfg!(feature = "fixed-point"));
     let (mut worst_bytes_8k, mut worst_heap) = (0u64, 0usize);

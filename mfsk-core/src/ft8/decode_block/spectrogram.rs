@@ -22,7 +22,7 @@ use num_complex::Complex;
 use num_traits::Float;
 
 use super::super::params::{NMAX, NSPS, NTONES};
-use super::source::{AudioSource, SliceSource, Window};
+use super::source::{PcmSource, SliceSource, Window};
 use super::types::{AudioSample, NFFT_SPEC, NSTEP, SAMPLE_RATE_HZ, TONE_SPACING_HZ};
 
 // Needed by the f32 builder below, which exists in a `fixed-point`
@@ -250,11 +250,11 @@ pub(super) type Gain = ();
 
 /// The slot-wide gain of the spectrogram (the fixed-point build scans the slot for its peak).
 #[cfg(not(feature = "fixed-point"))]
-pub(super) fn spectrogram_gain<A: AudioSource>(_src: &mut A) -> Gain {}
+pub(super) fn spectrogram_gain<A: PcmSource>(_src: &mut A) -> Gain {}
 
-/// [`compute_spectrogram_bins`] from an [`AudioSource`]: the frames are read forward, one window at a time.
+/// [`compute_spectrogram_bins`] from an [`PcmSource`]: the frames are read forward, one window at a time.
 #[cfg(not(feature = "fixed-point"))]
-pub(super) fn compute_spectrogram_bins_src<A: AudioSource>(
+pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
     src: &mut A,
     bin_lo: usize,
     bin_hi: usize,
@@ -353,7 +353,7 @@ pub(super) type Gain = u32;
 
 /// Scan the slot (the first `NMAX` samples) for its peak and return the shift. One pass over the source.
 #[cfg(feature = "fixed-point")]
-pub(super) fn spectrogram_gain<A: AudioSource>(src: &mut A) -> Gain {
+pub(super) fn spectrogram_gain<A: PcmSource>(src: &mut A) -> Gain {
     let mut peak_abs: i32 = 1;
     let n_scan = src.len().min(NMAX);
     let mut block = vec![0i16; 1024];
@@ -381,10 +381,10 @@ pub(super) fn gain_for_peak(peak_abs: i32) -> Gain {
     shift
 }
 
-/// [`compute_spectrogram_bins`] from an [`AudioSource`], with the slot's gain given: the frames are read
+/// [`compute_spectrogram_bins`] from an [`PcmSource`], with the slot's gain given: the frames are read
 /// forward, one window at a time.
 #[cfg(feature = "fixed-point")]
-pub(super) fn compute_spectrogram_bins_src<A: AudioSource>(
+pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
     src: &mut A,
     lo: usize,
     hi: usize,

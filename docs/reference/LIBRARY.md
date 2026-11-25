@@ -2896,6 +2896,24 @@ and differ only in which inner steps they enable:
 * `coarse_sync` / `coarse_sync_with_allsum` — the FT8 sync grid itself.
 * `fill_symbol_spectra` / `fill_symbol_spectra_goertzel` — per-symbol
   FFT extraction directly from audio.
+* `decode_block_low_mem(src, freq_min, freq_max, sync_min, depth, max_cand, LowMem)` — the low-memory profile for a
+  slot that cannot be held (an SD card read forward): candidates by hard sync, each one's 200 Hz baseband by a FIR
+  cascade, and the same decode in every build. **Not `decode_block`'s decodes** (a deliberate divergence from
+  `sync8.f90`'s score order, measured in
+  [`MIDRANGE_EMBEDDED_EVAL.md`](../notes/MIDRANGE_EMBEDDED_EVAL.md)). The audio is a `source::PcmSource` (`SliceSource` for
+  a slot in memory, `CountingSource` to charge what a forward-only card would); `LowMem { coarse_bands, group }` is
+  memory against SD reads and time (`LowMem::new`, `Default` = 4 and 4).
+* `coarse_sync_gated(src, &GatedSearch)` / `coarse_sync_gated_spec(&Spectrogram, &GatedSearch)` — the hard-sync gate,
+  from a `PcmSource` or from a spectrogram you already hold (the boards' streaming one: `GatedSearch::fill(SpecFill)`
+  says how many rows are measured). One `GatedSearch::new(freq_min, freq_max, sync_min, keep)` serves both; `.bands()`,
+  `.lag_s()` and `.fill()` are the options, and the doc of each function says which it reads.
+* `osd_available()` — whether this build has FT8's OSD fallback. `DecodeDepth::osd` and `Tuning::osd` do something
+  only if so (`fft-rustfft`, or the `osd` feature without it); otherwise they are ignored without an error, and an
+  application that must have OSD asserts it at compile time.
+
+`GatedSearch`, `SpecFill`, `LowMem` and `ReadCost` are `#[non_exhaustive]`: make them with `new` and the builder
+methods, not with a struct expression. The experimental band baseband (`ft8::decode_block::band_bb`, one read of the
+audio and the subtraction on it) is not public API: it is `__internal::ft8_band_bb` (`internal-testing`).
 
 FT8 also has `ft8::list_decode` (the a7 / a8 list decoders, run at the end
 of every strategy — [§3.4](#34-decoder-strategies)) and `ft8::acquire`

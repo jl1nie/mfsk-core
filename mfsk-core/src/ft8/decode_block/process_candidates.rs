@@ -27,7 +27,7 @@ use super::super::decode::{ApHint, DecodeDepth, DecodeResult, DecodeStrictness, 
 use super::super::llr::sync_quality;
 use super::super::params::{COSTAS, DEFAULT_BP_MAX_ITER, LDPC_N, NSPS, NTONES};
 use super::coarse_sync::coarse_sync;
-use super::coarse_sync::coarse_sync_gated_src;
+use super::coarse_sync::{GatedSearch, coarse_sync_gated};
 #[cfg(all(feature = "fixed-point", not(feature = "fft-rustfft")))]
 use super::fill_symbol_spectra::fill_symbol_spectra_goertzel;
 use super::fill_symbol_spectra::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
@@ -129,64 +129,6 @@ pub fn decode_block<S: AudioSample>(
         None,
         DecodeStrictness::Normal,
         None,
-        None,
-    )
-}
-
-/// The embedded FT8 decode for a small heap and a real QSO: [`decode_block`]'s stages with the candidate
-/// path rebuilt around what a short list of candidates needs. **Not the same decodes as [`decode_block`]**,
-/// and in the embedded build (no `fft-rustfft`) only; the host driver ignores `coarse_bands` and runs as
-/// `decode_block`.
-///
-/// - **Candidates by hard sync** ([`super::coarse_sync_gated_src`]): the coarse list of [`super::HARD_SYNC_POOL`]
-///   is reordered by how many of the 21 Costas symbols read right in the spectrogram, and `max_cand` of
-///   them go on. The coarse score alone ranks the ghosts of a strong signal above weaker real ones, so a
-///   short list by score misses real signals (`qso3_busy.wav`: first 30 by score, 9 real; by hard sync, 21).
-///   A deliberate divergence from WSJT-X (`spec_hard_sync` in `coarse_sync.rs`).
-/// - **Each candidate's 200 Hz baseband** (`cd0_fir`): the candidate is mixed to DC and decimated by a 3:1,
-///   4:1, 5:1 FIR cascade (the slot's `ft8_downsample.f90` baseband, without its 192 000-point FFT), built
-///   sample by sample from the audio as it is read. Everything after runs on it, and not on the audio:
-///   - **frequency and DT refined**, `ft8b.f90`'s stages A-C ([`crate::ft8::refine_fine::fine_refine_3stage`]),
-///     and the baseband moved to the refined frequency, before the BP stage reads the symbols
-///     (`decode_block` decodes from the coarse 3.125 Hz / 80 ms grid);
-///   - **the tone spectra**, one 32-point DFT per symbol, in place of `decode_block`'s 632 Goertzel DFTs of
-///     1920 samples per candidate (2.3x faster at better recall: 30 candidates, with OSD, host, `qso3_busy`
-///     92 ms against 211 ms; the 22 recordings 282 of 402 against 270), band-limited as `ft8b`'s `cd0` is.
-/// - **The spectrogram a band at a time** (`coarse_bands` bands, [`super::coarse_sync_banded`]'s scheme):
-///   built for one band and dropped before the next, so its memory is `1 / coarse_bands` of the carrier
-///   range's (plus 14 bins) at the price of the frame FFTs running once per band.
-/// - **No spectrum kept per candidate**, and the basebands held a group at a time (`LowMem::group`): the
-///   heap of stage 3 is the group's basebands, whatever `max_cand` is (`decode_block` holds
-///   `5 056 B x max_cand` from Pass 2 to stage 3).
-///
-/// This is the slice form; `decode_block_low_mem_src` is the same decode from an `AudioSource`, which is what
-/// the radio uses: the audio is then never held, and is read forward, one sweep per coarse band, one for the
-/// fixed-point build's gain and one per group of candidates (`hosttest/icap-app/tests/icap_budget.rs` pins
-/// the count and the bytes).
-///
-/// `coarse_bands` changes memory and time only: the decodes are the same for any number of bands (and
-/// `LowMem::group`'s default is used here).
-pub fn decode_block_low_mem<S: AudioSample>(
-    audio: &[S],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    depth: DecodeDepth,
-    max_cand: usize,
-    coarse_bands: usize,
-) -> Vec<DecodeResult> {
-    decode_block_multipass(
-        audio,
-        freq_min,
-        freq_max,
-        sync_min,
-        depth,
-        max_cand,
-        DEFAULT_BP_MAX_ITER,
-        None,
-        DecodeStrictness::Normal,
-        None,
-        Some(coarse_bands),
     )
 }
 
@@ -281,7 +223,6 @@ pub fn decode_block_streaming<S: AudioSample>(
         None,
         DecodeStrictness::Normal,
         Some(on_result),
-        None,
     )
 }
 
@@ -308,7 +249,6 @@ pub fn decode_block_tuned<S: AudioSample>(
         bp_max_iter,
         None,
         DecodeStrictness::Normal,
-        None,
         None,
     )
 }
@@ -344,7 +284,6 @@ pub fn decode_block_with_ap<S: AudioSample>(
         ap_hint,
         DecodeStrictness::Normal,
         None,
-        None,
     )
 }
 
@@ -373,7 +312,6 @@ pub fn decode_block_with_ap_tuned<S: AudioSample>(
         bp_max_iter,
         ap_hint,
         strictness,
-        None,
         None,
     )
 }
@@ -409,26 +347,8 @@ fn decode_block_multipass<S: AudioSample>(
     ap_hint: Option<&ApHint>,
     strictness: DecodeStrictness,
     mut on_result: Option<&mut dyn FnMut(&DecodeResult)>,
-    low_mem: Option<usize>,
 ) -> Vec<DecodeResult> {
     use alloc::vec::Vec as AllocVec;
-    // `decode_block_low_mem` is the same decode in every build (a public function must not change meaning with a
-    // cargo feature): the host body routes it to the low-memory profile too, as the embedded one does below.
-    if let Some(coarse_bands) = low_mem {
-        return decode_low_mem_src(
-            &mut super::source::SliceSource(audio),
-            freq_min,
-            freq_max,
-            sync_min,
-            depth,
-            max_cand,
-            LowMem {
-                coarse_bands,
-                ..LowMem::default()
-            },
-            bp_max_iter,
-        );
-    }
     #[cfg(feature = "std")]
     let trace_stage = stage_trace_enabled();
     let mut work: AllocVec<i16> = audio.iter().map(|s| s.to_i16()).collect();
@@ -952,25 +872,7 @@ fn decode_block_multipass<S: AudioSample>(
     _ap_hint: Option<&ApHint>,
     _strictness: DecodeStrictness,
     _on_result: Option<&mut dyn FnMut(&DecodeResult)>,
-    low_mem: Option<usize>,
 ) -> Vec<DecodeResult> {
-    // The low-memory profile (`decode_block_low_mem`) is a different candidate path, not the same one with
-    // less memory: see its doc comment.
-    if let Some(coarse_bands) = low_mem {
-        return decode_low_mem_src(
-            &mut super::source::SliceSource(audio),
-            freq_min,
-            freq_max,
-            sync_min,
-            depth,
-            max_cand,
-            LowMem {
-                coarse_bands,
-                ..LowMem::default()
-            },
-            bp_max_iter,
-        );
-    }
     let pass1 = {
         let spec = compute_spectrogram(audio, freq_max);
         coarse_sync(
@@ -1559,8 +1461,9 @@ pub(super) fn process_candidates_tuned_with_ap_scratch<S: AudioSample>(
     )
 }
 
-/// How the low-memory profile trades memory, SD reads and time (see [`decode_block_low_mem_src`]).
-#[derive(Clone, Copy, Debug)]
+/// How the low-memory profile trades memory, SD reads and time (see [`decode_block_low_mem`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LowMem {
     /// Bands the coarse search's spectrogram is built in: one read of the audio each.
     pub coarse_bands: usize,
@@ -1568,6 +1471,16 @@ pub struct LowMem {
     /// together: the heap of stage 3 is this many times 25.6 KB, and the audio is read
     /// `ceil(max_cand / group)` times.
     pub group: usize,
+}
+
+impl LowMem {
+    /// `coarse_bands` bands of coarse spectrogram, and basebands held `group` candidates at a time.
+    pub const fn new(coarse_bands: usize, group: usize) -> Self {
+        Self {
+            coarse_bands,
+            group,
+        }
+    }
 }
 
 impl Default for LowMem {
@@ -1579,15 +1492,43 @@ impl Default for LowMem {
     }
 }
 
-/// [`decode_block_low_mem`] from an [`AudioSource`](super::source::AudioSource): the form the radio needs, where the slot is on the SD
-/// card and is never held. The reads are all forward sweeps of the source: one for the fixed-point build's
-/// gain, one per coarse band, one per group of candidates (`LowMem::group`); nothing else touches the audio,
-/// because the candidates are refined (`ft8b.f90`'s stages A-C, [`fine_refine_3stage`]) and decoded from
-/// their 200 Hz basebands.
+/// The embedded FT8 decode for a small heap and a real QSO: [`decode_block`]'s stages with the candidate
+/// path rebuilt around what a short list of candidates needs. **Not the same decodes as [`decode_block`]**,
+/// and the same in every build (a public function does not change meaning with a cargo feature).
+///
+/// - **Candidates by hard sync** ([`super::coarse_sync_gated`]): the coarse list of [`super::HARD_SYNC_POOL`]
+///   is reordered by how many of the 21 Costas symbols read right in the spectrogram, and `max_cand` of
+///   them go on. The coarse score alone ranks the ghosts of a strong signal above weaker real ones, so a
+///   short list by score misses real signals (`qso3_busy.wav`: first 30 by score, 9 real; by hard sync, 21).
+///   A deliberate divergence from WSJT-X (`spec_hard_sync` in `coarse_sync.rs`).
+/// - **Each candidate's 200 Hz baseband** (`cd0_fir`): the candidate is mixed to DC and decimated by a 3:1,
+///   4:1, 5:1 FIR cascade (the slot's `ft8_downsample.f90` baseband, without its 192 000-point FFT), built
+///   sample by sample from the audio as it is read. Everything after runs on it, and not on the audio:
+///   - **frequency and DT refined**, `ft8b.f90`'s stages A-C ([`crate::ft8::refine_fine::fine_refine_3stage`]),
+///     and the baseband moved to the refined frequency, before the BP stage reads the symbols
+///     (`decode_block` decodes from the coarse 3.125 Hz / 80 ms grid);
+///   - **the tone spectra**, one 32-point DFT per symbol, in place of `decode_block`'s 632 Goertzel DFTs of
+///     1920 samples per candidate (2.3x faster at better recall: 30 candidates, with OSD, host, `qso3_busy`
+///     92 ms against 211 ms; the 22 recordings 282 of 402 against 270), band-limited as `ft8b`'s `cd0` is.
+/// - **The spectrogram a band at a time** (`coarse_bands` bands, [`super::coarse_sync_banded`]'s scheme):
+///   built for one band and dropped before the next, so its memory is `1 / coarse_bands` of the carrier
+///   range's (plus 14 bins) at the price of the frame FFTs running once per band.
+/// - **No spectrum kept per candidate**, and the basebands held a group at a time (`LowMem::group`): the
+///   heap of stage 3 is the group's basebands, whatever `max_cand` is (`decode_block` holds
+///   `5 056 B x max_cand` from Pass 2 to stage 3).
+///
+/// The audio comes from a [`PcmSource`](super::source::PcmSource) (a slot in memory is
+/// [`SliceSource`](super::source::SliceSource)): the form the radio needs, where the slot is on the SD card
+/// and is never held. The reads are all forward sweeps of the source: one for the fixed-point build's gain,
+/// one per coarse band, one per group of candidates (`LowMem::group`); nothing else touches the audio, because
+/// the candidates are refined (`ft8b.f90`'s stages A-C, [`fine_refine_3stage`]) and decoded from their 200 Hz
+/// basebands (`hosttest/icap-app/tests/icap_budget.rs` pins the count and the bytes).
+///
+/// `LowMem::coarse_bands` changes memory and time only: the decodes are the same for any number of bands.
 ///
 /// [`fine_refine_3stage`]: crate::ft8::refine_fine::fine_refine_3stage
 #[allow(clippy::too_many_arguments)]
-pub fn decode_block_low_mem_src<A: super::source::AudioSource>(
+pub fn decode_block_low_mem<A: super::source::PcmSource>(
     src: &mut A,
     freq_min: f32,
     freq_max: f32,
@@ -1609,7 +1550,7 @@ pub fn decode_block_low_mem_src<A: super::source::AudioSource>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn decode_low_mem_src<A: super::source::AudioSource>(
+fn decode_low_mem_src<A: super::source::PcmSource>(
     src: &mut A,
     freq_min: f32,
     freq_max: f32,
@@ -1621,13 +1562,9 @@ fn decode_low_mem_src<A: super::source::AudioSource>(
 ) -> Vec<DecodeResult> {
     use super::cd0_fir::{Cd0Filters, build_group};
 
-    let gated = coarse_sync_gated_src(
+    let gated = coarse_sync_gated(
         src,
-        freq_min,
-        freq_max,
-        sync_min,
-        max_cand,
-        cfg.coarse_bands,
+        &GatedSearch::new(freq_min, freq_max, sync_min, max_cand).bands(cfg.coarse_bands),
     );
     let filters = Cd0Filters::new();
     decode_from_basebands(&gated, &filters, cfg.group, depth, bp_max_iter, |freqs| {
@@ -1638,7 +1575,7 @@ fn decode_low_mem_src<A: super::source::AudioSource>(
 /// The candidate loop of the low-memory decoders: `gated`'s candidates in groups of `group`, each group's
 /// 200 Hz basebands from `build` (given the tone-0 frequencies), refined (`ft8b.f90`'s stages A-C), then
 /// decoded from the basebands. Where the basebands come from is the only thing that differs between the
-/// audio-reading decoder ([`decode_block_low_mem_src`]) and the one that keeps the whole band as a baseband
+/// audio-reading decoder ([`decode_block_low_mem`]) and the one that keeps the whole band as a baseband
 /// (`band_bb`), so both are this loop.
 pub(super) fn decode_from_basebands<B>(
     gated: &[(SyncCandidate, u8)],
