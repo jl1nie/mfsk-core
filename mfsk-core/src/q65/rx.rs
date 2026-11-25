@@ -102,9 +102,15 @@ fn extract_data_energies<P: ModulationParams>(
 
     // Q65 data tones are 1..=64 (tone 0 is reserved for sync). The
     // 6-bit symbol value `s` is on bin `base_bin + (s + 1) * bins_per_tone`.
-    Some(data_symbol_rows(audio, start_sample, nsps, 64, |tone| {
-        base_bin + (tone + 1) * bins_per_tone
-    }))
+    Some(data_symbol_rows_chirped(
+        audio,
+        sample_rate,
+        start_sample,
+        nsps,
+        64,
+        |tone| base_bin + (tone + 1) * bins_per_tone,
+        None,
+    ))
 }
 
 /// What `q65_loops.f90:64-68` does to `spec64`'s symbol spectra before any
@@ -207,10 +213,16 @@ pub(crate) struct Chirp {
     pub(crate) len: f32,
 }
 
-/// [`data_symbol_rows`], or with `chirp` the same rows after mixing each
-/// symbol by `exp(-i 2π ∫ f_off)`, `f_off(n) = chirp.hz * (n - centre) / len`.
-/// A symbol's phase origin does not reach `|FFT|²`, so each starts at 0.
-fn data_symbol_rows_chirped(
+/// The data symbols' rows **one at a time**, in codeword order, to `sink`: `|FFT|²` at `row_len` bins (`bin_of(i)` is
+/// bin `i` of the row) of each of the 63 data symbols, the 22 sync positions skipped. The one loop every extraction runs.
+///
+/// A row depends on its own symbol's `nsps` samples (and, with `chirp`, on the drift taken out of them: the same rows
+/// after mixing each symbol by `exp(-i 2π ∫ f_off)`, `f_off(n) = chirp.hz * (n - centre) / len`, each starting at phase 0,
+/// as a symbol's phase origin does not reach `|FFT|²`) and on nothing else: a caller that cannot hold all 63 rows
+/// takes them as they come. `sink` is handed the same `row_len` buffer each time, so it must copy what it keeps.
+/// The caller has already checked that the frame and every bin fit.
+#[allow(clippy::too_many_arguments)]
+fn for_each_data_row(
     audio: &[f32],
     sample_rate: u32,
     start_sample: usize,
@@ -218,12 +230,10 @@ fn data_symbol_rows_chirped(
     row_len: usize,
     bin_of: impl Fn(usize) -> usize,
     chirp: Option<Chirp>,
-) -> Vec<f32> {
-    let Some(chirp) = chirp else {
-        return data_symbol_rows(audio, start_sample, nsps, row_len, bin_of);
-    };
+    mut sink: impl FnMut(&[f32]),
+) {
     let mut fft = SymbolFft::new(nsps);
-    let mut energies = vec![0.0_f32; row_len * 63];
+    let mut row = vec![0.0_f32; row_len];
     let mut sync_iter = Q65_SYNC_POSITIONS.iter().peekable();
     let mut k = 0usize;
     let w = core::f32::consts::TAU / sample_rate as f32;
@@ -233,56 +243,50 @@ fn data_symbol_rows_chirped(
             continue;
         }
         let n0 = start_sample + sym_idx as usize * nsps;
-        let buf = fft.with_input(|b| {
-            let mut phi = 0.0f32;
-            for (i, slot) in b.iter_mut().enumerate() {
-                let n = n0 + i;
-                let (sn, cs) = phi.sin_cos();
-                *slot = Complex32::new(audio[n] * cs, -audio[n] * sn);
-                phi = (phi + w * chirp.hz * (n as f32 - chirp.centre) / chirp.len)
-                    % core::f32::consts::TAU;
-            }
-        });
-        let row = &mut energies[row_len * k..row_len * (k + 1)];
+        let buf = match chirp {
+            None => fft.real(audio, n0),
+            Some(chirp) => fft.with_input(|b| {
+                let mut phi = 0.0f32;
+                for (i, slot) in b.iter_mut().enumerate() {
+                    let n = n0 + i;
+                    let (sn, cs) = phi.sin_cos();
+                    *slot = Complex32::new(audio[n] * cs, -audio[n] * sn);
+                    phi = (phi + w * chirp.hz * (n as f32 - chirp.centre) / chirp.len)
+                        % core::f32::consts::TAU;
+                }
+            }),
+        };
         for (i, slot) in row.iter_mut().enumerate() {
             *slot = buf[bin_of(i)].norm_sqr();
         }
+        sink(&row);
         k += 1;
     }
     debug_assert_eq!(k, 63);
-    energies
 }
 
-/// `|FFT|²` at `row_len` bins of each of the 63 data symbols, row-major
-/// (`out[row_len * k + i]` is bin `bin_of(i)` of data symbol `k`),
-/// skipping the 22 sync positions. The one loop both
-/// [`extract_data_energies`] and [`extract_data_energies_wide`] run.
-/// The caller has already checked that the frame and every bin fit.
-fn data_symbol_rows(
+/// [`for_each_data_row`] collected: the 63 rows row-major (`out[row_len * k + i]` is bin `bin_of(i)` of data symbol `k`).
+#[allow(clippy::too_many_arguments)]
+fn data_symbol_rows_chirped(
     audio: &[f32],
+    sample_rate: u32,
     start_sample: usize,
     nsps: usize,
     row_len: usize,
     bin_of: impl Fn(usize) -> usize,
+    chirp: Option<Chirp>,
 ) -> Vec<f32> {
-    let mut fft = SymbolFft::new(nsps);
-    let mut energies = vec![0.0_f32; row_len * 63];
-    let mut sync_iter = Q65_SYNC_POSITIONS.iter().peekable();
-    let mut k = 0usize;
-
-    for sym_idx in 0..85u32 {
-        if sync_iter.peek().is_some_and(|&&p| p == sym_idx) {
-            sync_iter.next();
-            continue;
-        }
-        let buf = fft.real(audio, start_sample + sym_idx as usize * nsps);
-        let row = &mut energies[row_len * k..row_len * (k + 1)];
-        for (i, slot) in row.iter_mut().enumerate() {
-            *slot = buf[bin_of(i)].norm_sqr();
-        }
-        k += 1;
-    }
-    debug_assert_eq!(k, 63);
+    let mut energies = Vec::with_capacity(row_len * 63);
+    for_each_data_row(
+        audio,
+        sample_rate,
+        start_sample,
+        nsps,
+        row_len,
+        bin_of,
+        chirp,
+        |row| energies.extend_from_slice(row),
+    );
     energies
 }
 
@@ -1988,6 +1992,117 @@ mod tests {
     use super::super::decode_request::DecodeRequest;
     use super::super::tx::synthesize_standard;
     use super::*;
+
+    /// Pseudo-random audio long enough for a Q65-30A frame (fixed LCG, f32 in [-1, 1)).
+    fn noise_audio(n: usize, seed: u32) -> Vec<f32> {
+        let mut x = seed;
+        (0..n)
+            .map(|_| {
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (x >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+            })
+            .collect()
+    }
+
+    /// The rows as the two loops this one replaced made them (written out here, apart from `for_each_data_row`): a plain
+    /// `fft.real` per data symbol, or the chirped mix, the 22 sync positions skipped.
+    fn reference_rows(
+        audio: &[f32],
+        sample_rate: u32,
+        start: usize,
+        nsps: usize,
+        row_len: usize,
+        bin0: usize,
+        chirp: Option<Chirp>,
+    ) -> Vec<f32> {
+        let mut fft = SymbolFft::new(nsps);
+        let mut out = vec![0.0_f32; row_len * 63];
+        let mut k = 0;
+        for sym in 0..85usize {
+            if Q65_SYNC_POSITIONS.contains(&(sym as u32)) {
+                continue;
+            }
+            let n0 = start + sym * nsps;
+            let buf = match chirp {
+                None => fft.real(audio, n0),
+                Some(c) => fft.with_input(|b| {
+                    let w = core::f32::consts::TAU / sample_rate as f32;
+                    let mut phi = 0.0f32;
+                    for (i, slot) in b.iter_mut().enumerate() {
+                        let n = n0 + i;
+                        let (sn, cs) = phi.sin_cos();
+                        *slot = Complex32::new(audio[n] * cs, -audio[n] * sn);
+                        phi = (phi + w * c.hz * (n as f32 - c.centre) / c.len)
+                            % core::f32::consts::TAU;
+                    }
+                }),
+            };
+            for i in 0..row_len {
+                out[row_len * k + i] = buf[bin0 + i].norm_sqr();
+            }
+            k += 1;
+        }
+        out
+    }
+
+    /// `for_each_data_row` gives the rows the old loops gave, to the bit, with and without a drift; the sink sees the 63
+    /// rows in codeword order, each `row_len` long, and what it copies is what the collected form returns.
+    #[test]
+    fn the_row_callback_is_the_row_loop() {
+        let (sample_rate, nsps, row_len, bin0, start) =
+            (12_000u32, 3_600usize, 192usize, 40usize, 500usize);
+        let audio = noise_audio(start + 85 * nsps + 10, 11);
+        let chirps = [
+            None,
+            Some(Chirp {
+                hz: 1.5,
+                centre: audio.len() as f32 / 2.0,
+                len: audio.len() as f32,
+            }),
+        ];
+        for chirp in chirps {
+            let want = reference_rows(&audio, sample_rate, start, nsps, row_len, bin0, chirp);
+            let mut seen = Vec::new();
+            let mut calls = 0usize;
+            for_each_data_row(
+                &audio,
+                sample_rate,
+                start,
+                nsps,
+                row_len,
+                |i| bin0 + i,
+                chirp,
+                |row| {
+                    assert_eq!(row.len(), row_len);
+                    calls += 1;
+                    seen.extend_from_slice(row);
+                },
+            );
+            assert_eq!(calls, 63);
+            assert_eq!(seen.len(), want.len());
+            assert!(
+                seen.iter()
+                    .zip(&want)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "chirp {chirp:?}: rows differ from the loop they replaced"
+            );
+            let collected = data_symbol_rows_chirped(
+                &audio,
+                sample_rate,
+                start,
+                nsps,
+                row_len,
+                |i| bin0 + i,
+                chirp,
+            );
+            assert!(
+                collected
+                    .iter()
+                    .zip(&want)
+                    .all(|(a, b)| a.to_bits() == b.to_bits())
+            );
+        }
+    }
 
     #[test]
     fn es_no_metric_is_q65_inits() {
