@@ -256,6 +256,197 @@ pub fn intrinsics_fast_fading(
     }
 }
 
+/// [`intrinsics_fast_fading`], fed **one symbol row at a time**: for a decoder that cannot hold the wide-energy
+/// spectrogram (`N x M x (2 + bins per tone)` floats: 48 KB for sub-mode A, 290 KB for E) and so builds it a row at a
+/// time, from whatever makes rows (an FFT, a store read forward) in the order of the codeword.
+///
+/// What is kept is the metric and nothing else: `N x M` `f32` (16 128 B), whatever the sub-mode. A row's logits depend
+/// on that row alone (the `M`-bin padding at each end makes its fading window self-contained); only the noise
+/// variance depends on all of them (the mean energy of every bin), so the rows are scored with the weights **not yet
+/// divided by it**, and [`finish`](Self::finish) applies `1 / noise_var` to the `N x M` logits and normalises, as
+/// `intrinsics_fast_fading` does. That is one pass over the rows, with no need to know the mean in advance.
+///
+/// The probabilities equal [`intrinsics_fast_fading`]'s to float rounding, not to the bit (a sum of products each
+/// divided by `noise_var`, against the sum divided once). The returned [`FastFadingState`] (`noise_var`, the weights)
+/// is the same to the bit: the energy is summed in the same order.
+///
+/// The state is what [`esnodb_fast_fading`] takes, and that estimate (SNR reporting, not decoding) reads the wide
+/// energies again once the codeword is decoded: a caller that wants it makes the rows a second time.
+///
+/// ```
+/// # use mfsk_core::fec::qra::{FadingModel, FastFadingStream};
+/// # use mfsk_core::fec::qra15_65_64::QRA15_65_64_IRR_E23 as CODE;
+/// let mut s = FastFadingStream::new(&CODE, 0, 0.05, FadingModel::Gaussian, 1.5);
+/// let row = vec![1.0_f32; s.bins_per_symbol()];
+/// for _ in 0..s.symbols() {
+///     s.push_row(&row);
+/// }
+/// let mut intrinsics = vec![0.0_f32; s.symbols() * 64];
+/// let _state = s.finish(&mut intrinsics);
+/// ```
+#[derive(Clone, Debug)]
+pub struct FastFadingStream {
+    big_m: usize,
+    n_n: usize,
+    bins_per_symbol: usize,
+    bpt: usize,
+    es_no_metric: f32,
+    /// `t / (1 + t)` per tap: the weights before the division by the noise variance.
+    raw_weights: Vec<f32>,
+    /// The `N x M` logits so far, not yet divided by the noise variance.
+    logits: Vec<f32>,
+    rows: usize,
+    energy_sum: f32,
+}
+
+impl FastFadingStream {
+    /// Context for one codeword of `code` (Q65's `QRA15_65_64_IRR_E23`) at `submode` (0..=4: A..E), spread `b90_ts`
+    /// and `model`; `decoder_es_no_metric` as for [`intrinsics_fast_fading`].
+    pub fn new(
+        code: &QraCode,
+        submode: u8,
+        b90_ts: f32,
+        model: FadingModel,
+        decoder_es_no_metric: f32,
+    ) -> Self {
+        let big_m = code.M;
+        let n_n = punctured_codeword_len(code);
+        let bpt = bins_per_tone(submode);
+        let bins_per_symbol = big_m * (2 + bpt);
+        let hidx = table_index(b90_ts);
+        let (hlen, taps) = match model {
+            FadingModel::Gaussian => (GAUSS_LEN[hidx], GAUSS_TAPS[hidx]),
+            FadingModel::Lorentzian => (LORENTZ_LEN[hidx], LORENTZ_TAPS[hidx]),
+        };
+        debug_assert_eq!(taps.len(), hlen, "fading table length mismatch");
+        let b90 = b90_ts / TS_QRA64;
+        let degrade_db = 8.0 * b90.ln() / MAX_SPREAD_HZ.ln();
+        let es_no_metric = decoder_es_no_metric * 10_f32.powf(degrade_db / 10.0);
+        let raw_weights = taps
+            .iter()
+            .map(|&tap| {
+                let t = tap * es_no_metric;
+                t / (1.0 + t)
+            })
+            .collect();
+        Self {
+            big_m,
+            n_n,
+            bins_per_symbol,
+            bpt,
+            es_no_metric,
+            raw_weights,
+            logits: vec![0.0; big_m * n_n],
+            rows: 0,
+            energy_sum: 0.0,
+        }
+    }
+
+    /// Symbols (rows) of the codeword.
+    pub fn symbols(&self) -> usize {
+        self.n_n
+    }
+
+    /// Length of a row: `M x (2 + bins per tone)`.
+    pub fn bins_per_symbol(&self) -> usize {
+        self.bins_per_symbol
+    }
+
+    /// Rows pushed so far.
+    pub fn rows_pushed(&self) -> usize {
+        self.rows
+    }
+
+    /// The next symbol's wide-energy row (`bins_per_symbol()` long), in codeword order.
+    pub fn push_row(&mut self, row: &[f32]) {
+        assert_eq!(
+            row.len(),
+            self.bins_per_symbol,
+            "FastFadingStream::push_row: a row is M*(2+nBinsPerTone) bins"
+        );
+        assert!(
+            self.rows < self.n_n,
+            "FastFadingStream::push_row: more rows than the codeword has"
+        );
+        for &e in row {
+            self.energy_sum += e;
+        }
+        let (big_m, bpt) = (self.big_m, self.bpt);
+        let hlen = self.raw_weights.len();
+        let hhsz = hlen - 1; // off-centre taps on each side
+        let hlast = 2 * hhsz; // the full window's last index
+        let first_bin = big_m - hlen + 1; // the window of tone 0, centred on bin `big_m`
+        let out = &mut self.logits[self.rows * big_m..(self.rows + 1) * big_m];
+        for (k, o) in out.iter_mut().enumerate() {
+            let centre = first_bin + k * bpt;
+            let mut acc = 0.0_f32;
+            for j in 0..hhsz {
+                acc += self.raw_weights[j] * (row[centre + j] + row[centre + hlast - j]);
+            }
+            acc += self.raw_weights[hhsz] * row[centre + hhsz];
+            *o = acc;
+        }
+        self.rows += 1;
+    }
+
+    /// Normalise: divide the logits by the noise variance (the mean energy of every bin pushed, as
+    /// [`intrinsics_fast_fading`]), and write each symbol's probabilities to `intrinsics` (`N x M`). Panics if
+    /// not every row was pushed.
+    pub fn finish(self, intrinsics: &mut [f32]) -> FastFadingState {
+        assert_eq!(
+            self.rows, self.n_n,
+            "FastFadingStream::finish: {} of {} rows pushed",
+            self.rows, self.n_n
+        );
+        assert_eq!(
+            intrinsics.len(),
+            self.big_m * self.n_n,
+            "FastFadingStream::finish: intrinsics buffer must be M*N"
+        );
+        let total_bins = self.n_n * self.bins_per_symbol;
+        let mut noise_var = self.energy_sum / total_bins as f32;
+        noise_var /= 1.0 + self.es_no_metric / self.bins_per_symbol as f32;
+        let inv_var = 1.0 / noise_var;
+        for (row, logits) in intrinsics
+            .chunks_exact_mut(self.big_m)
+            .zip(self.logits.chunks_exact(self.big_m))
+        {
+            let mut max_logp = 0.0_f32;
+            for (v, &l) in row.iter_mut().zip(logits) {
+                let acc = l * inv_var;
+                *v = acc;
+                if acc > max_logp {
+                    max_logp = acc;
+                }
+            }
+            let mut sum = 0.0_f32;
+            for v in row.iter_mut() {
+                let x = (*v - max_logp).clamp(-85.0, 85.0);
+                let e = x.exp();
+                *v = e;
+                sum += e;
+            }
+            let inv = if sum > 0.0 { 1.0 / sum } else { 0.0 };
+            for v in row.iter_mut() {
+                *v *= inv;
+            }
+            pdmath::norm(row);
+        }
+        let weights = self
+            .raw_weights
+            .iter()
+            .map(|&w| w / noise_var)
+            .collect::<Vec<_>>();
+        FastFadingState {
+            es_no_metric: self.es_no_metric,
+            noise_var,
+            n_bins_per_tone: self.bpt,
+            n_bins_per_symbol: self.bins_per_symbol,
+            weights,
+        }
+    }
+}
+
 /// Estimate the decoded codeword's Es/No (in dB) from the same wide
 /// spectrogram passed to [`intrinsics_fast_fading`] plus the decoded
 /// hard-decision codeword.
@@ -379,6 +570,84 @@ mod tests {
             e[centre] = peak;
         }
         e
+    }
+
+    /// Pseudo-random wide energies (a fixed LCG): every bin different, so no row can be mistaken for another.
+    fn noisy_wide_energies(n_bins: usize, seed: u32) -> Vec<f32> {
+        let mut x = seed;
+        (0..n_bins)
+            .map(|_| {
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                0.05 + (x >> 8) as f32 / (1u32 << 24) as f32
+            })
+            .collect()
+    }
+
+    /// The streaming metric is `intrinsics_fast_fading`: probabilities to float rounding, `noise_var` and the weights to
+    /// the bit, for every sub-mode, both models and spreads over the whole of the table.
+    #[test]
+    fn the_stream_is_the_whole_spectrogram_metric() {
+        let code = &QRA15_65_64_IRR_E23;
+        let (big_m, n_n) = (64usize, 63usize);
+        for submode in 0..=4u8 {
+            let bins_per_symbol = big_m * (2 + (1usize << submode));
+            let mut energies = noisy_wide_energies(n_n * bins_per_symbol, 7 + submode as u32);
+            // a few strong bins, so that the rows are not all alike in their softmax
+            for k in 0..n_n {
+                let b = k * bins_per_symbol + big_m + (k * 5 % 64) * (1usize << submode);
+                energies[b] = 40.0;
+            }
+            for model in [FadingModel::Gaussian, FadingModel::Lorentzian] {
+                for spread in [0.05_f32, 1.0, 3.0, 20.0, 400.0] {
+                    let b90_ts = spread * TS_QRA64;
+                    let mut want = vec![0.0_f32; big_m * n_n];
+                    let ws = intrinsics_fast_fading(
+                        code, &mut want, &energies, submode, b90_ts, model, 1.5,
+                    );
+                    let mut s = FastFadingStream::new(code, submode, b90_ts, model, 1.5);
+                    for row in energies.chunks(bins_per_symbol) {
+                        s.push_row(row);
+                    }
+                    let mut got = vec![0.0_f32; big_m * n_n];
+                    let gs = s.finish(&mut got);
+                    let worst = want
+                        .iter()
+                        .zip(&got)
+                        .map(|(a, b)| (a - b).abs())
+                        .fold(0.0_f32, f32::max);
+                    assert!(
+                        worst < 1e-4,
+                        "sub-mode {submode} {model:?} spread {spread}: worst difference {worst}"
+                    );
+                    assert_eq!(gs.noise_var.to_bits(), ws.noise_var.to_bits());
+                    assert_eq!(gs.es_no_metric.to_bits(), ws.es_no_metric.to_bits());
+                    assert_eq!(gs.weights.len(), ws.weights.len());
+                    for (a, b) in gs.weights.iter().zip(&ws.weights) {
+                        assert_eq!(a.to_bits(), b.to_bits());
+                    }
+                }
+            }
+        }
+    }
+
+    /// A stream that is not given the whole codeword is an error, not a metric made of what there was.
+    #[test]
+    #[should_panic(expected = "rows pushed")]
+    fn finish_before_every_row_is_pushed_panics() {
+        let code = &QRA15_65_64_IRR_E23;
+        let mut s = FastFadingStream::new(code, 0, 0.05, FadingModel::Gaussian, 1.5);
+        let row = vec![1.0_f32; s.bins_per_symbol()];
+        s.push_row(&row);
+        let mut out = vec![0.0_f32; 64 * 63];
+        let _ = s.finish(&mut out);
+    }
+
+    #[test]
+    #[should_panic(expected = "a row is")]
+    fn a_row_of_the_wrong_length_panics() {
+        let code = &QRA15_65_64_IRR_E23;
+        let mut s = FastFadingStream::new(code, 0, 0.05, FadingModel::Gaussian, 1.5);
+        s.push_row(&[1.0; 10]);
     }
 
     #[test]

@@ -1889,6 +1889,13 @@ Q65-120D と -300A について同じことを確認します。C ABI は
     (`fec::qra` + `fec::qra15_65_64`) が行う。`NTONES = 65` かつ
     `BITS_PER_SYMBOL = 6` (tone 0 は同期専用) が `GRAY_MAP` 長の契約を
     `[2^BITS_PER_SYMBOL, NTONES]` に緩めた事例。
+    fast-fading メトリックには 2 つの形がある: 広帯域エネルギーのスペクトログラム全体を取る
+    `fec::qra::intrinsics_fast_fading` (`63 x 64 x (2 + 1 トーンあたりのビン数)` 個の float: サブモード A で
+    48 KB、E で 290 KB) と、**1 シンボルの行ずつ**与える `fec::qra::FastFadingStream` (`push_row`、最後に
+    `finish`)。後者はメトリック `63 x 64` (サブモードによらず 16 128 B) だけを保持し、平均エネルギーを事前に
+    知る必要がない。確率は浮動小数点の丸めの範囲で同じ (全サブモード・両モデル・テーブル全域の拡がりでの
+    許容誤差テスト)、`FastFadingState` はビット単位で同じ。SNR 推定 (`esnodb_fast_fading`) は、復号後にもう一度
+    広帯域エネルギーを要する。
 
 [^uv]: uvpacket は汎用パイプラインを迂回するため、`ModulationParams`
     定数のいくつかは装飾的 — trait と不変条件テストを満たすためだけに

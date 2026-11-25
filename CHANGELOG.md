@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Q65: the fast-fading metric one row at a time (`FastFadingStream`)
+
+- **`fec::qra::FastFadingStream`** (new): `intrinsics_fast_fading` for a decoder that cannot hold the wide-energy spectrogram (48 KB sub-mode A, 290 KB E): `push_row` per symbol, `finish` writes the `63 x 64` metric (16 128 B kept, whatever the sub-mode), no mean energy needed in advance (the noise variance divides the logits at the end). Probabilities equal `intrinsics_fast_fading`'s to float rounding (tolerance test over all sub-modes, both models, spreads across the table; six mutations caught), `FastFadingState` to the bit. Nothing existing changed; no decode moved. The SNR estimate still reads the wide energies again after the decode.
+
 ### Breaking: one shape for the new `ft8::decode_block` API (source, config structs, one entry per function)
 
 - **`ft8::decode_block::source::AudioSource` is `engine::source::PcmSource`** (any mode's, and it collided with `engine::sync::AudioSource`, the enum; `AudioSample` moved with it, `ft8::decode_block::AudioSample` still resolves). **No `_src` twins**: `coarse_sync_gated(src, &GatedSearch, bands)` and `decode_block_low_mem(src, &GatedSearch, depth, LowMem)` take a `&mut impl PcmSource` (`SliceSource(&slot)` for memory); the slice forms and `coarse_sync_gated_src` / `decode_block_low_mem_src` are gone. The host driver no longer carries a `low_mem` parameter (`decode_block_low_mem` always took the low-memory path).

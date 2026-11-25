@@ -2038,6 +2038,12 @@ What the table makes visible:
     `BITS_PER_SYMBOL = 6` (tone 0 is a reserved sync tone) is the case
     that loosened the `GRAY_MAP` length contract to
     `[2^BITS_PER_SYMBOL, NTONES]`.
+    The fast-fading metric has two forms: `fec::qra::intrinsics_fast_fading` over the whole wide-energy spectrogram
+    (`63 x 64 x (2 + bins per tone)` floats: 48 KB for sub-mode A, 290 KB for E), and `fec::qra::FastFadingStream`,
+    fed **one symbol row at a time** (`push_row`, then `finish`): it keeps only the `63 x 64` metric (16 128 B whatever
+    the sub-mode) and needs no mean energy in advance. Same probabilities to float rounding (a tolerance test over every
+    sub-mode, both models and spreads across the table), same `FastFadingState` to the bit; the SNR estimate
+    (`esnodb_fast_fading`) still wants the wide energies once more after the decode.
 
 [^uv]: uvpacket bypasses the generic pipeline, so several of its
     `ModulationParams` constants are decorative — present only to
