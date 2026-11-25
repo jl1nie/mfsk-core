@@ -36,6 +36,8 @@ use super::super::params::NN;
 use super::fill_symbol_spectra::{SymMask, sym_in_mask};
 use super::source::AudioSource;
 use super::types::{SAMPLE_RATE_HZ, TX_START_OFFSET_S};
+use crate::engine::dsp::fir_decimate::{FirStage, design_lowpass_kaiser};
+use crate::engine::dsp::nco::Rotor;
 use crate::engine::scalar::Cmplx;
 use crate::ft8::refine_fine::CD0_LEN;
 use num_complex::Complex;
@@ -58,46 +60,17 @@ const DECIM: usize = M1 * M2 * M3;
 const DELAY: i64 = ((N1 - 1) / 2 + M1 * (N2 - 1) / 2 + M1 * M2 * (N3 - 1) / 2) as i64;
 /// Output (200 Hz) samples per FT8 symbol: 0.16 s.
 const SYM: usize = 32;
-/// Input samples mixed per chunk: one symbol.
-const CHUNK: usize = SYM * DECIM;
-
-fn bessel_i0(x: f32) -> f32 {
-    let (mut sum, mut term) = (1.0f32, 1.0f32);
-    for k in 1..24 {
-        term *= (x / 2.0) / k as f32;
-        sum += term * term;
-    }
-    sum
-}
-
-/// Kaiser-windowed sinc, `n` taps, cutoff `fc` in cycles per input sample, unit DC gain.
-fn kaiser_lowpass<const N: usize>(fc: f32, beta: f32) -> [f32; N] {
-    let mid = (N - 1) as f32 / 2.0;
-    let mut h = [0.0f32; N];
-    let mut sum = 0.0;
-    for (i, v) in h.iter_mut().enumerate() {
-        let x = i as f32 - mid;
-        let sinc = if x.abs() < 1e-6 {
-            2.0 * fc
-        } else {
-            (core::f32::consts::TAU * fc * x).sin() / (core::f32::consts::PI * x)
-        };
-        let r = 2.0 * x / (N - 1) as f32;
-        let w = bessel_i0(beta * (1.0 - r * r).max(0.0).sqrt()) / bessel_i0(beta);
-        *v = sinc * w;
-        sum += *v;
-    }
-    for v in h.iter_mut() {
-        *v /= sum;
-    }
-    h
-}
+/// `FirStage`'s history margin, samples: its history is compacted (a copy of `ntaps` samples) every this many inputs, so a
+/// small one costs a few percent on the first stage and a large one costs heap per candidate (a group of 4 holds 4 cascades).
+const HIST_MARGIN: usize = 32;
 
 /// The filters and the DFT table, built once per decode and shared by all candidates.
 pub(super) struct Cd0Filters {
-    t1: [f32; N1],
-    t2: [f32; N2],
-    t3: [f32; N3],
+    /// The three stages' taps (Kaiser, `beta` 6, `engine::dsp::fir_decimate::design_lowpass_kaiser`), copied into a
+    /// `FirStage` per candidate.
+    t1: Vec<f32>,
+    t2: Vec<f32>,
+    t3: Vec<f32>,
     /// `exp(-j 2 pi k n / 32)` for the 8 tone bins `k` and the 32 samples `n` of a symbol.
     dft: [[(f32, f32); SYM]; 8],
 }
@@ -112,123 +85,67 @@ impl Cd0Filters {
             }
         }
         Self {
-            t1: kaiser_lowpass::<N1>(1972.0 / 12_000.0, 6.0),
-            t2: kaiser_lowpass::<N2>(500.0 / 4_000.0, 6.0),
-            t3: kaiser_lowpass::<N3>(102.0 / 1_000.0, 6.0),
+            t1: design_lowpass_kaiser(N1, 1972.0 / 12_000.0, 6.0),
+            t2: design_lowpass_kaiser(N2, 500.0 / 4_000.0, 6.0),
+            t3: design_lowpass_kaiser(N3, 102.0 / 1_000.0, 6.0),
             dft,
         }
     }
 }
 
-/// A ring buffer with a contiguous window: every sample is written twice (`n` apart), so the last `n` are
-/// always one slice.
-struct Ring {
-    re: Vec<f32>,
-    im: Vec<f32>,
-    n: usize,
-    head: usize,
-    count: usize,
+/// Input samples mixed and filtered per block.
+pub(super) const BLOCK: usize = 256;
+
+/// Block scratch for [`Cd0Stream::feed`] (planar I / Q of the mixed block and of each stage's output), made once for a group
+/// of candidates: about 3 KB, instead of that much per candidate.
+pub(super) struct Scratch {
+    pub(super) mixed: (Vec<f32>, Vec<f32>),
+    pub(super) s1: (Vec<f32>, Vec<f32>),
+    pub(super) s2: (Vec<f32>, Vec<f32>),
+    pub(super) s3: (Vec<f32>, Vec<f32>),
 }
 
-impl Ring {
-    fn new(n: usize) -> Self {
+impl Scratch {
+    pub(super) fn new() -> Self {
+        let v = |n: usize| (Vec::with_capacity(n), Vec::with_capacity(n));
         Self {
-            re: alloc::vec![0.0; 2 * n],
-            im: alloc::vec![0.0; 2 * n],
-            n,
-            head: 0,
-            count: 0,
+            mixed: v(BLOCK),
+            s1: v(BLOCK / M1 + 2),
+            s2: v(BLOCK / (M1 * M2) + 2),
+            s3: v(BLOCK / DECIM + 2),
         }
-    }
-
-    fn push(&mut self, re: f32, im: f32) {
-        let (h, n) = (self.head, self.n);
-        self.re[h] = re;
-        self.re[h + n] = re;
-        self.im[h] = im;
-        self.im[h + n] = im;
-        self.head = if h + 1 == n { 0 } else { h + 1 };
-        self.count += 1;
-    }
-
-    /// The last `n` samples, oldest first.
-    fn window(&self) -> (&[f32], &[f32]) {
-        (
-            &self.re[self.head..self.head + self.n],
-            &self.im[self.head..self.head + self.n],
-        )
-    }
-}
-
-/// One decimating FIR stage over a stream: an output for every `m` inputs once `taps.len()` have arrived
-/// (windows start at inputs 0, `m`, 2 `m`, ...).
-pub(super) struct Stage<'a> {
-    taps: &'a [f32],
-    m: usize,
-    ring: Ring,
-}
-
-impl<'a> Stage<'a> {
-    pub(super) fn new(taps: &'a [f32], m: usize) -> Self {
-        Self {
-            taps,
-            m,
-            ring: Ring::new(taps.len()),
-        }
-    }
-
-    pub(super) fn push(&mut self, re: f32, im: f32) -> Option<(f32, f32)> {
-        self.ring.push(re, im);
-        let (c, n) = (self.ring.count, self.taps.len());
-        if c < n || (c - n) % self.m != 0 {
-            return None;
-        }
-        let (wr, wi) = self.ring.window();
-        let (mut a, mut b) = (0.0f32, 0.0f32);
-        for (k, &t) in self.taps.iter().enumerate() {
-            a += t * wr[k];
-            b += t * wi[k];
-        }
-        Some((a, b))
     }
 }
 
 /// One candidate's 200 Hz baseband, being built from the audio as it arrives. Feed it the samples in order
 /// with [`Cd0Stream::feed`] (it takes what it needs and ignores the rest) until [`Cd0Stream::done`].
-pub(super) struct Cd0Stream<'a> {
+pub(super) struct Cd0Stream {
     freq_hz: f32,
     /// First input sample the baseband needs, and the next one it expects.
     origin: i64,
     at: i64,
-    w: f64,
-    cw: f32,
-    sw: f32,
-    pr: f32,
-    pi: f32,
-    s1: Stage<'a>,
-    s2: Stage<'a>,
-    s3: Stage<'a>,
+    /// The mixer: `exp(-j 2 pi f n / 12 000)` for the input sample `n` (exact in the phase, no `f64` per sample).
+    rot: Rotor,
+    s1: FirStage,
+    s2: FirStage,
+    s3: FirStage,
     out: Vec<Complex<f32>>,
 }
 
-impl<'a> Cd0Stream<'a> {
+impl Cd0Stream {
     /// A baseband for the signal whose tone 0 is at `freq_hz`.
-    pub(super) fn new(f: &'a Cd0Filters, freq_hz: f32) -> Self {
-        // output 0 is centred on input sample 0; the cascade's first output needs its inputs from `-DELAY`
-        let origin = -DELAY;
-        let w = core::f64::consts::TAU * freq_hz as f64 / SAMPLE_RATE_HZ as f64;
+    pub(super) fn new(f: &Cd0Filters, freq_hz: f32) -> Self {
+        // `FirStage` centres its output 0 on its input 0 (its history before the stream is zeros, as the audio before
+        // the slot is), so the stream starts at sample 0 and the cascade's first output is centred on it
+        let origin = 0;
         Self {
             freq_hz,
             origin,
             at: origin,
-            w,
-            cw: w.cos() as f32,
-            sw: w.sin() as f32,
-            pr: 1.0,
-            pi: 0.0,
-            s1: Stage::new(&f.t1, M1),
-            s2: Stage::new(&f.t2, M2),
-            s3: Stage::new(&f.t3, M3),
+            rot: Rotor::new(f64::from(freq_hz), SAMPLE_RATE_HZ, origin),
+            s1: FirStage::from_taps(&f.t1, M1, HIST_MARGIN),
+            s2: FirStage::from_taps(&f.t2, M2, HIST_MARGIN),
+            s3: FirStage::from_taps(&f.t3, M3, HIST_MARGIN),
             out: Vec::with_capacity(CD0_LEN),
         }
     }
@@ -243,37 +160,44 @@ impl<'a> Cd0Stream<'a> {
     }
 
     /// Feed the samples `start..start + samples.len()`. They must follow what was fed before (or start
-    /// before `origin`, whose earlier part is ignored); a gap is a bug in the caller.
-    pub(super) fn feed(&mut self, start: i64, samples: &[i16]) {
+    /// before `origin`, whose earlier part is ignored); a gap is a bug in the caller. `sc` is the block
+    /// scratch, shared by the streams of a group fed in turn.
+    pub(super) fn feed(&mut self, start: i64, samples: &[i16], sc: &mut Scratch) {
         let end = start + samples.len() as i64;
         if self.done() || end <= self.at {
             return;
         }
         assert!(start <= self.at, "cd0 stream: a gap in the audio fed to it");
-        for &x in &samples[(self.at - start) as usize..] {
+        for chunk in samples[(self.at - start) as usize..].chunks(BLOCK) {
+            sc.mixed.0.clear();
+            sc.mixed.1.clear();
+            for &x in chunk {
+                let (pr, pi) = self.rot.next();
+                let x = x as f32;
+                sc.mixed.0.push(x * pr);
+                sc.mixed.1.push(x * pi);
+            }
+            self.at += chunk.len() as i64;
+            // the three stages a block at a time (`FirStage::push_block` is `push_one`'s sequence, bit for bit)
+            sc.s1.0.clear();
+            sc.s1.1.clear();
+            self.s1
+                .push_block(&sc.mixed.0, &sc.mixed.1, &mut sc.s1.0, &mut sc.s1.1);
+            sc.s2.0.clear();
+            sc.s2.1.clear();
+            self.s2
+                .push_block(&sc.s1.0, &sc.s1.1, &mut sc.s2.0, &mut sc.s2.1);
+            sc.s3.0.clear();
+            sc.s3.1.clear();
+            self.s3
+                .push_block(&sc.s2.0, &sc.s2.1, &mut sc.s3.0, &mut sc.s3.1);
+            for (&re, &im) in sc.s3.0.iter().zip(&sc.s3.1) {
+                if self.out.len() < CD0_LEN {
+                    self.out.push(Complex::new(re, im));
+                }
+            }
             if self.done() {
                 break;
-            }
-            // the phasor of every `CHUNK`th sample, exactly; rotated sample to sample in between
-            if (self.at - self.origin) % CHUNK as i64 == 0 {
-                let ph = self.w * self.at as f64;
-                self.pr = ph.cos() as f32;
-                self.pi = -(ph.sin() as f32);
-            }
-            let x = x as f32;
-            let (mr, mi) = (x * self.pr, x * self.pi);
-            let (nr, ni) = (
-                self.pr * self.cw + self.pi * self.sw,
-                self.pi * self.cw - self.pr * self.sw,
-            );
-            self.pr = nr;
-            self.pi = ni;
-            self.at += 1;
-            if let Some((r1, i1)) = self.s1.push(mr, mi)
-                && let Some((r2, i2)) = self.s2.push(r1, i1)
-                && let Some((r3, i3)) = self.s3.push(r2, i2)
-            {
-                self.out.push(Complex::new(r3, i3));
             }
         }
     }
@@ -300,10 +224,10 @@ impl Cd0 {
     /// Move tone 0 by `delf_hz` (a refinement of the mixing frequency): multiply by `exp(-j 2 pi delf n / 200)`,
     /// the baseband a mixer at `freq_hz + delf_hz` would have made.
     pub(super) fn shift_freq(&mut self, delf_hz: f32) {
-        let dphi = -core::f32::consts::TAU * delf_hz / 200.0;
-        for (n, c) in self.cd0.iter_mut().enumerate() {
-            let a = dphi * n as f32;
-            *c *= Complex::new(a.cos(), a.sin());
+        let mut rot = Rotor::new(f64::from(delf_hz), 200.0, 0);
+        for c in self.cd0.iter_mut() {
+            let (re, im) = rot.next();
+            *c *= Complex::new(re, im);
         }
         self.freq_hz += delf_hz;
     }
@@ -316,10 +240,11 @@ pub(super) fn build_group<A: AudioSource>(f: &Cd0Filters, src: &mut A, freqs: &[
     // every stream starts at the same sample here (the slot's origin), so the read is one sweep from there
     let mut at = streams.first().map_or(0, |s| s.origin());
     let mut block = [0i16; 1024];
+    let mut sc = Scratch::new();
     while at < src.len() as i64 + DELAY && streams.iter().any(|s| !s.done()) {
         src.read(at, &mut block);
         for s in streams.iter_mut() {
-            s.feed(at, &block);
+            s.feed(at, &block, &mut sc);
         }
         at += block.len() as i64;
     }

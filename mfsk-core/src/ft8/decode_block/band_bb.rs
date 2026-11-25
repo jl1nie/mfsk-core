@@ -22,11 +22,12 @@ use alloc::vec::Vec;
 #[allow(unused_imports)]
 use num_traits::Float;
 
-use super::cd0_fir::{Cd0, Cd0Filters, Stage};
+use super::cd0_fir::{BLOCK, Cd0, Cd0Filters, Scratch};
 use super::source::AudioSource;
 use super::spectrogram::{SpecCell, Spectrogram};
 use super::types::SAMPLE_RATE_HZ;
-use crate::engine::dsp::fir_decimate::design_lowpass_kaiser;
+use crate::engine::dsp::fir_decimate::{FirStage, design_lowpass_kaiser};
+use crate::engine::dsp::nco::Rotor;
 use crate::engine::sync::SyncCandidate;
 use crate::ft8::decode::{DecodeDepth, DecodeResult};
 use crate::ft8::params::DEFAULT_BP_MAX_ITER;
@@ -45,16 +46,14 @@ const NA: usize = 17;
 /// Stage 2, 6 kHz -> 3 kHz: cutoff 1500 Hz, pass 1400, stop 1600: a Kaiser filter's transition is about
 /// `(A - 8) / (2.285 (N - 1))` rad (A = 63 dB at beta 6), 0.209 rad = 200 Hz at 6 kHz needs 117 taps.
 const NB: usize = 117;
-/// Group delay of both stages, in input samples (integer: both filters have an odd length).
-const DELAY_IN: i64 = ((NA - 1) / 2 + 2 * (NB - 1) / 2) as i64;
 /// Half the width of `subtract`'s amplitude filter, baseband samples: WSJT-X's `NFILT / 2` = 2000 at 12 kHz.
 pub const SUB_H: usize = 500;
 /// A candidate's stage 1, 3 kHz -> 1 kHz: 500 Hz cutoff, stops from 945 Hz (1000 - 55); 15 taps.
 const NC: usize = 15;
 /// A candidate's stage 2, 1 kHz -> 200 Hz: as `cd0_fir`'s third stage.
 const ND: usize = 43;
-/// Group delay of a candidate's two stages, in baseband samples.
-const DELAY_BB: i64 = ((NC - 1) / 2 + 3 * (ND - 1) / 2) as i64;
+/// `FirStage`'s history margin (see `cd0_fir::HIST_MARGIN`).
+const HIST_MARGIN: usize = 32;
 /// Baseband samples per `cd0` sample.
 const DC: usize = 15;
 
@@ -471,29 +470,33 @@ impl BandBaseband {
 
     /// The 200 Hz baseband of the signal whose tone 0 is at `freq_hz`, on `cd0_fir`'s grid.
     pub(super) fn cd0(&self, f: &BandFilters, freq_hz: f32) -> Cd0 {
-        let w = core::f64::consts::TAU * (freq_hz - BB_CENTER_HZ) as f64 / BB_RATE_HZ as f64;
-        let (cw, sw) = (w.cos() as f32, w.sin() as f32);
-        let mut c = Stage::new(&f.c, 3);
-        let mut d = Stage::new(&f.d, 5);
+        let mut rot = Rotor::new(f64::from(freq_hz - BB_CENTER_HZ), BB_RATE_HZ as f32, 0);
+        let mut c = FirStage::from_taps(&f.c, 3, HIST_MARGIN);
+        let mut d = FirStage::from_taps(&f.d, 5, HIST_MARGIN);
         let mut out: Vec<Complex<f32>> = Vec::with_capacity(CD0_LEN);
-        let (mut pr, mut pi) = (1.0f32, 0.0f32);
-        let mut k = -DELAY_BB;
+        let mut sc = Scratch::new();
+        let mut k = 0i64;
         while out.len() < CD0_LEN {
-            if k.rem_euclid(64) == 0 {
-                let ph = w * k as f64;
-                pr = ph.cos() as f32;
-                pi = -(ph.sin() as f32);
+            // a block of the baseband mixed to this candidate's frequency, then through the two stages
+            sc.mixed.0.clear();
+            sc.mixed.1.clear();
+            for _ in 0..BLOCK {
+                let (pr, pi) = rot.next();
+                let (xr, xi) = self.get(k);
+                sc.mixed.0.push(xr * pr - xi * pi);
+                sc.mixed.1.push(xr * pi + xi * pr);
+                k += 1;
             }
-            let (xr, xi) = self.get(k);
-            let (mr, mi) = (xr * pr - xi * pi, xr * pi + xi * pr);
-            let (nr, ni) = (pr * cw + pi * sw, pi * cw - pr * sw);
-            pr = nr;
-            pi = ni;
-            k += 1;
-            if let Some((r1, i1)) = c.push(mr, mi)
-                && let Some((r2, i2)) = d.push(r1, i1)
-            {
-                out.push(Complex::new(r2, i2));
+            sc.s1.0.clear();
+            sc.s1.1.clear();
+            c.push_block(&sc.mixed.0, &sc.mixed.1, &mut sc.s1.0, &mut sc.s1.1);
+            sc.s2.0.clear();
+            sc.s2.1.clear();
+            d.push_block(&sc.s1.0, &sc.s1.1, &mut sc.s2.0, &mut sc.s2.1);
+            for (&re, &im) in sc.s2.0.iter().zip(&sc.s2.1) {
+                if out.len() < CD0_LEN {
+                    out.push(Complex::new(re, im));
+                }
             }
         }
         debug_assert_eq!(DC * CD0_LEN, 48_000);
@@ -502,84 +505,74 @@ impl BandBaseband {
 }
 
 /// The band baseband, built as the audio arrives.
-pub struct BandStream<'a> {
-    f: &'a BandFilters,
-    a: Stage<'a>,
-    b: Stage<'a>,
+pub struct BandStream {
+    a: FirStage,
+    b: FirStage,
+    sc: Scratch,
     /// Input samples fed so far.
     n: i64,
-    cw: f32,
-    sw: f32,
-    pr: f32,
-    pi: f32,
+    /// The mixer at [`BB_CENTER_HZ`]: `exp(-j 2 pi f n / 12 000)` for the input sample `n`.
+    rot: Rotor,
     out: Vec<[i16; 2]>,
     peak: i32,
 }
 
-impl<'a> BandStream<'a> {
-    pub fn new(f: &'a BandFilters) -> Self {
-        let w = core::f64::consts::TAU * BB_CENTER_HZ as f64 / SAMPLE_RATE_HZ as f64;
-        let mut s = Self {
-            f,
-            a: Stage::new(&f.a, 2),
-            b: Stage::new(&f.b, 2),
+impl BandStream {
+    pub fn new(f: &BandFilters) -> Self {
+        Self {
+            a: FirStage::from_taps(&f.a, 2, HIST_MARGIN),
+            b: FirStage::from_taps(&f.b, 2, HIST_MARGIN),
+            sc: Scratch::new(),
             n: 0,
-            cw: w.cos() as f32,
-            sw: w.sin() as f32,
-            pr: 1.0,
-            pi: 0.0,
-            out: Vec::with_capacity(crate::ft8::params::NMAX / DB + 8),
+            rot: Rotor::new(f64::from(BB_CENTER_HZ), SAMPLE_RATE_HZ, 0),
+            // room for the zero block `finish` flushes through (up to `BLOCK / DB` outputs past the slot's), so
+            // the vector never grows: a doubling would hold the 180 KB twice
+            out: Vec::with_capacity(crate::ft8::params::NMAX / DB + BLOCK / DB + 8),
             peak: 1,
-        };
-        // the filters' history before sample 0 is silence: run it through, so output 0 is centred on input 0
-        for _ in 0..DELAY_IN {
-            s.push_filtered(0.0, 0.0);
-        }
-        s
-    }
-
-    fn push_filtered(&mut self, re: f32, im: f32) {
-        if let Some((r1, i1)) = self.a.push(re, im)
-            && let Some((r2, i2)) = self.b.push(r1, i1)
-        {
-            let q = |v: f32| v.round().clamp(-32768.0, 32767.0) as i16;
-            self.out.push([q(r2), q(i2)]);
         }
     }
 
     /// Feed the next samples of the slot, in order.
     pub fn feed(&mut self, samples: &[i16]) {
-        for &x in samples {
-            // the phasor of every 4096th sample exactly, rotated in between
-            if self.n % 4096 == 0 {
-                let ph = core::f64::consts::TAU * BB_CENTER_HZ as f64 / SAMPLE_RATE_HZ as f64
-                    * self.n as f64;
-                self.pr = ph.cos() as f32;
-                self.pi = -(ph.sin() as f32);
+        for chunk in samples.chunks(BLOCK) {
+            let sc = &mut self.sc;
+            sc.mixed.0.clear();
+            sc.mixed.1.clear();
+            for &x in chunk {
+                if (self.n as usize) < crate::ft8::params::NMAX {
+                    self.peak = self.peak.max((x as i32).abs());
+                }
+                let (pr, pi) = self.rot.next();
+                let x = x as f32;
+                sc.mixed.0.push(x * pr);
+                sc.mixed.1.push(x * pi);
+                self.n += 1;
             }
-            if (self.n as usize) < crate::ft8::params::NMAX {
-                self.peak = self.peak.max((x as i32).abs());
+            // the two stages a block at a time (`FirStage::push_block` is `push_one`'s sequence, bit for bit)
+            sc.s1.0.clear();
+            sc.s1.1.clear();
+            self.a
+                .push_block(&sc.mixed.0, &sc.mixed.1, &mut sc.s1.0, &mut sc.s1.1);
+            sc.s2.0.clear();
+            sc.s2.1.clear();
+            self.b
+                .push_block(&sc.s1.0, &sc.s1.1, &mut sc.s2.0, &mut sc.s2.1);
+            let q = |v: f32| v.round().clamp(-32768.0, 32767.0) as i16;
+            for (&re, &im) in sc.s2.0.iter().zip(&sc.s2.1) {
+                self.out.push([q(re), q(im)]);
             }
-            let x = x as f32;
-            let (mr, mi) = (x * self.pr, x * self.pi);
-            let (nr, ni) = (
-                self.pr * self.cw + self.pi * self.sw,
-                self.pi * self.cw - self.pr * self.sw,
-            );
-            self.pr = nr;
-            self.pi = ni;
-            self.n += 1;
-            self.push_filtered(mr, mi);
         }
     }
 
     /// The tail: silence through the filters until the last sample's output is out.
     pub fn finish(mut self) -> BandBaseband {
         let want = (self.n as usize).div_ceil(DB);
-        let _ = self.f;
+        // zeros through the filters, a block at a time, until the last sample's output is out; the block may make a few
+        // more outputs than that, which are not the slot's
         while self.out.len() < want {
-            self.push_filtered(0.0, 0.0);
+            self.feed(&[0i16; BLOCK]);
         }
+        self.out.truncate(want);
         BandBaseband {
             data: self.out,
             peak: self.peak,

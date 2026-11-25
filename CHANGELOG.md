@@ -15,7 +15,7 @@
 ### FT8 band baseband: one read of the audio, subtraction on the baseband (experimental)
 
 - **`ft8::decode_block::band_bb`** (`#[doc(hidden)]`, experimental): the whole band as one complex 3 kHz baseband (`i16`, 180 KB), built in a single forward pass (`BandStream::feed`); the coarse search (`coarse_sync_gated_band`), every candidate's `cd0` and the subtraction between passes (`BandBaseband::subtract`, `subtractft8.f90`'s algorithm, a sliding window) all work on it. `GfskStream` gains `peek_complex` and `skip`.
-- Measured (host, 22 recordings, 3 passes): 334-353 of `jt9`'s 402 (ICAP's `ft8dec`: 333), `qso3_busy` 19 of 20 with no extras, from one read of the audio (240 KB at 8 kHz) and 18 ms of subtraction a slot; heap 0.33 MB fixed-point, 0.59 MB f32. **Two decodes no other decoder lists** (budgeted in the tests). `BandBaseband::subtract_f32` does the subtraction without `f64` (for Xtensa) with the same recall and the baseband to 1 LSB; the rest of `band_bb` still has a little `f64`. Not run on a radio, a Pi or a board. Detail: `docs/notes/MIDRANGE_EMBEDDED_EVAL.md`.
+- Measured (host, 22 recordings, 3 passes): 334-353 of `jt9`'s 402, fixed-point 342 at 15 candidates (ICAP's `ft8dec`: 333), `qso3_busy` 19 of 20 with no extras, from one read of the audio (240 KB at 8 kHz) and 18 ms of subtraction a slot; heap 0.33 MB fixed-point, 0.59 MB f32. **Two decodes no other decoder lists** (budgeted in the tests). `BandBaseband::subtract_f32` does the subtraction without `f64` (for Xtensa) with the same recall and the baseband to 1 LSB; the rest of `band_bb` still has a little `f64`. Not run on a radio, a Pi or a board. Detail: `docs/notes/MIDRANGE_EMBEDDED_EVAL.md`.
 
 ### FT8 low-memory decode: the slot is read forward from a source, never held
 

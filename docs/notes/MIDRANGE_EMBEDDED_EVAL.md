@@ -62,7 +62,7 @@ All at 8 kHz input (12 -> 8 -> 12 kHz), band 200-3000 Hz, `sync_min` 1.3, OSD on
 | A, 15 / 30 candidates, f32 | 225 / 274 | 0 / 0 | 1 920 / 2 880 KB | 0.52 MB |
 | A, 15 / 30 candidates, fixed-point | 227 / 279 | 1 / 2 | 2 150 / 3 110 KB | 0.22 MB |
 | **C**, one pass, 30 cand., f32 / fixed | 272 / 279 | 1 / 2 | **240 KB** | 0.59 / 0.33 MB |
-| **C**, 3 passes, 15 cand., f32 / fixed | **334 / 345** | 4 / 4 | 240 KB | 0.59 / 0.33 MB |
+| **C**, 3 passes, 15 cand., f32 / fixed | **334 / 342** (345 before the unification below) | 4 / 4 | 240 KB | 0.59 / 0.33 MB |
 | **C**, 3 passes, 30 cand., f32 / fixed | **353 / 350** | 4 / 5 | 240 KB | 0.59 / 0.33 MB |
 
 Measured (`icap-profile --band 4 --band-coarse`, `--band-sic 3`, `tests/band_baseband.rs`). The audio is read exactly
@@ -123,9 +123,9 @@ Measured 2026-11-25, host:
 
 | | 22 recordings, 15 cand. f32 / fixed | 30 cand. | `qso3_busy` | subtract, 22 files |
 |---|---:|---:|---:|---:|
-| `f64` | 334 / 345 | 353 / 350 | 19 of 20 | 390-413 ms |
-| **`f32`** | **335 / 345** | 353 / 350 | 19 of 20 | 397-418 ms |
-| `f32`, sums re-made exactly every 64 / 512 samples | 334 / 344 | 353 / 350 | 19 of 20 | 609-641 / 423-448 ms |
+| `f64` | 334 / 342 | 353 / 350 | 19 of 20 | 390-413 ms |
+| **`f32`** | **333 / 342** | 353 / 350 | 19 of 20 | 397-418 ms |
+| `f32`, sums re-made exactly every 64 / 512 samples (measured before the unification below: 334 / 344) | 334 / 344 | 353 / 350 | 19 of 20 | 609-641 / 423-448 ms |
 
 At the sample level the `f32` result is the `f64` one's to **1 LSB** of the baseband (the baseband's own `i16`
 rounding), also with a near-full-scale signal, the worst case for the running sums. The recursion adds and removes
@@ -140,6 +140,31 @@ call on an LX7: the filter design (once per decode, `BandFilters::new`), the mix
 times a candidate). Those were not changed, and **nothing was run on an Xtensa core**: that the recall holds says the
 arithmetic is enough, not that it is fast there. Not measured either: the `f32` build's own cost on LX7 (its FPU is
 single precision, so the `f32` sums are hardware there).
+
+### Duplicates unified (reviewer's finding; 2026-11-25)
+
+`cd0_fir` and `band_bb` each carried their own FIR stage and ring buffer, their own Kaiser design and their own rotating mixer next to
+`engine::dsp`'s `FirStage`, `design_lowpass_kaiser` and `nco`. They now use those: the mixer is `nco::Rotor` (the phase is an exact
+`u64` product of the sample number, read exactly every 64 samples and rotated in between: no `f64` trig per chunk, which is the software
+`f64` on an LX7 the earlier note listed), the stages are `FirStage::push_block` (block of 256 samples, a scratch shared by a group), and
+the taps are `design_lowpass_kaiser`. About 130 lines went. Measured on the host, fixed-point, alternating with the previous binary:
+
+| | before | after |
+|---|---:|---:|
+| A (audio read per group), 22 recordings, 15 cand., time | 613-623 ms | 795-803 ms (+29 %) |
+| A, instructions per slot (`qso3_busy`) | 871 M | 1 059 M (+22 %) |
+| C, 3 passes, instructions per slot | 1 764 M | 1 963 M (+11 %) |
+| peak heap, A / C (fixed-point) | 220 160 / 330 316 B | 220 160 / 330 904 B |
+| decodes, A / C one pass, 15 and 30 candidates | | **unchanged** (every cell) |
+| decodes, C three passes, 15 cand. | 334 / 345 | 334 / 342 |
+
+The decodes that moved (C, three passes, 15 candidates: f32 0, fixed-point -3; one-pass C fixed-point 15 cand. -1 and back to the same with a
+4096-sample refresh) are borderline ones: the Rotor's refresh interval was swept from 1 to 4096 samples with the same counts, so it is the
+baseband's perturbation at the 1e-5 level (the old mixers' sawtooth is gone), not the new mixer's accuracy. **The cost is real and is the
+price of the unification**: `FirStage` computes the in-phase and quadrature dot products in two passes (and pads its window for the
+aligned-dot backends) where the specialised stage did one; a larger history margin did not change it (797 / 772 / 771 ms for 32 / 128 / 512).
+On a board built with `dotprod-extern` `FirStage` calls esp-dsp's dot product, which may well be faster than the scalar loop it replaced;
+that is not measured.
 
 ## 4. What was verified, and how
 
@@ -173,7 +198,10 @@ The merge gate (tier A+B) is 1422 passed, 0 failed (1417 before, plus these 5). 
   `RR73` of the same pair, already attested), one was attested before (`EA8BEV LU3DW RR73`), and **two are listed by
   no other decoder: `EA8PP JH0INP PM96` (websdr_test7, f32) and `EA8ESB JM5WSV OP12` (websdr_test5, fixed-point), both
   near 940 Hz, both found in the subtraction passes**. Possible chance CRC matches; not investigated.
-  `MAX_UNEXPLAINED = 1` holds the tests to it. A new decode strategy needs its precision guard before it ships
+  The tests pin them by identity (`UNEXPLAINED_DEBT`), not by count. **A third appeared after the unification of the mixers and cascade
+  stages (fixed-point, three passes, 30 candidates): `EY8MM YB1BZV OI33` in websdr_test3**, which no other decoder lists; a perturbation of the baseband
+  at the 1e-5 level swapped one chance decode for another. It is in the debt list with that evidence, and is the reason to want the OSD / CRC
+  false-accept rate of these paths measured, not assumed. A new decode strategy needs its precision guard before it ships
   (`CLAUDE.md` §4); this is not that.
 - Keeping "the first found" of a message, as A does, can keep a splatter copy over the real signal.
 
