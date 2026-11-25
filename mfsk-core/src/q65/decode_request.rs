@@ -60,6 +60,7 @@ use crate::msg::hash_table::CallsignHashTable;
 use super::Q65Result;
 use super::rx::{MaxDrift, Q65Ap};
 use super::search::SearchParams;
+use crate::engine::alignment::Alignment;
 
 /// The q3 decode's F Tol when none is given: the `jt9` CLI's fixed Q65
 /// `ntol` (`jt9_params_init.f90`, `params%ntol = 10 ! Q65 hard`).
@@ -672,13 +673,6 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
         self
     }
 
-    fn ap(&self) -> Option<Q65Ap<'a>> {
-        self.ap_hint.map(|hint| Q65Ap {
-            hint,
-            pileup: self.pileup,
-        })
-    }
-
     /// Full-AP list decoding against a pre-encoded candidate set, at the
     /// known target carrier (`Self::new`'s `target_freq`).
     ///
@@ -715,47 +709,17 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
 
     /// Precedence: ap_list > fading (+ ap_hint) > ap_hint > plain — see
     /// `DecodeRequest::decode`.
+    ///
+    /// The one decode lives in [`super::decode_candidate`]: this builds its arguments.
     pub fn decode(&self) -> Option<Q65Result> {
-        let ctx = ctx_from_hash_table(self.hash_table.as_ref());
-        let result = if let Some(candidates) = self.ap_list {
-            super::rx::decode_at_with_ap_list_for::<P>(
-                self.audio,
-                self.sample_rate,
-                self.start_sample,
-                self.base_freq_hz,
-                candidates,
-                &ctx,
-            )
-        } else if let Some((model, b90_ts)) = self.fading {
-            super::rx::decode_at_fading_for::<P>(
-                self.audio,
-                self.sample_rate,
-                self.start_sample,
-                self.base_freq_hz,
-                b90_ts,
-                model,
-                self.ap(),
-                &ctx,
-            )
-        } else {
-            match self.ap() {
-                Some(hint) => super::rx::decode_at_with_ap_for::<P>(
-                    self.audio,
-                    self.sample_rate,
-                    self.start_sample,
-                    self.base_freq_hz,
-                    hint,
-                    &ctx,
-                ),
-                None => super::rx::decode_at_for::<P>(
-                    self.audio,
-                    self.sample_rate,
-                    self.start_sample,
-                    self.base_freq_hz,
-                    &ctx,
-                ),
-            }
-        };
+        let mut cand =
+            super::Q65Candidate::new(Alignment::new(self.start_sample, self.base_freq_hz))
+                .pileup(self.pileup);
+        cand.ap_hint = self.ap_hint;
+        cand.ap_list = self.ap_list;
+        cand.fading = self.fading;
+        cand.hash_table = self.hash_table.clone();
+        let result = super::decode_candidate::<P>(self.audio, self.sample_rate, &cand);
         if let (Some(cb), Some(r)) = (self.on_result, &result) {
             cb(r);
         }
