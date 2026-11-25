@@ -1351,6 +1351,17 @@ same on every case tested). The memory figures are derived from the types, not m
 the candidate is still a whole-audio spectrogram and is not streamed. (The SNR has a fallback that reads the audio a third time and
 rebuilds the wide spectrogram; no input that decodes reaches it.)
 
+**The coarse search from a source** (`q65::search::coarse_search_streamed(src, rate, nominal_start, &SearchParams, max_drift, bands)`):
+the whole-spectrogram search is a spectrogram of the slot (793 rows of 1 800 bins, 5.7 MB for Q65-30A at 12 kHz; 11.4 MB for 60A). A bin's
+sync curve reads its own column (and `max_drift` columns either side) and no other, so the search is made band by band: each of `bands`
+forward sweeps of the audio keeps the columns of one band, `n_time x (band + 2 * max_drift)` floats (the columns of 200-3 000 Hz are 2.7 MB
+for 30A and 5.3 MB for 60A: about 170 KB at 16 and 32 bands). The candidates equal the whole-spectrogram search's to the bit (start,
+frequency, score, drift): a synthetic slot at 1, 5 and more bands than columns, with and without a drift search, and two real recordings (47
+candidates). The cost is `bands` times the FFTs (793 FFTs of `nsps` points a sweep) and `bands` times the reads; the FFT buffer (8 B x `nsps`,
+330 KB at 300A) is the floor whatever `bands` is. This finds where signals are. The scan's grid of frequency and time shifts and its b90
+ladder are not streamed, so a candidate's position is what `decode_candidate_streamed` is given (the real 10 GHz recording does not decode at
+the coarse position itself). The figures are derived from the types, not measured on a target.
+
 **The `SniperRequest` of these four modes is deprecated** (since 0.17.0; it calls the function above, so the decode is one):
 `SniperRequest::new(audio, rate, start, freq)` is `Alignment::new(start, freq)` in the candidate; WSPR's `::baseband(..)`
 is `WsprInput::baseband(..)`, its `.drift(d)` is `.drift_hz(d)`; JT65's `.chase(..)` / `.erasures(..)` are the same

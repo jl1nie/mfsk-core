@@ -194,7 +194,7 @@ response test at the aliasing frequencies (`cd0_fir.rs`), and a weak-signal coun
   `finish`; one pass, the mean energy not needed in advance), fed by `q65::decode_candidate_streamed` from a `PcmSource` read forward (the
   decode keeps 16 128 B for the fading metric in place of the 48-290 KB wide spectrogram, and about 14 B a sample of per-symbol buffers: 50 KB at 30 s,
   580 KB at 300 s, so the saving against the spectrogram is for short symbols only; a failing candidate is one forward sweep, a decode reads
-  once more for the SNR). Open: the coarse search (a whole-audio spectrogram), shrinking the per-symbol buffers (read i16 straight into the FFT
+  once more for the SNR). The coarse search is streamed too, band by band (`q65::search::coarse_search_streamed`: about 170 KB at 16 bands for 30A in place of 5.7 MB; bit-equal candidates; `bands` times the FFTs and reads). Open: the scan's shift grid and b90 ladder (a streamed scan), shrinking the per-symbol buffers (read i16 straight into the FFT
   buffer), and measuring the heap on a target.
 - **FT4, WSPR, Q65 on the same footing.** The pieces that carry: `PcmSource`/`CountingSource`, the heap meter and
   `--diag`, `cd0_fir` (parameterised by the protocol's decimation), the hard-sync gate (by `SyncMode`), the OSD gate.

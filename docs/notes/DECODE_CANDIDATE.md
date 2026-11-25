@@ -31,6 +31,17 @@ the AP flags, the SNR, the narrow rows' start. The scale cannot change any decod
 (`checked_add`), and the SNR fallback is lazy and gets the windows (`snr::tests`); the fallback's *content* (it re-reads the wide energies)
 is not pinned: no input that decodes reaches it.
 
+**The streamed coarse search** (`q65::search::coarse_search_streamed`) is pinned against the whole-spectrogram search to the bit (start,
+frequency, score, drift): a synthetic 15A slot at 1, 5 and more bands than columns, with and without a drift search; two real recordings (the
+10 GHz EME file, 3 candidates, and the 6 m EME files, 44) at 1 and 8 bands, drift 0 and 4. A counting source pins the reads (a forward sweep a band,
+a restart for each after the first, nothing skipped), and 10 000 bands is the columns' worth of sweeps. Mutations caught: a band's end, the drift
+margins, the unscaled column mean, the frame start, the row count, the column sum, the band clamp, the scale; no guard on short audio aborts the
+process. A narrow search window changes which candidates the percentile test admits (one signal of two on the synthetic slot), so the
+several-candidate case is the real recordings'.
+
+**Other platforms.** The noisy-slot conditions passed on CI's `ubuntu-latest` (x86_64, tier A+B, commit 72f6fea4) as well as on Apple arm64;
+fixed-point is not run. Their original wording follows.
+
 **Not verified: other platforms.** The noisy-slot conditions (WSPR sigma 45 seed 0, JT65 sigma 16, Q65 sigma 6.5 (here and in the
 streamed test, on a 16-bit slot scaled by 1/30), the Gaussian
 against the Lorentzian at 500) were chosen at the point where the options part, so they sit near a threshold. They pass on Apple

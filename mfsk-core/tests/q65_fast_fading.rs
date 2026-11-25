@@ -362,6 +362,98 @@ fn a_streamed_decode_equals_the_slice_decode_on_a_real_recording() {
     );
 }
 
+/// The streamed coarse search is the whole-spectrogram one on a real recording, at the default 200-3000 Hz window of a scan:
+/// one band and eight, with a drift search and without. The candidates (start, frequency, score and drift) must be equal to
+/// the bit. Returns how many were compared.
+fn streamed_coarse_search_equals_the_whole_one<P: mfsk_core::engine::ModulationParams>(
+    recordings: &str,
+) -> Option<usize> {
+    use mfsk_core::engine::source::SliceSource;
+    use mfsk_core::q65::search::{
+        build_spectrogram, coarse_search_drift_on_spec_for, coarse_search_streamed,
+    };
+
+    let Some(dir) = samples_dir(recordings) else {
+        common::skip_or_fail(recordings);
+        return None;
+    };
+    let params = SearchParams {
+        freq_min_hz: 200.0,
+        freq_max_hz: 3_000.0,
+        time_tolerance_early_sec: 30.0,
+        time_tolerance_late_sec: 30.0,
+        score_threshold: 0.05,
+        max_candidates: 32,
+    };
+    let bits = |v: &[(mfsk_core::q65::SyncCandidate, i32)]| {
+        v.iter()
+            .map(|(c, d)| (c.start_sample, c.freq_hz.to_bits(), c.score.to_bits(), *d))
+            .collect::<Vec<_>>()
+    };
+    let nominal = FS_U as usize * 30;
+    let mut found = 0usize;
+    for path in std::fs::read_dir(&dir)
+        .expect("read samples dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
+    {
+        let Some(audio) = read_wsjtx_wav(&path) else {
+            continue;
+        };
+        // the f32 of a 16-bit WAV is `i16 / 32768`: the i16 comes back exactly
+        let raw: Vec<i16> = audio
+            .iter()
+            .map(|&x| (x * 32_768.0).round() as i16)
+            .collect();
+        let spec = build_spectrogram::<P>(&audio, FS_U);
+        for (max_drift, bands) in [(0u32, 1usize), (0, 8), (4, 8)] {
+            let want =
+                coarse_search_drift_on_spec_for::<P>(&spec, FS_U, nominal, &params, max_drift);
+            let got = coarse_search_streamed::<P, _>(
+                &mut SliceSource(&raw[..]),
+                FS_U,
+                nominal,
+                &params,
+                max_drift,
+                bands,
+            );
+            assert_eq!(
+                bits(&want),
+                bits(&got),
+                "{}: drift {max_drift}, {bands} bands",
+                path.display()
+            );
+            found += want.len();
+        }
+    }
+    Some(found)
+}
+
+/// The 10 GHz EME file (one signal) and the 6 m EME files (several): something is found on each, so this cannot pass by both
+/// sides finding nothing.
+#[test]
+fn a_streamed_coarse_search_equals_the_whole_one_on_real_recordings() {
+    for (recordings, found) in [
+        (
+            "60D_EME_10GHz",
+            streamed_coarse_search_equals_the_whole_one::<Q65d60>("60D_EME_10GHz"),
+        ),
+        (
+            "60A_EME_6m",
+            streamed_coarse_search_equals_the_whole_one::<Q65a60>("60A_EME_6m"),
+        ),
+    ] {
+        if let Some(n) = found {
+            println!("{recordings}: {n} candidates compared, whole spectrogram against streamed");
+            assert!(
+                n > 0,
+                "{recordings}: no candidate on either side: the test compares nothing"
+            );
+        }
+    }
+}
+
 #[test]
 fn eme_10ghz_reference_decodes_with_fast_fading() {
     // Q65-60D 10 GHz EME recording. Fast-fading is REQUIRED for this

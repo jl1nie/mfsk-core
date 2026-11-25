@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Q65: the coarse search from a source (`coarse_search_streamed`)
+
+- **`q65::search::coarse_search_streamed::<P>(src, rate, nominal_start, &SearchParams, max_drift, bands)`**: the sync search without the slot's spectrogram (5.7 MB for 30A, 11.4 MB for 60A). A bin's curve reads its own column, so each of `bands` forward sweeps keeps one band of columns (about 170 KB at 16 bands for 30A); the candidates equal the whole-spectrogram search's to the bit (synthetic; two real recordings, 47 candidates). The price is `bands` times the FFTs and the reads. Underneath, the search's per-bin curve and candidate selection are shared by the whole and the banded paths. The scan's shift grid and b90 ladder are not streamed. Figures derived, not measured on a target.
+
 ### Q65: decode one candidate from a source read forward (`decode_candidate_streamed`)
 
 - **`q65::decode_candidate_streamed::<P>(&mut impl PcmSource, rate, &Q65Candidate)`**: `decode_candidate` for a slot that cannot be held. One symbol's samples at a time (`i16 / 32768`); the fast-fading metric streams its wide rows through `FastFadingStream` and keeps 16 128 B in place of the 48-290 KB wide spectrogram, plus about 14 B a sample of per-symbol buffers (so no saving against the spectrogram at 300 s; the audio is never held); a failing candidate is one forward sweep, a decode reads once more for the SNR. Plain, hint and list equal the slice decode to the bit, fading to float rounding (a real 10 GHz EME recording: 8 point decodes compared, SNR bits equal). Underneath, `SymbolWindows` (a slice or a `PcmSource`) replaced the audio slice in the row loop and the SNR's composite spectrum, with no result moved; the fit checks use `checked_add`. Not streamed: the coarse search. Memory figures are derived, not measured on a target.
@@ -10,7 +14,7 @@
 
 - **`engine::alignment::Alignment`** (`start_sample`, `freq_hz`; each mode re-exports it) and, per mode, a config struct and one function: **`wspr::decode_candidate(WsprInput::{audio, baseband}, &WsprCandidate)`**, **`jt65::decode_candidate(audio, rate, &Jt65Candidate)`** (`Jt65Strategy::{Hard, Erasures, Chase}`), **`jt9::decode_candidate(audio, rate, &Jt9Candidate)`**, **`q65::decode_candidate::<P>(audio, rate, &Q65Candidate)`** (precedence `ap_list`, `fading`, `ap_hint`, plain). Table and migration: `docs/reference/LIBRARY.md` §2.5.
 - **Deprecated since 0.17.0: `wspr::`, `jt9::`, `jt65::`, `q65::SniperRequest`**, removal in the next minor. `SniperRequest::decode` calls the function, so the decode is one. The four modes' tests and the boards' WSPR candidate loop call `decode_candidate`; the in-crate tests that build a `SniperRequest` through the internal `DecodeRequest::sniper` (Q65's pileup and hash table among them) remain and must move before removal. Q65's `on_result` has no counterpart.
-- Each option is pinned where it decides (`docs/notes/DECODE_CANDIDATE.md`); those conditions sit near thresholds and have run on Apple arm64 only.
+- Each option is pinned where it decides (`docs/notes/DECODE_CANDIDATE.md`); those conditions sit near thresholds; they pass on Apple arm64 and on CI's x86_64 runner (72f6fea4), not run in fixed-point.
 
 ### Q65: the fast-fading metric one row at a time (`FastFadingStream`)
 
