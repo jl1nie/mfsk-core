@@ -41,6 +41,7 @@ pub mod q65;
 
 pub use code::{DecoderScratch, ExtrinsicResult, QraCode, QraCodeType};
 pub use fast_fading::{
-    FadingModel, FastFadingState, FastFadingStream, esnodb_fast_fading, intrinsics_fast_fading,
+    FadingModel, FadingRow, FastFadingState, FastFadingStream, esnodb_fast_fading,
+    intrinsics_fast_fading,
 };
 pub use q65::{Q65_LLH_THRESHOLD, Q65Codec, Q65DecodeError};

@@ -2076,7 +2076,11 @@ What the table makes visible:
     fed **one symbol row at a time** (`push_row`, then `finish`): it keeps only the `63 x 64` metric (16 128 B whatever
     the sub-mode) and needs no mean energy in advance. Same probabilities to float rounding (a tolerance test over every
     sub-mode, both models and spreads across the table), same `FastFadingState` to the bit; the SNR estimate
-    (`esnodb_fast_fading`) still wants the wide energies once more after the decode.
+    (`esnodb_fast_fading`) still wants the wide energies once more after the decode. Under the stream is `fec::qra::FadingRow`, the
+    stateless block for a decoder with its own layout (several spreads from one row, the metrics of several candidates interleaved,
+    a store to spill them to): `metric(row, out)` is a row's logits before the division by the noise variance, `noise_var(mean_energy)`,
+    `probabilities(metric, noise_var, out)` and `state(noise_var)` finish them once the mean is known; `weights()` and `es_no_metric()` give the window
+    for a decoder that keeps its own tuned loop.
 
 [^uv]: uvpacket bypasses the generic pipeline, so several of its
     `ModulationParams` constants are decorative — present only to
