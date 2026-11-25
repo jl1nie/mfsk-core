@@ -21,8 +21,16 @@ use num_complex::Complex;
 // needed with no std in the graph; a dep linking std (the dev-only rustfft) makes f32's own methods shadow it
 use num_traits::Float;
 
-use super::super::params::{NMAX, NSPS, NTONES};
-use super::types::{AudioSample, NFFT_SPEC, NSTEP, SAMPLE_RATE_HZ, TONE_SPACING_HZ};
+use super::super::params::NTONES;
+// the 12 kHz constants: the fixed-point builder is still in them (its 8 kHz needs a 2560-point 16-bit plan), and so is
+// `compute_spectrogram_f32_timed`; the f32 builder takes everything from its `Ft8Rate`
+#[cfg(any(feature = "fixed-point", feature = "internal-testing"))]
+use super::super::params::{NMAX, NSPS};
+#[cfg(any(not(feature = "fixed-point"), feature = "internal-testing"))]
+use super::types::SAMPLE_RATE_HZ;
+use super::types::{AudioSample, Ft8Rate, TONE_SPACING_HZ};
+#[cfg(any(feature = "fixed-point", feature = "internal-testing"))]
+use super::types::{NFFT_SPEC, NSTEP};
 use crate::engine::source::{PcmSource, SliceSource, Window};
 
 // Needed by the f32 builder below, which exists in a `fixed-point`
@@ -118,10 +126,11 @@ impl Spectrogram {
 
 /// Rows of bins a spectrogram needs for carriers up to `max_freq_hz`: the carrier band plus the room the
 /// top tone of a carrier at its upper edge reads (`max_freq_hz + NTONES * tone spacing`).
-pub(super) fn spectrogram_n_freq(max_freq_hz: f32) -> usize {
-    let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
+pub(super) fn spectrogram_n_freq(max_freq_hz: f32, rate: Ft8Rate) -> usize {
+    // 3.125 Hz at every rate (`NFFT` is two symbols): the bins of a frequency do not move with the rate
+    let df = rate.hz() as f32 / rate.nfft() as f32;
     let band_top_hz = max_freq_hz + (NTONES as f32) * TONE_SPACING_HZ;
-    let n_freq_full = NFFT_SPEC / 2;
+    let n_freq_full = rate.nfft() / 2;
     ((band_top_hz / df).ceil() as usize + 1).min(n_freq_full)
 }
 
@@ -228,7 +237,7 @@ pub fn compute_spectrogram_f32_timed<S: AudioSample>(
 #[cfg(not(feature = "fixed-point"))]
 pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spectrogram {
     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Spectrogram);
-    compute_spectrogram_bins(audio, 0, spectrogram_n_freq(max_freq_hz))
+    compute_spectrogram_bins(audio, 0, spectrogram_n_freq(max_freq_hz, Ft8Rate::Hz12000))
 }
 
 /// [`compute_spectrogram`] for the bins `bin_lo..bin_hi` only (`n_freq = bin_hi - bin_lo`; bin `j` of
@@ -241,7 +250,13 @@ pub(super) fn compute_spectrogram_bins<S: AudioSample>(
     bin_lo: usize,
     bin_hi: usize,
 ) -> Spectrogram {
-    compute_spectrogram_bins_src(&mut SliceSource(audio), bin_lo, bin_hi, ())
+    compute_spectrogram_bins_src(
+        &mut SliceSource(audio),
+        Ft8Rate::Hz12000,
+        bin_lo,
+        bin_hi,
+        (),
+    )
 }
 
 /// What a band's spectrogram needs from the whole slot before it can be built: nothing in the f32 build.
@@ -256,22 +271,29 @@ pub(super) fn spectrogram_gain<A: PcmSource>(_src: &mut A) -> Gain {}
 #[cfg(not(feature = "fixed-point"))]
 pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
     src: &mut A,
+    rate: Ft8Rate,
     bin_lo: usize,
     bin_hi: usize,
     _gain: Gain,
 ) -> Spectrogram {
+    // The frame, the FFT and the step in samples of `rate`; the bins (3.125 Hz) and the rows (0.04 s) are the
+    // same at every rate, so what reads the spectrogram does not know the rate.
+    let (nsps, nfft, nstep, nmax) = (rate.nsps(), rate.nfft(), rate.nstep(), rate.nmax());
     assert!(
-        bin_lo <= bin_hi && bin_hi <= NFFT_SPEC / 2 + 1,
+        bin_lo <= bin_hi && bin_hi <= nfft / 2 + 1,
         "spectrogram bins out of range"
     );
     let n_freq = bin_hi - bin_lo;
-    let n_time = NMAX / NSTEP - 3;
-    let scale = 1.0f32 / 300.0;
+    let n_time = nmax / nstep - 3;
+    // A cell is `|FFT|^2` of a frame of `nsps` samples, so it goes as `nsps^2`: scaling the amplitude by the ratio of the
+    // rates makes a cell the same at either rate for the same signal and noise (what reads it is ratios, but
+    // `ratio_eps` is absolute). `x 1.0` at 12 kHz: the same bits as before the rate was an argument.
+    let scale = 1.0f32 / 300.0 * (SAMPLE_RATE_HZ / rate.hz() as f32);
 
     // A real-input FFT, as `sync8.f90`'s `four2a(x,NFFT1,1,-1,0)` is: half the work of the
     // complex FFT of a zero-imaginary signal this ran until #761, the same bins up to rounding.
     let mut planner = default_planner();
-    let fft = planner.plan_real_forward(NFFT_SPEC);
+    let fft = planner.plan_real_forward(nfft);
 
     // Rectangular window — matches WSJT-X `sync8.f90`. With NFFT=3840,
     // `tone_step_bins = 6.25 / (12000/3840) = 2.0` exactly, so the
@@ -279,17 +301,17 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
     // (The fixed-point path keeps Hann to mitigate the wider sidelobes
     // that come with NFFT=4096's fractional 2.13 bins/tone.)
     let mut data = vec![0.0f32; n_freq * n_time];
-    let mut input = vec![0.0f32; NFFT_SPEC];
-    let mut buf = vec![Complex::new(0.0f32, 0.0); NFFT_SPEC / 2 + 1];
+    let mut input = vec![0.0f32; nfft];
+    let mut buf = vec![Complex::new(0.0f32, 0.0); nfft / 2 + 1];
 
     let mut win = Window::new(src);
-    let mut frame = vec![0i16; NSPS];
+    let mut frame = vec![0i16; nsps];
     for j in 0..n_time {
-        let ia = j * NSTEP;
+        let ia = j * nstep;
         win.read_into(ia as i64, &mut frame);
         // `process` may use `input` as scratch, so it is rewritten whole for every row.
         for (k, c) in input.iter_mut().enumerate() {
-            *c = if k < NSPS {
+            *c = if k < nsps {
                 frame[k] as f32 * scale
             } else {
                 0.0
@@ -328,7 +350,7 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
 #[cfg(feature = "fixed-point")]
 pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spectrogram {
     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Spectrogram);
-    compute_spectrogram_bins(audio, 0, spectrogram_n_freq(max_freq_hz))
+    compute_spectrogram_bins(audio, 0, spectrogram_n_freq(max_freq_hz, Ft8Rate::Hz12000))
 }
 
 /// [`compute_spectrogram`] for the bins `lo..hi` only (`n_freq = hi - lo`; bin `j` of the result is bin
@@ -343,7 +365,7 @@ pub(super) fn compute_spectrogram_bins<S: AudioSample>(
 ) -> Spectrogram {
     let mut src = SliceSource(audio);
     let gain = spectrogram_gain(&mut src);
-    compute_spectrogram_bins_src(&mut src, lo, hi, gain)
+    compute_spectrogram_bins_src(&mut src, Ft8Rate::Hz12000, lo, hi, gain)
 }
 
 /// The slot-wide gain of the fixed-point spectrogram: the left shift that brings the slot's peak to
@@ -386,11 +408,17 @@ pub(super) fn gain_for_peak(peak_abs: i32) -> Gain {
 #[cfg(feature = "fixed-point")]
 pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
     src: &mut A,
+    rate: Ft8Rate,
     lo: usize,
     hi: usize,
     shift: Gain,
 ) -> Spectrogram {
     use crate::engine::fft::default_planner_16;
+
+    assert!(
+        rate == Ft8Rate::Hz12000,
+        "the fixed-point spectrogram is 12 kHz only: there is no 2560-point 16-bit plan, and `FP_SPEC_SHIFT` is calibrated for 3840"
+    );
 
     assert!(
         lo <= hi && hi <= NFFT_SPEC / 2 + 1,
@@ -594,5 +622,65 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
         n_freq,
         n_time,
         data,
+    }
+}
+
+#[cfg(all(test, not(feature = "fixed-point")))]
+mod tests {
+    use super::*;
+
+    /// A full slot holding a steady tone of `f` Hz at input rate `rate`.
+    fn tone(rate: Ft8Rate, f: f32) -> Vec<i16> {
+        let hz = rate.hz() as f32;
+        (0..rate.nmax())
+            .map(|n| (8000.0 * (core::f32::consts::TAU * f * n as f32 / hz).cos()) as i16)
+            .collect()
+    }
+
+    /// The spectrogram of either rate is the same grid: 3.125 Hz bins, 0.04 s (0.08 s under `nstep-half`) rows, the
+    /// same number of each, a tone in the same bin. What reads the spectrogram (`sync_grid`, the score, the gate)
+    /// does not know the rate, so a frame, FFT, step or slot length not scaled with it moves this: the rows beyond
+    /// the slot are silence, the bins are the wrong frequencies. Tones on the bin centres (a multiple of 3.125 Hz).
+    #[test]
+    fn the_spectrogram_of_either_rate_is_the_same_grid() {
+        let build = |rate: Ft8Rate, f: f32| {
+            let slot = tone(rate, f);
+            let n_freq = spectrogram_n_freq(3000.0, rate);
+            let s = compute_spectrogram_bins_src(&mut SliceSource(&slot), rate, 0, n_freq, ());
+            (n_freq, s)
+        };
+        for f in [500.0f32, 1000.0, 2500.0] {
+            let (n12, a) = build(Ft8Rate::Hz12000, f);
+            let (n8, b) = build(Ft8Rate::Hz8000, f);
+            assert_eq!(n12, n8, "bins up to 3 kHz + the tones");
+            assert_eq!((a.n_freq, a.n_time), (b.n_freq, b.n_time), "{f} Hz");
+            // a mid-slot row: the tone's bin is the strongest, and the same one
+            let peak = |s: &Spectrogram| {
+                let row = &s.data[(s.n_time / 2) * s.n_freq..][..s.n_freq];
+                row.iter()
+                    .enumerate()
+                    .max_by(|x, y| x.1.total_cmp(y.1))
+                    .unwrap()
+                    .0
+            };
+            assert_eq!(peak(&a), (f / 3.125) as usize, "12 kHz, {f} Hz");
+            assert_eq!(peak(&b), (f / 3.125) as usize, "8 kHz, {f} Hz");
+            // the last row still holds the tone, against a mid-slot row of the same spectrogram: the slot, not a
+            // longer one, is what the rows cover (a cell's size is the frame's, `NSPS^2`, so rates are compared
+            // within themselves)
+            let cell = |s: &Spectrogram, j: usize| {
+                s.data[j * s.n_freq..][..s.n_freq]
+                    .iter()
+                    .cloned()
+                    .fold(0.0, f32::max)
+            };
+            for (name, s) in [("12 kHz", &a), ("8 kHz", &b)] {
+                let (last, mid) = (cell(s, s.n_time - 1), cell(s, s.n_time / 2));
+                assert!(
+                    last > 0.5 * mid,
+                    "{name} {f} Hz: last row {last} against {mid}"
+                );
+            }
+        }
     }
 }

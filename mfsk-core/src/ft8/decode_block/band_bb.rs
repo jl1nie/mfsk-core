@@ -130,7 +130,7 @@ impl BandFilters {
             b: k(NB, 1500.0 / 6_000.0),
             c: k(NC, 500.0 / 3_000.0),
             d: k(ND, 102.0 / 1_000.0),
-            cd0: Cd0Filters::new(),
+            cd0: Cd0Filters::new(super::types::Ft8Rate::Hz12000),
         }
     }
 }
@@ -479,7 +479,7 @@ impl BandBaseband {
         let mut c = FirStage::from_taps(&f.c, 3, HIST_MARGIN);
         let mut d = FirStage::from_taps(&f.d, 5, HIST_MARGIN);
         let mut out: Vec<Complex<f32>> = Vec::with_capacity(CD0_LEN);
-        let mut sc = Scratch::new();
+        let mut sc = Scratch::new(3);
         let mut k = 0i64;
         while out.len() < CD0_LEN {
             // a block of the baseband mixed to this candidate's frequency, written into the first stage's history
@@ -534,7 +534,7 @@ impl BandStream {
         Self {
             a: FirStage::from_taps(&f.a, 2, HIST_MARGIN),
             b: FirStage::from_taps(&f.b, 2, HIST_MARGIN),
-            sc: Scratch::new(),
+            sc: Scratch::new(3),
             n: 0,
             rot: Rotor::new(f64::from(BB_CENTER_HZ), SAMPLE_RATE_HZ, 0),
             // room for the zero block `finish` flushes through (up to `BLOCK / DB` outputs past the slot's), so

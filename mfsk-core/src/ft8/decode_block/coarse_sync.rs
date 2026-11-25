@@ -23,7 +23,7 @@ use super::spectrogram::{
 };
 use super::types::AudioSample;
 use super::types::{
-    NFFT_SPEC, NSSY, NSTEP, SAMPLE_RATE_HZ, TONE_SPACING_HZ, TX_START_OFFSET_S, ratio_eps,
+    Ft8Rate, NFFT_SPEC, NSSY, NSTEP, SAMPLE_RATE_HZ, TONE_SPACING_HZ, TX_START_OFFSET_S, ratio_eps,
     sync_lag_s,
 };
 use crate::engine::source::{PcmSource, SliceSource};
@@ -1260,10 +1260,17 @@ pub fn coarse_sync_banded<S: AudioSample>(
     n_bands: usize,
 ) -> Vec<SyncCandidate> {
     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::CoarseSync);
-    banded_peaks(&mut SliceSource(audio), freq_min, freq_max, n_bands, false)
-        .map_or_else(Vec::new, |(peaks, g)| {
-            select_candidates(&peaks, &g, sync_min, max_cand)
-        })
+    banded_peaks(
+        &mut SliceSource(audio),
+        Ft8Rate::Hz12000,
+        freq_min,
+        freq_max,
+        n_bands,
+        false,
+    )
+    .map_or_else(Vec::new, |(peaks, g)| {
+        select_candidates(&peaks, &g, sync_min, max_cand)
+    })
 }
 
 /// Pool the hard-sync gate ranks: the coarse list is cut to this many by score before [`coarse_sync_gated`]
@@ -1283,12 +1290,15 @@ pub const HARD_SYNC_POOL: usize = 300;
 /// DFT stages then see 15-30 candidates that are mostly real. **A deliberate divergence from WSJT-X**, see
 /// `spec_hard_sync` below; the decodes still pass `ft8b`'s own gates (the 21-symbol `nsync`, BP/CRC).
 ///
-/// The audio comes from a [`PcmSource`] (a slot in memory is `SliceSource`), the form the radio needs: the slot is
+/// The audio comes from a [`PcmSource`] (a slot in memory is `SliceSource`) at `rate` ([`Ft8Rate`]: the spectrogram's frame
+/// and FFT are in samples of it; its bins and rows are not, so the candidates are the same list at either rate for the
+/// same signal), the form the radio needs: the slot is
 /// never held. Only `search`'s band, `sync_min` and `keep` are read (`lag_s` and `fill` are [`coarse_sync_gated_spec`]'s;
 /// set here they are ignored). It is read forward `bands` times (the spectrogram is built a band of carriers at a time), plus once more in the fixed-point build for the slot's
 /// peak (a value the capture could hand over instead).
 pub fn coarse_sync_gated<A: PcmSource>(
     src: &mut A,
+    rate: Ft8Rate,
     search: &GatedSearch,
     bands: usize,
 ) -> Vec<(SyncCandidate, u8)> {
@@ -1300,7 +1310,7 @@ pub fn coarse_sync_gated<A: PcmSource>(
         ..
     } = *search;
     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::CoarseSync);
-    let Some((peaks, g)) = banded_peaks(src, freq_min, freq_max, bands, true) else {
+    let Some((peaks, g)) = banded_peaks(src, rate, freq_min, freq_max, bands, true) else {
         return Vec::new();
     };
     let mut pool = select_candidates_with_sync(&peaks, &g, sync_min, HARD_SYNC_POOL);
@@ -1315,6 +1325,7 @@ pub fn coarse_sync_gated<A: PcmSource>(
 /// slot's gain (fixed-point build) and once for each band, forward.
 fn banded_peaks<A: PcmSource>(
     src: &mut A,
+    rate: Ft8Rate,
     freq_min: f32,
     freq_max: f32,
     n_bands: usize,
@@ -1323,8 +1334,8 @@ fn banded_peaks<A: PcmSource>(
     // `()` in the f32 build, which needs nothing from the whole slot; the fixed-point shift otherwise
     #[allow(clippy::let_unit_value)]
     let gain = spectrogram_gain(src);
-    banded_peaks_with(freq_min, freq_max, n_bands, hard_sync, |lo, hi| {
-        compute_spectrogram_bins_src(src, lo, hi, gain)
+    banded_peaks_with(rate, freq_min, freq_max, n_bands, hard_sync, |lo, hi| {
+        compute_spectrogram_bins_src(src, rate, lo, hi, gain)
     })
 }
 
@@ -1453,16 +1464,18 @@ pub fn coarse_sync_gated_spec(
 /// [`banded_peaks`] with the spectrogram of a band of bins from `build(lo, hi)`: from the audio, or from the
 /// band baseband (`band_bb`).
 fn banded_peaks_with<B: FnMut(usize, usize) -> Spectrogram>(
+    rate: Ft8Rate,
     freq_min: f32,
     freq_max: f32,
     n_bands: usize,
     hard_sync: bool,
     mut build: B,
 ) -> Option<(CarrierPeaks, SyncGrid)> {
-    let n_time = crate::ft8::params::NMAX / NSTEP - 3;
+    // 375 rows (184 under `nstep-half`) at every rate: the step is 0.04 s (0.08 s)
+    let n_time = rate.nmax() / rate.nstep() - 3;
     let g = sync_grid(
         n_time,
-        spectrogram_n_freq(freq_max),
+        spectrogram_n_freq(freq_max, rate),
         freq_min,
         freq_max,
         None,
@@ -1504,9 +1517,14 @@ pub fn coarse_sync_gated_band(
         ..
     } = *search;
     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::CoarseSync);
-    let Some((peaks, g)) = banded_peaks_with(freq_min, freq_max, n_bands, true, |lo, hi| {
-        bb.spectrogram_bins(lo, hi)
-    }) else {
+    let Some((peaks, g)) = banded_peaks_with(
+        Ft8Rate::Hz12000,
+        freq_min,
+        freq_max,
+        n_bands,
+        true,
+        |lo, hi| bb.spectrogram_bins(lo, hi),
+    ) else {
         return Vec::new();
     };
     let mut pool = select_candidates_with_sync(&peaks, &g, sync_min, HARD_SYNC_POOL);

@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 
 use icap_app_hosttest::{fft_shim, profile, resample::resample, wav};
+use mfsk_core::ft8::decode_block::Ft8Rate;
 
 /// Measured 2026-11-24 (`icap-profile --rate 8000 --max-cand 15`): f32 143 of 402, fixed-point 131 of 402
 /// (what the ESP32 boards ship), no extras either way; f32 gives the same figure at 12 kHz input, so the
@@ -92,6 +93,50 @@ fn the_low_memory_profile_meets_its_floor() {
         assert!(
             s.hits >= floor,
             "max_cand {max_cand}: recall {} < floor {floor}",
+            s.hits
+        );
+        assert_eq!(
+            s.unexplained, 0,
+            "max_cand {max_cand}: a decode jt9 lacks that is not attested"
+        );
+    }
+}
+
+/// The same, at 8 kHz **read as it is** (`Ft8Rate::Hz8000`): the recordings are resampled to 8 kHz once and nothing
+/// converts them back. Measured 2026-11-26 (f32): 224 and 273 of 402 against the round trip's 225 and 274, no extras;
+/// one signal is lost at 30 candidates (`websdr_test6`, `OM7AZA SV8EUB -11`, 348.5 Hz); at 45 and 60 the two recalls are equal
+/// (277 and 277, 278 and 278): a candidate on the edge of the list. No extras, as for the round trip. Not in the `fixed-point` build (no 8 kHz spectrogram there).
+#[cfg(not(feature = "fixed-point"))]
+#[test]
+fn the_low_memory_profile_at_native_8khz_meets_its_floor() {
+    for (max_cand, floor, round_trip_floor) in [
+        (15usize, 224usize, LOW_MEM_FLOOR_15),
+        (30, 273, LOW_MEM_FLOOR_30),
+    ] {
+        let mut runs = BTreeMap::new();
+        for stem in profile::stems() {
+            let slot12 = wav::load_i16(profile::asset_path(&stem));
+            let slot8 = resample(&slot12, 12_000, 8_000);
+            runs.insert(
+                stem,
+                profile::run_slot_at(&slot8, Ft8Rate::Hz8000, max_cand, Some(4)).decodes,
+            );
+        }
+        assert_embedded_path();
+        let s = profile::score(&runs);
+        println!(
+            "native 8 kHz max_cand {max_cand}: recall {}/{} extras {} (unexplained {})",
+            s.hits, s.reference, s.extras, s.unexplained
+        );
+        assert!(
+            s.hits >= floor,
+            "max_cand {max_cand}: recall {} < floor {floor}",
+            s.hits
+        );
+        // not meaningfully below what the resample to 12 kHz and back gets
+        assert!(
+            s.hits + 3 >= round_trip_floor,
+            "max_cand {max_cand}: {} against the round trip's floor {round_trip_floor}",
             s.hits
         );
         assert_eq!(

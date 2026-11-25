@@ -2940,15 +2940,20 @@ and differ only in which inner steps they enable:
 * `coarse_sync` / `coarse_sync_with_allsum` — the FT8 sync grid itself.
 * `fill_symbol_spectra` / `fill_symbol_spectra_goertzel` — per-symbol
   FFT extraction directly from audio.
-* `decode_block_low_mem(src, &GatedSearch, depth, LowMem)` — the low-memory profile for a
+* `decode_block_low_mem(src, Ft8Rate, &GatedSearch, depth, LowMem)` — the low-memory profile for a
   slot that cannot be held (an SD card read forward): candidates by hard sync, each one's 200 Hz baseband by a FIR
   cascade, and the same decode in every build. **Not `decode_block`'s decodes** (a deliberate divergence from
   `sync8.f90`'s score order, measured in
   [`ICAP_EMBEDDED_ANALYSIS.md`](../notes/ICAP_EMBEDDED_ANALYSIS.md)). The audio is an `engine::source::PcmSource` (any
   mode's: `SliceSource` for a slot in memory, `CountingSource` to charge what a forward-only card would). What is
   looked for (`GatedSearch`: band, score floor, `keep` candidates) is kept apart from how it is held (`LowMem {
-  coarse_bands, group }`: memory against SD reads and time; `LowMem::new`, `Default` = 4 and 4).
-* `coarse_sync_gated(src, &GatedSearch, bands)` / `coarse_sync_gated_spec(&Spectrogram, &GatedSearch)` — the hard-sync gate,
+  coarse_bands, group }`: memory against SD reads and time; `LowMem::new`, `Default` = 4 and 4). The rate is the audio's
+  (`Ft8Rate::Hz12000`, or `Hz8000` for a radio whose audio is 8 kHz: read as it is, no resample to 12 kHz in front; a
+  divergence from WSJT-X, which is 12 kHz only). The bins (3.125 Hz) and rows (0.04 s) of the spectrogram are the same at
+  either rate; only the frame, the FFT (1280 / 2560 samples) and the first stage of the 200 Hz cascade (8 kHz to 4 kHz)
+  differ. Not in the `fixed-point` build at `Hz8000` (it panics: there is no 2560-point 16-bit plan); with `fft-extern`, the binary's planner must give a 2560-point real FFT (the ESP32 one does not). Measured on the 22
+  recordings, 30 candidates: 273 of 402 against the round trip's 274, no extras, the decode 21 % shorter.
+* `coarse_sync_gated(src, Ft8Rate, &GatedSearch, bands)` / `coarse_sync_gated_spec(&Spectrogram, &GatedSearch)` — the hard-sync gate,
   from a `PcmSource` or from a spectrogram you already hold (the boards' streaming one: `GatedSearch::fill(SpecFill)`
   says how many rows are measured). One `GatedSearch::new(freq_min, freq_max, sync_min, keep)` serves both; `.lag_s()`
   and `.fill()` are the options (`bands` is how many bands the spectrogram is built in, one read each), and the doc of each function says which it reads.

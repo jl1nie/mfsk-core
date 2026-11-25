@@ -33,8 +33,8 @@ use super::fill_symbol_spectra::fill_symbol_spectra_goertzel;
 use super::fill_symbol_spectra::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
 use super::spectrogram::{Spectrogram, compute_spectrogram};
 use super::types::{
-    AudioSample, DEFAULT_Q_THRESH, LlrT, NFFT_SPEC, NMS_ALPHA, NSTEP, PassCtx, SAMPLE_RATE_HZ,
-    TONE_SPACING_HZ, TX_START_OFFSET_S,
+    AudioSample, DEFAULT_Q_THRESH, Ft8Rate, LlrT, NFFT_SPEC, NMS_ALPHA, NSTEP, PassCtx,
+    SAMPLE_RATE_HZ, TONE_SPACING_HZ, TX_START_OFFSET_S,
 };
 use crate::engine::frame::DecodeMethod;
 use crate::engine::scalar::{Cmplx, ComplexSpec};
@@ -1531,17 +1531,21 @@ impl Default for LowMem {
 ///
 /// `LowMem::coarse_bands` changes memory and time only: the decodes are the same for any number of bands.
 ///
+/// `rate` is the audio's ([`Ft8Rate`]): `Hz8000` reads a radio's 8 kHz as it is, with no resample to 12 kHz in front
+/// (a divergence from WSJT-X, which is 12 kHz only; not in the `fixed-point` build, where it panics).
+///
 /// [`fine_refine_3stage`]: crate::ft8::refine_fine::fine_refine_3stage
 pub fn decode_block_low_mem<A: crate::engine::source::PcmSource>(
     src: &mut A,
+    rate: Ft8Rate,
     search: &GatedSearch,
     depth: DecodeDepth,
     mem: LowMem,
 ) -> Vec<DecodeResult> {
     use super::cd0_fir::{Cd0Filters, build_group};
 
-    let gated = coarse_sync_gated(src, search, mem.coarse_bands);
-    let filters = Cd0Filters::new();
+    let gated = coarse_sync_gated(src, rate, search, mem.coarse_bands);
+    let filters = Cd0Filters::new(rate);
     decode_from_basebands(
         &gated,
         &filters,

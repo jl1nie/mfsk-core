@@ -122,7 +122,7 @@ pub use spectrogram::{SpecCell, Spectrogram, compute_spectrogram};
 pub const fn osd_available() -> bool {
     cfg!(any(feature = "fft-rustfft", feature = "osd"))
 }
-pub use types::{AudioSample, DEFAULT_Q_THRESH, NFFT_SPEC};
+pub use types::{AudioSample, DEFAULT_Q_THRESH, Ft8Rate, NFFT_SPEC};
 pub(in crate::ft8) use types::{LlrT, PassCtx};
 
 // ── Tests ───────────────────────────────────────────────────────────────────

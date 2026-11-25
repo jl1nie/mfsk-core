@@ -54,7 +54,9 @@ use std::path::Path;
 
 use mfsk_core::engine::source::SliceSource;
 use mfsk_core::ft8::decode::DecodeDepth;
-use mfsk_core::ft8::decode_block::{GatedSearch, LowMem, decode_block, decode_block_low_mem};
+use mfsk_core::ft8::decode_block::{
+    Ft8Rate, GatedSearch, LowMem, decode_block, decode_block_low_mem,
+};
 use mfsk_core::msg::wsjt77::unpack77;
 
 #[path = "common/ft8_qso3.rs"]
@@ -174,6 +176,7 @@ fn low_mem_messages(max_cand: usize, bands: usize) -> Vec<(String, bool)> {
     let slot = load_wav_i16(Path::new(QSO3_PATH));
     decode_block_low_mem(
         &mut SliceSource(&slot[..]),
+        Ft8Rate::Hz12000,
         &GatedSearch::new(100.0, 3000.0, 1.3, max_cand),
         DecodeDepth::EMBEDDED,
         LowMem::new(bands, 4),
@@ -226,6 +229,7 @@ fn the_number_of_bands_changes_no_decode() {
         let run = |bands| {
             decode_block_low_mem(
                 &mut SliceSource(&slot[..]),
+                Ft8Rate::Hz12000,
                 &GatedSearch::new(100.0, 3000.0, 1.3, max_cand),
                 DecodeDepth::EMBEDDED,
                 LowMem::new(bands, 4),
@@ -309,6 +313,7 @@ fn the_baseband_path_decodes_signals_off_every_grid() {
         let slot = synth_slot(std::slice::from_ref(c), 3000, 10_000.0);
         let out = decode_block_low_mem(
             &mut SliceSource(&slot[..]),
+            Ft8Rate::Hz12000,
             &GatedSearch::new(100.0, 3000.0, 1.3, 15),
             DecodeDepth::EMBEDDED,
             LowMem::new(3, 4),
@@ -346,6 +351,7 @@ fn the_baseband_path_separates_neighbours() {
     let slot = synth_slot(&sig, 3000, 6000.0);
     let out = decode_block_low_mem(
         &mut SliceSource(&slot[..]),
+        Ft8Rate::Hz12000,
         &GatedSearch::new(100.0, 3000.0, 1.3, 15),
         DecodeDepth::EMBEDDED,
         LowMem::new(2, 4),
@@ -374,6 +380,7 @@ fn the_baseband_path_keeps_its_sensitivity() {
         let slot = synth_slot(&[("CQ", &call, "FN42", f, dt)], 3000, 26_000.0);
         let out = decode_block_low_mem(
             &mut SliceSource(&slot[..]),
+            Ft8Rate::Hz12000,
             &GatedSearch::new(100.0, 3000.0, 1.3, 15),
             DecodeDepth::EMBEDDED,
             LowMem::new(3, 4),

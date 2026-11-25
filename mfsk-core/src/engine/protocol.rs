@@ -54,7 +54,11 @@
 ///   `msk144::{sync, decode, spd}`. Correct only while ingest is
 ///   12 kHz, which `engine::dsp::resample::resample_to_12k` guarantees
 ///   at the decode entry point. That guarantee has one owner, which is
-///   why a hundred call sites can assume it.
+///   why a hundred call sites can assume it. **One entry takes 8 kHz
+///   instead:** the FT8 low-memory decoders (`ft8::decode_block::Ft8Rate`),
+///   for a radio whose audio is 8 kHz; their spectrogram frame / FFT and
+///   the first stage of the 200 Hz cascade are in its samples, and
+///   nothing downstream of the 200 Hz baseband knows the rate.
 /// - **Analysis grid.** The receiver's own FFT resolution and
 ///   downsample rate — the kind #309's streaming DDC front end would
 ///   have to parametrise. These are the sites a rate-varying refactor
@@ -63,6 +67,7 @@
 ///   | site | what it is |
 ///   |---|---|
 ///   | `ft8::params::DF` | FT8 coarse-sync bin width (`12_000/NFFT1`) |
+///   | `ft8::decode_block::{spectrogram, cd0_fir}` | the low-memory path's frame, FFT, step and stage 1: `Ft8Rate` |
 ///   | `engine::ft4_coarse::DF_HZ` | FT4 coarse-sync bin width |
 ///   | `jt9::softsym::FSAMPLE_DOWN` | JT9 downsampled rate (`12_000/NDOWN`) |
 ///   | `jt9::softsym`'s two `df1` | JT9 `NFFT1` bin width, envelope + `downsam9` |

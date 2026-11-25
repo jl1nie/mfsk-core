@@ -110,6 +110,89 @@ pub(super) fn ratio_eps() -> f32 {
 /// 12 kHz fixed sample rate.
 pub(super) use crate::engine::protocol::SAMPLE_RATE_HZ;
 
+/// The sample rate of the audio the **low-memory** decoders ([`decode_block_low_mem`](super::decode_block_low_mem),
+/// [`coarse_sync_gated`](super::coarse_sync_gated)) read.
+///
+/// An enum and not a number: the rates this is built for are those whose symbol (0.16 s) is a whole number of
+/// samples at a rate the 200 Hz baseband divides, and whose filters have been designed and measured. Anything else
+/// is resampled to one of them by the caller.
+///
+/// **A deliberate divergence from WSJT-X**, which decodes FT8 at 12 kHz only: `Hz8000` is for a radio whose audio
+/// is 8 kHz (the ICAP), so that it need not resample to 12 kHz and pay 1.5x the samples. The analysis grid is the
+/// same (3.125 Hz a bin, 0.04 s a step, the tone step 2 bins: `NFFT` and `NSPS` scale with the rate), only the
+/// first stage of the 200 Hz cascade differs. `Hz12000` is every other path's rate and is bit-for-bit what these
+/// decoders did before the rate was an argument.
+///
+/// Not in the `fixed-point` build at `Hz8000` (it has no 2560-point 16-bit plan, and `FP_SPEC_SHIFT` is calibrated
+/// for 3840): the spectrogram panics there. With `fft-extern`, the binary's planner must give a **2560-point** real
+/// FFT at `Hz8000` (a planner that has 3840 only, as the ESP32 one does, panics at the first 8 kHz decode).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Ft8Rate {
+    /// 12 000 Hz: `NSPS` 1920, FFT 3840.
+    Hz12000,
+    /// 8 000 Hz: `NSPS` 1280, FFT 2560.
+    Hz8000,
+}
+
+impl Ft8Rate {
+    /// The rate for `hz`, if there is one: `12_000` and `8_000`. Anything else is resampled to one of them first
+    /// (`engine::dsp::resample`).
+    pub const fn from_hz(hz: u32) -> Option<Self> {
+        match hz {
+            12_000 => Some(Ft8Rate::Hz12000),
+            8_000 => Some(Ft8Rate::Hz8000),
+            _ => None,
+        }
+    }
+
+    /// The rate, Hz.
+    pub const fn hz(self) -> u32 {
+        match self {
+            Ft8Rate::Hz12000 => 12_000,
+            Ft8Rate::Hz8000 => 8_000,
+        }
+    }
+
+    /// Samples per symbol (0.16 s).
+    pub(super) const fn nsps(self) -> usize {
+        self.hz() as usize * 4 / 25
+    }
+
+    /// The spectrogram FFT: two symbols (WSJT-X `sync8.f90`'s `NFFT1`), so a tone is 2 bins at any rate.
+    pub(super) const fn nfft(self) -> usize {
+        2 * self.nsps()
+    }
+
+    /// The spectrogram's step between frames, samples (`NSPS / 4`, or `NSPS / 2` under `nstep-half`).
+    pub(super) const fn nstep(self) -> usize {
+        #[cfg(not(feature = "nstep-half"))]
+        {
+            self.nsps() / 4
+        }
+        #[cfg(feature = "nstep-half")]
+        {
+            self.nsps() / 2
+        }
+    }
+
+    /// The slot length the spectrogram covers, samples (15 s).
+    pub(super) const fn nmax(self) -> usize {
+        15 * self.hz() as usize
+    }
+}
+
+// The 12 kHz values are the crate's constants: the rate being an argument moves nothing at 12 kHz.
+const _: () = {
+    assert!(Ft8Rate::Hz12000.nsps() == NSPS);
+    assert!(Ft8Rate::Hz12000.nfft() == NFFT_SPEC);
+    assert!(Ft8Rate::Hz12000.nstep() == NSTEP);
+    assert!(Ft8Rate::Hz12000.nmax() == super::super::params::NMAX);
+    // the same analysis grid at every rate: bins of 3.125 Hz and steps of 0.04 s (0.08 s), a tone 2 bins
+    assert!(Ft8Rate::Hz8000.hz() as usize * 1000 / Ft8Rate::Hz8000.nfft() == 3125);
+    assert!(Ft8Rate::Hz8000.nstep() * 12_000 == Ft8Rate::Hz12000.nstep() * 8_000);
+};
+
 /// LLR / BP scalar for the hot loop. `Q11i16` (i16, ±16 range,
 /// 1/2048 resolution, ~12 KB BP scratch on FT8 LDPC(174,91)) under
 /// `fixed-point-llr`; `f32` otherwise (host / FPU targets). Both go

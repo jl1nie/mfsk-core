@@ -11,7 +11,7 @@ use mfsk_core::__internal::ft8_band_bb::{
 use mfsk_core::engine::source::{CountingSource, ReadCost, SliceSource};
 use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::{
-    GatedSearch, LowMem, coarse_sync_gated, decode_block, decode_block_low_mem,
+    Ft8Rate, GatedSearch, LowMem, coarse_sync_gated, decode_block, decode_block_low_mem,
 };
 use mfsk_core::ft8::subtract::subtract_signal_lpf;
 use mfsk_core::msg::wsjt77::unpack77;
@@ -84,6 +84,21 @@ pub struct Run {
 /// bands of carriers and with no block-0 spectrum kept per candidate (`decode_block_low_mem`), or as
 /// `decode_block` does with `None`.
 pub fn run_slot(slot: &[i16], max_cand: usize, low_mem_bands: Option<usize>) -> Run {
+    run_slot_at(slot, Ft8Rate::Hz12000, max_cand, low_mem_bands)
+}
+
+/// [`run_slot`] on a slot of audio at `rate`: `Hz8000` reads the radio's 8 kHz as it is (no resample to 12 kHz in front),
+/// `decode_block_low_mem` only (`decode_block` is 12 kHz).
+pub fn run_slot_at(
+    slot: &[i16],
+    rate: Ft8Rate,
+    max_cand: usize,
+    low_mem_bands: Option<usize>,
+) -> Run {
+    assert!(
+        rate == Ft8Rate::Hz12000 || low_mem_bands.is_some(),
+        "only decode_block_low_mem reads 8 kHz"
+    );
     let base = heap::reset_peak();
     let t = Instant::now();
     let out = match low_mem_bands {
@@ -97,6 +112,7 @@ pub fn run_slot(slot: &[i16], max_cand: usize, low_mem_bands: Option<usize>) -> 
         ),
         Some(bands) => decode_block_low_mem(
             &mut SliceSource(slot),
+            rate,
             &GatedSearch::new(200.0, 3000.0, SYNC_MIN, max_cand),
             LOW_MEM_DEPTH,
             LowMem::new(bands, 4),
@@ -259,6 +275,7 @@ pub fn run_slot_sic(slot: &[i16], max_cand: usize, low_mem_bands: usize, passes:
     for pass in 0..passes {
         let out = decode_block_low_mem(
             &mut SliceSource(&work[..]),
+            Ft8Rate::Hz12000,
             &GatedSearch::new(200.0, 3000.0, SYNC_MIN, max_cand),
             LOW_MEM_DEPTH,
             LowMem::new(low_mem_bands, 4),
@@ -316,11 +333,17 @@ pub struct StreamRun {
 
 /// [`run_slot`]'s low-memory profile as the radio runs it: `decode_block_low_mem` over a counted source.
 pub fn run_slot_stream(slot: &[i16], max_cand: usize, cfg: LowMem) -> StreamRun {
+    run_slot_stream_at(slot, Ft8Rate::Hz12000, max_cand, cfg)
+}
+
+/// [`run_slot_stream`] on a slot of audio at `rate` (`Hz8000`: the radio's, read as it is).
+pub fn run_slot_stream_at(slot: &[i16], rate: Ft8Rate, max_cand: usize, cfg: LowMem) -> StreamRun {
     let mut src = CountingSource::new(SliceSource(slot));
     let base = heap::reset_peak();
     let t = Instant::now();
     let out = decode_block_low_mem(
         &mut src,
+        rate,
         &GatedSearch::new(200.0, 3000.0, SYNC_MIN, max_cand),
         LOW_MEM_DEPTH,
         cfg,
@@ -387,6 +410,7 @@ pub fn run_slot_band(
         let t1 = Instant::now();
         let gated = coarse_sync_gated(
             &mut coarse_src,
+            Ft8Rate::Hz12000,
             &GatedSearch::new(200.0, 3000.0, SYNC_MIN, max_cand),
             bands,
         );
@@ -579,12 +603,14 @@ pub fn run_slot_variant(slot: &[i16], v: Variant, max_cand: usize) -> Run {
         Variant::V3 => decode_block(slot, 200.0, 3000.0, SYNC_MIN, osd_on, max_cand),
         Variant::V4 => decode_block_low_mem(
             &mut SliceSource(slot),
+            Ft8Rate::Hz12000,
             &GatedSearch::new(200.0, 3000.0, SYNC_MIN, max_cand),
             LOW_MEM_DEPTH,
             LowMem::new(1, 4),
         ),
         Variant::V5 => decode_block_low_mem(
             &mut SliceSource(slot),
+            Ft8Rate::Hz12000,
             &GatedSearch::new(200.0, 3000.0, SYNC_MIN, max_cand),
             DecodeDepth {
                 osd: false,
@@ -637,6 +663,7 @@ pub fn run_slot_variant(slot: &[i16], v: Variant, max_cand: usize) -> Run {
                 } else {
                     coarse_sync_gated(
                         &mut SliceSource(slot),
+                        Ft8Rate::Hz12000,
                         &GatedSearch::new(200.0, 3000.0, SYNC_MIN, keep),
                         1,
                     )

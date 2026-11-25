@@ -85,7 +85,7 @@ complex), **1.52 M the first stage (15 taps at 12 kHz, 50 %)**, 0.63 M the secon
 2. **12 kHz against 8 kHz.** ft8dec is native 8 kHz (2560-point FFT, 1280-sample symbols). mfsk-core's `Protocol` is
    12 kHz throughout, so every 12 kHz-rate loop (the mixer, stage 1, the spectrogram frames, the FFT size 3840 against
    2560) does 1.5x the work, and the host harness adds a 12 -> 8 -> 12 kHz resample that a radio would replace by a
-   cheap interpolator. *Derived, not measured:* going native would cut the 12 kHz-rate part of the work by a third.
+   cheap interpolator. *Derived, not measured:* going native would cut the 12 kHz-rate part of the work by a third. *Measured since* (2026-11-26, f32, `qso3_busy`, the decode alone by `--reps`, 20 repetitions): 765 M instructions at 15 candidates against 615 M native (-20 %), 1169 M against 979 M at 30 (-16 %), the decodes unchanged (11 and 14); the whole decode of the 22 recordings 21 % shorter. That is the whole decode, not only the 12 kHz-rate part, so the two figures are not the same quantity.
 3. **The bands.** 4 coarse bands cost 8.5 ms in repeated frame FFTs for memory that a u8 spectrogram would not need.
 4. **No subtraction yet** in the profile: ft8dec's figures include it; ours add 7-14 s of exact subtraction (below).
 
@@ -179,13 +179,13 @@ response test at the aliasing frequencies (`cd0_fir.rs`), and a weak-signal coun
 - **Fewer reads** (3.1): the gain from the capture, 2 coarse bands or a u8 spectrogram, i16 basebands, group 8.
 - **Code size** (3.5): `build-std` with `panic=immediate-abort`, the split image, and what OSD (3-4 signals, about
   10 KB?) is worth in a window of 80 KiB. The ARM figures above are for a stub FFT.
-- **8 kHz native.** `Protocol` constants are 12 kHz; the FIR cascade and the spectrogram would take an `NDOWN` and an
+- **8 kHz native: done for the low-memory FT8 path** (`Ft8Rate::Hz8000`; measured 2026-11-26: 273 of 402 at 30 candidates against the round trip's 274, the decode 21 % shorter, not the derived third; 12 kHz bit-for-bit unchanged; `fixed-point` and the other paths not). Before it: `Protocol` constants are 12 kHz; the FIR cascade and the spectrogram would take an `NDOWN` and an
   `NSPS` from them (FT4: `NDOWN` 18, 32 samples a symbol, as FT8's 60 and 32).
 - **FT4 on the ICAP.** What the code says (not measured on the radio): FT4's coarse search is `Ft4SavgBuilder::push(&[i16])`, one forward
   sweep (a `PcmSource` consumer as it is), and a candidate's baseband is `CandidateDdc::push_i16` fed forward, so the reads are
   `1 + ceil(candidates / group)`. A candidate's `cd0` is `CD0_LEN = 5 120` complex `f32`, **40 960 B** (FT8's is 25.6 KB): four held
   together are about 164 KB of the 240 KiB region, so `group` is the knob there too. `LowMem::coarse_bands` is not: the savg is a
-  1-D average and small. **Provisional**: the shape of FT8's entry (`decode_block_low_mem(src, &search, depth, mem)`, what is looked for apart
+  1-D average and small. **Provisional**: the shape of FT8's entry (`decode_block_low_mem(src, rate, &search, depth, mem)`, what is looked for apart
   from how it is held) is the starting point for an `ft4::` one, to be checked when that is written; the S3's FT4 receiver (`ft4_rx.rs`) is
   deadline-bound and holds its audio, and stays the regression baseline (not rewritten). `CandidateDdc` and `cd0_fir` are the same cascade
   with other decimations (18 and 60): to be unified then, against the S3's numbers. Open: the ICAP's FT4 deadline and SD speed.

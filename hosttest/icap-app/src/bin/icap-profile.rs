@@ -5,11 +5,16 @@
 use std::collections::BTreeMap;
 
 use icap_app_hosttest::{fft_shim, heap, profile, resample::resample, wav};
+use mfsk_core::ft8::decode_block::Ft8Rate;
 
 fn main() {
     let (mut rate, mut max_cand, mut bands, mut diag, mut sic) =
         (8_000u32, 15usize, None::<usize>, false, 0usize);
     let mut dump: Option<String> = None;
+    let mut native = false;
+    // `--reps N`: decode each `--wav` slot N times (the load and the resample once): the difference of two N is the decode's
+    // instructions alone
+    let mut reps = 1usize;
     let mut stream: Option<usize> = None;
     let mut band: Option<usize> = None;
     let mut band_coarse = false;
@@ -26,6 +31,14 @@ fn main() {
             "--rate" => {
                 rate = a[i + 1].parse().expect("--rate");
                 i += 2;
+            }
+            "--reps" => {
+                reps = a[i + 1].parse().expect("--reps N");
+                i += 2;
+            }
+            "--native" => {
+                native = true;
+                i += 1;
             }
             "--low-mem" => {
                 bands = Some(a[i + 1].parse().expect("--low-mem"));
@@ -81,16 +94,22 @@ fn main() {
                 i += 2;
             }
             x => panic!(
-                "unknown argument {x} (usage: icap-profile [--rate 8000|12000] [--max-cand N] [--low-mem BANDS] [--stream GROUP] [--sic PASSES] [--dump FILE] [--wav FILE]... [--diag])"
+                "unknown argument {x} (usage: icap-profile [--rate 8000|12000] [--max-cand N] [--low-mem BANDS] [--native] [--reps N] [--stream GROUP] [--sic PASSES] [--dump FILE] [--wav FILE]... [--diag])"
             ),
         }
     }
+    assert!(
+        !native || (band.is_none() && band_sic == 0 && sic == 0 && variant.is_none()),
+        "--native is the plain low-memory decode: it does not combine with --band, --band-sic, --sic or --variant"
+    );
     if !wavs.is_empty() {
         // Per-signal listing of given recordings (12 kHz mono WAV): what each pass found, and for what a later
         // pass found, the strongest decode within 60 Hz that was already there.
         for w in &wavs {
             let slot12 = wav::load_i16(w);
-            let slot = if rate == 12_000 {
+            let slot = if native {
+                resample(&slot12, 12_000, 8_000)
+            } else if rate == 12_000 {
                 slot12
             } else {
                 resample(&resample(&slot12, 12_000, rate), rate, 12_000)
@@ -109,11 +128,20 @@ fn main() {
                 continue;
             }
             if let (Some(group), 0) = (stream, band_sic) {
-                let s = profile::run_slot_stream(
-                    &slot,
-                    max_cand,
-                    mfsk_core::ft8::decode_block::LowMem::new(bands.unwrap_or(4), group),
-                );
+                let mut s = None;
+                for _ in 0..reps {
+                    s = Some(profile::run_slot_stream_at(
+                        &slot,
+                        if native {
+                            Ft8Rate::Hz8000
+                        } else {
+                            Ft8Rate::Hz12000
+                        },
+                        max_cand,
+                        mfsk_core::ft8::decode_block::LowMem::new(bands.unwrap_or(4), group),
+                    ));
+                }
+                let s = s.expect("--reps 0");
                 println!(
                     "\n== {w}  (method A, max_cand {max_cand}, {:.0} ms, peak heap {} B, SD {} KB)",
                     s.run.ms,
@@ -206,12 +234,21 @@ fn main() {
     );
     for stem in profile::stems() {
         let slot12 = wav::load_i16(profile::asset_path(&stem));
-        let slot = if rate == 12_000 {
+        let slot = if native {
+            // the radio's rate, read as it is: one resample from the recording, none back
+            assert!(
+                rate == 8_000 && bands.is_some(),
+                "--native is --rate 8000 with --low-mem"
+            );
+            resample(&slot12, 12_000, 8_000)
+        } else if rate == 12_000 {
             slot12
         } else {
             resample(&resample(&slot12, 12_000, rate), rate, 12_000)
         };
-        let r = if let Some(v) = variant {
+        let r = if native {
+            profile::run_slot_at(&slot, Ft8Rate::Hz8000, max_cand, bands)
+        } else if let Some(v) = variant {
             profile::run_slot_variant(&slot, v, max_cand)
         } else if let (Some(group), true) = (band, band_sic > 0) {
             let s = profile::run_slot_band_sic_with(

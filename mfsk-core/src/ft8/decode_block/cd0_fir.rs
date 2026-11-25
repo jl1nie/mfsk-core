@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! The per-symbol tone spectra of one candidate by a time-domain FIR decimator, `ft8b.f90`'s way without
-//! its 192 000-point FFT: mix the candidate's tone 0 to DC, decimate 12 kHz to 200 Hz in three short stages
-//! (3:1, 4:1, 5:1), and take a 32-point DFT of each symbol's 32 samples at the 8 tone bins.
+//! its 192 000-point FFT: mix the candidate's tone 0 to DC, decimate the input to 200 Hz in three short stages
+//! (12 kHz: 3:1, 4:1, 5:1; 8 kHz, [`Ft8Rate`]: 2:1, 4:1, 5:1), and take a 32-point DFT of each symbol's 32 samples at the 8 tone bins.
 //!
 //! `ft8_downsample.f90` makes the same 200 Hz baseband (`cd0`) from a 192 000-point FFT of the whole slot
 //! (1.5 MB, and the FFT, which the embedded planners do not carry); `fill_symbol_spectra_goertzel` makes the
 //! tone spectra straight from the 12 kHz samples, 632 DFTs of 1920 samples per candidate. This is the
-//! third way: the cost is one pass over the candidate's 12 kHz samples (the mixer and the first, 15-tap,
-//! stage), the rest runs at 4 kHz and below. On `qso3_busy.wav`, 30 candidates, host, scalar f32: about 4.5x
+//! third way: the cost is one pass over the candidate's input samples (the mixer and the first, 15-tap
+//! at 12 kHz, 11-tap at 8 kHz, stage), the rest runs at 4 kHz and below. On `qso3_busy.wav`, 30 candidates, host, scalar f32: about 4.5x
 //! faster than Goertzel's 632 DFTs per candidate (21.7 ms against 102.8 ms with the first, shorter filters).
 //!
 //! **Streaming**: a candidate's baseband is built sample by sample ([`Cd0Stream`]), each stage keeping only
@@ -16,7 +16,7 @@
 //! ([`build_group`]): the radio reads its SD card forward, in blocks, and cannot hold the slot.
 //!
 //! **The baseband is the slot's**, as `ft8_downsample.f90`'s is: sample `i` is centred on input sample `60 i`
-//! (`i / 200` s), `CD0_LEN` samples. `fine_refine_3stage` (`ft8b.f90`'s stages A-C) runs on it as it runs on
+//! (`40 i` at 8 kHz; `i / 200` s), `CD0_LEN` samples. `fine_refine_3stage` (`ft8b.f90`'s stages A-C) runs on it as it runs on
 //! the host's, and the symbol spectra are read at `(0.5 + dt) * 200 + 32 k`: the symbol grid is the 5 ms one
 //! of the 200 Hz rate, as in WSJT-X.
 //!
@@ -24,7 +24,7 @@
 //! cascade of windowed-sinc FIR filters (Kaiser, `beta` 6) with the same job: pass the 8 tones and what
 //! GFSK leaves around them (0-55 Hz above tone 0), refuse what would alias onto them at the 200 Hz rate.
 //! The filters' group delay is an integer number of input samples, so output `i` is centred exactly on
-//! input sample `60 i`.
+//! input sample `60 i` (`40 i`).
 
 use alloc::vec::Vec;
 
@@ -34,7 +34,7 @@ use num_traits::Float;
 
 use super::super::params::NN;
 use super::fill_symbol_spectra::{SymMask, sym_in_mask};
-use super::types::{SAMPLE_RATE_HZ, TX_START_OFFSET_S};
+use super::types::{Ft8Rate, TX_START_OFFSET_S};
 use crate::engine::dsp::fir_decimate::{FirStage, design_lowpass_kaiser};
 use crate::engine::dsp::nco::Rotor;
 use crate::engine::scalar::Cmplx;
@@ -42,22 +42,26 @@ use crate::engine::source::PcmSource;
 use crate::ft8::refine_fine::CD0_LEN;
 use num_complex::Complex;
 
-/// Stage 1: 12 kHz -> 4 kHz. Cutoff 1972 Hz, 15 taps: a Kaiser filter of `N` taps has a transition band of
+/// Stage 1: input rate -> 4 kHz. Cutoff 1972 Hz. At 12 kHz (M1 3): 15 taps, a Kaiser filter of `N` taps has a transition band of
 /// about `(A - 8) / (2.285 (N - 1))` radians (`A` the stopband attenuation, 63 dB at `beta` 6), which has to
 /// end before the first frequency that folds onto the tones: 3 945 Hz here, 945 Hz at stage 2, 145 Hz at 3.
 /// 9 taps and 17 taps (the first try) left 990 Hz only 28 dB down; `the_cascade_is_flat_...` pins it.
+/// At 8 kHz (M1 2) the same fold is at 3 945 Hz of an input whose Nyquist is 4 000: the transition is wider in
+/// radians (1.55 against 1.03), so fewer taps: `the_8k_cascade_is_flat_...` fails at 7 and passes at 9 (measured), so 11
+/// leaves two taps of margin.
 const N1: usize = 15;
 const M1: usize = 3;
+const N1_8K: usize = 11;
+const M1_8K: usize = 2;
 /// Stage 2: 4 kHz -> 1 kHz. Cutoff 500 Hz, 25 taps; stops from 945 Hz (1000 - 55).
 const N2: usize = 25;
 const M2: usize = 4;
 /// Stage 3: 1 kHz -> 200 Hz. Cutoff 102 Hz; stops from 145 Hz (200 - 55).
 const N3: usize = 43;
 const M3: usize = 5;
-/// 12 kHz samples per 200 Hz sample.
-const DECIM: usize = M1 * M2 * M3;
-/// Group delay of the cascade, in 12 kHz samples (an integer: all three filters have an odd length).
-const DELAY: i64 = ((N1 - 1) / 2 + M1 * (N2 - 1) / 2 + M1 * M2 * (N3 - 1) / 2) as i64;
+/// The scale of the tone spectra: the Goertzel sums' of a **12 kHz** slot (60 samples a baseband sample), whatever the input
+/// rate, so that what reads them (LLRs, `sync_quality`, SNR) sees the same numbers for the same signal at either rate.
+const SPECTRA_SCALE: f32 = 60.0;
 /// Output (200 Hz) samples per FT8 symbol: 0.16 s.
 const SYM: usize = 32;
 /// `FirStage`'s history margin, samples: its history is compacted (a copy of `ntaps` samples) every this many inputs, so a
@@ -66,6 +70,11 @@ const HIST_MARGIN: usize = 32;
 
 /// The filters and the DFT table, built once per decode and shared by all candidates.
 pub(super) struct Cd0Filters {
+    rate: Ft8Rate,
+    /// Stage 1's decimation (3 at 12 kHz, 2 at 8 kHz).
+    m1: usize,
+    /// Group delay of the cascade, in input samples (an integer: all three filters have an odd length).
+    delay: i64,
     /// The three stages' taps (Kaiser, `beta` 6, `engine::dsp::fir_decimate::design_lowpass_kaiser`), copied into a
     /// `FirStage` per candidate.
     t1: Vec<f32>,
@@ -76,7 +85,11 @@ pub(super) struct Cd0Filters {
 }
 
 impl Cd0Filters {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(rate: Ft8Rate) -> Self {
+        let (n1, m1) = match rate {
+            Ft8Rate::Hz12000 => (N1, M1),
+            Ft8Rate::Hz8000 => (N1_8K, M1_8K),
+        };
         let mut dft = [[(0.0f32, 0.0f32); SYM]; 8];
         for (k, row) in dft.iter_mut().enumerate() {
             for (n, v) in row.iter_mut().enumerate() {
@@ -85,7 +98,10 @@ impl Cd0Filters {
             }
         }
         Self {
-            t1: design_lowpass_kaiser(N1, 1972.0 / 12_000.0, 6.0),
+            rate,
+            m1,
+            delay: ((n1 - 1) / 2 + m1 * (N2 - 1) / 2 + m1 * M2 * (N3 - 1) / 2) as i64,
+            t1: design_lowpass_kaiser(n1, 1972.0 / f64::from(rate.hz()), 6.0),
             t2: design_lowpass_kaiser(N2, 500.0 / 4_000.0, 6.0),
             t3: design_lowpass_kaiser(N3, 102.0 / 1_000.0, 6.0),
             dft,
@@ -107,13 +123,14 @@ pub(super) struct Scratch {
 }
 
 impl Scratch {
-    pub(super) fn new() -> Self {
+    /// Scratch for a cascade whose first stage decimates by `m1`.
+    pub(super) fn new(m1: usize) -> Self {
         let v = |n: usize| (Vec::with_capacity(n), Vec::with_capacity(n));
         Self {
             ph: ([0.0; BLOCK], [0.0; BLOCK]),
-            s1: v(BLOCK / M1 + 2),
-            s2: v(BLOCK / (M1 * M2) + 2),
-            s3: v(BLOCK / DECIM + 2),
+            s1: v(BLOCK / m1 + 2),
+            s2: v(BLOCK / (m1 * M2) + 2),
+            s3: v(BLOCK / (m1 * M2 * M3) + 2),
         }
     }
 }
@@ -125,7 +142,7 @@ pub(super) struct Cd0Stream {
     /// First input sample the baseband needs, and the next one it expects.
     origin: i64,
     at: i64,
-    /// The mixer: `exp(-j 2 pi f n / 12 000)` for the input sample `n` (exact in the phase, no `f64` per sample).
+    /// The mixer: `exp(-j 2 pi f n / rate)` for the input sample `n` (exact in the phase, no `f64` per sample).
     rot: Rotor,
     s1: FirStage,
     s2: FirStage,
@@ -143,8 +160,8 @@ impl Cd0Stream {
             freq_hz,
             origin,
             at: origin,
-            rot: Rotor::new(f64::from(freq_hz), SAMPLE_RATE_HZ, origin),
-            s1: FirStage::from_taps(&f.t1, M1, HIST_MARGIN),
+            rot: Rotor::new(f64::from(freq_hz), f.rate.hz() as f32, origin),
+            s1: FirStage::from_taps(&f.t1, f.m1, HIST_MARGIN),
             s2: FirStage::from_taps(&f.t2, M2, HIST_MARGIN),
             s3: FirStage::from_taps(&f.t3, M3, HIST_MARGIN),
             out: Vec::with_capacity(CD0_LEN),
@@ -220,7 +237,7 @@ impl Cd0Stream {
     }
 }
 
-/// One candidate's 200 Hz baseband: sample `i` is centred on input sample `60 i`, `CD0_LEN` of them, tone 0
+/// One candidate's 200 Hz baseband: sample `i` is centred on input sample `60 i` (`40 i` at 8 kHz), `CD0_LEN` of them, tone 0
 /// at DC.
 pub(super) struct Cd0 {
     /// The frequency tone 0 was mixed to DC from.
@@ -248,8 +265,8 @@ pub(super) fn build_group<A: PcmSource>(f: &Cd0Filters, src: &mut A, freqs: &[f3
     // every stream starts at the same sample here (the slot's origin), so the read is one sweep from there
     let mut at = streams.first().map_or(0, |s| s.origin());
     let mut block = [0i16; 1024];
-    let mut sc = Scratch::new();
-    while at < src.len() as i64 + DELAY && streams.iter().any(|s| !s.done()) {
+    let mut sc = Scratch::new(f.m1);
+    while at < src.len() as i64 + f.delay && streams.iter().any(|s| !s.done()) {
         src.read(at, &mut block);
         for s in streams.iter_mut() {
             s.feed(at, &block, &mut sc);
@@ -260,7 +277,7 @@ pub(super) fn build_group<A: PcmSource>(f: &Cd0Filters, src: &mut A, freqs: &[f3
 }
 
 /// `fill_symbol_spectra_goertzel`'s contract from a [`Cd0`]: the 8 tone spectra of each symbol `mask`
-/// names, scaled to the Goertzel sums' (x 60, the decimation). The symbols start at the 200 Hz sample
+/// names, scaled to the Goertzel sums' of a 12 kHz slot (x 60, the 12 kHz decimation, kept at every rate). The symbols start at the 200 Hz sample
 /// nearest `(0.5 + dt_sec) * 200`.
 pub(super) fn fill_from_cd0(
     f: &Cd0Filters,
@@ -288,8 +305,8 @@ pub(super) fn fill_from_cd0(
                 b += x.re * s + x.im * c;
             }
             out[sym][k] = Cmplx {
-                re: a * DECIM as f32,
-                im: b * DECIM as f32,
+                re: a * SPECTRA_SCALE,
+                im: b * SPECTRA_SCALE,
             };
         }
     }
@@ -335,7 +352,7 @@ mod tests {
     /// of 5 ms here: the baseband's grid is the 200 Hz one.)
     #[test]
     fn tone_spectra_match_goertzel_on_a_clean_signal() {
-        let filters = Cd0Filters::new();
+        let filters = Cd0Filters::new(Ft8Rate::Hz12000);
         for (freq, dt) in [(217.3f32, -0.45f32), (1234.567, 0.31), (2987.2, 0.74)] {
             let (slot, tones) = slot_with(freq, dt);
             let mut g = [[Cmplx::<f32>::default(); 8]; 79];
@@ -366,29 +383,32 @@ mod tests {
         }
     }
 
+    /// The cascade's amplitude response to a tone `x` Hz above the carrier `f0`, at input rate `rate`: mixing it to `x` Hz
+    /// and reading the baseband's amplitude (a cosine mixes to amp/2 at +x).
+    fn response_at(rate: Ft8Rate, f0: f32, x: f32) -> f32 {
+        let filters = Cd0Filters::new(rate);
+        let hz = rate.hz() as f32;
+        let amp = 8000.0f32;
+        let slot: Vec<i16> = (0..15 * rate.hz() as usize)
+            .map(|n| (amp * (core::f32::consts::TAU * (f0 + x) * n as f32 / hz).cos()) as i16)
+            .collect();
+        let cd0 = one(&filters, &slot, f0);
+        // steady state, well inside the slot
+        let (mut a, mut n) = (0.0f32, 0);
+        for c in &cd0.cd0[1000..1000 + 4 * SYM] {
+            a += c.norm();
+            n += 1;
+        }
+        a / n as f32 / (amp / 2.0)
+    }
+
     /// The cascade's amplitude response after mixing: flat over the 0-50 Hz the eight tones and their
     /// GFSK skirts occupy, and at least 40 dB down at the frequencies the rate changes would fold onto it.
     /// Measured by mixing a tone `x` Hz above `f0` to `x` Hz and reading the baseband's amplitude.
     #[test]
     fn the_cascade_is_flat_over_the_tones_and_blind_to_what_would_alias() {
-        let filters = Cd0Filters::new();
-        let f0 = 1500.0f32;
-        let response = |x: f32| -> f32 {
-            let amp = 8000.0f32;
-            let slot: Vec<i16> = (0..180_000)
-                .map(|n| {
-                    (amp * (core::f32::consts::TAU * (f0 + x) * n as f32 / 12_000.0).cos()) as i16
-                })
-                .collect();
-            let cd0 = one(&filters, &slot, f0);
-            // steady state, well inside the slot; a cosine mixes to amp/2 at +x
-            let (mut a, mut n) = (0.0f32, 0);
-            for c in &cd0.cd0[1000..1000 + 4 * SYM] {
-                a += c.norm();
-                n += 1;
-            }
-            a / n as f32 / (amp / 2.0)
-        };
+        let (rate, f0) = (Ft8Rate::Hz12000, 1500.0f32);
+        let response = |x: f32| response_at(rate, f0, x);
         for x in [0.0f32, 6.25, 20.0, 43.75, 50.0] {
             let r = response(x);
             assert!((r - 1.0).abs() < 0.02, "{x} Hz: response {r}");
@@ -405,12 +425,96 @@ mod tests {
         }
     }
 
+    /// The same at 8 kHz, where stage 1 is 8 kHz -> 4 kHz (M1 2) and is the only stage that differs. A real tone
+    /// of the slot reaches the baseband at two offsets from the carrier (`+x` and, from its negative-frequency
+    /// image, `-(2 f0 + x)`), so the hazards are probed at two carriers: the stage-1 fold (offsets 3 945..4 000,
+    /// the Nyquist of the input) is reached by the image of a tone at `3 990 - f0`, and every one of the 12 kHz list
+    /// that a tone of the slot can reach (below 4 kHz) is in it. Fails if `N1_8K` is too short for the fold or
+    /// `M1_8K`, the cutoff or the mixer rate is wrong.
+    #[test]
+    fn the_8k_cascade_is_flat_over_the_tones_and_blind_to_what_would_alias() {
+        let rate = Ft8Rate::Hz8000;
+        for f0 in [1500.0f32, 2200.0] {
+            for x in [0.0f32, 6.25, 20.0, 43.75, 50.0] {
+                let r = response_at(rate, f0, x);
+                assert!((r - 1.0).abs() < 0.02, "f0 {f0}, {x} Hz: response {r}");
+            }
+            for x in [
+                -150.0f32,
+                150.0,
+                250.0,
+                400.0,
+                -400.0,
+                950.0,
+                990.0,
+                -1000.0,
+                1050.0,
+                1500.0,
+                1990.0,
+                3000.0 - f0,
+            ] {
+                // the tone itself must be below Nyquist and above DC
+                if !(20.0..3980.0).contains(&(f0 + x)) {
+                    continue;
+                }
+                let r = response_at(rate, f0, x);
+                assert!(r < 0.01, "f0 {f0}, {x} Hz: response {r} (not 40 dB down)");
+            }
+            // the image of a tone at `3990 - f0` lands 3 990 Hz below the carrier: the stage-1 fold, folded by 4 000
+            // onto +10 Hz of the baseband
+            let x = 3990.0 - 2.0 * f0;
+            let r = response_at(rate, f0, x);
+            assert!(
+                r < 0.01,
+                "f0 {f0}: the image of the Nyquist fold, response {r}"
+            );
+        }
+    }
+
+    /// A tone that runs to the end of the slot is still in the baseband's last samples that are centred inside it: the
+    /// loop that feeds the cascade runs `delay` input samples past the slot's end (zeros), so the filters' tail is
+    /// flushed. A delay that is too short leaves the last few outputs (about 5 at 8 kHz, 4 at 12 kHz) at zero.
+    #[test]
+    fn the_baseband_reaches_the_end_of_the_slot() {
+        for rate in [Ft8Rate::Hz12000, Ft8Rate::Hz8000] {
+            let filters = Cd0Filters::new(rate);
+            let hz = rate.hz() as f32;
+            // Slots whose last 1024-sample read ends 0 and 150 samples past their end: the loop runs `delay` input samples
+            // past the end, so a delay shorter than the group delay (197 at 8 kHz, 295 at 12 kHz) stops early on the second
+            // and leaves the filters' tail unflushed; on the first any delay above 0 reads one more block.
+            for gap in [0usize, 150] {
+                let len = (15 * rate.hz() as usize) / 1024 * 1024 - gap;
+                let slot: Vec<i16> = (0..len)
+                    .map(|n| {
+                        (8000.0 * (core::f32::consts::TAU * 1500.0 * n as f32 / hz).cos()) as i16
+                    })
+                    .collect();
+                let cd0 = build_group(&filters, &mut SliceSource(&slot), &[1500.0])
+                    .pop()
+                    .unwrap();
+                // the last baseband sample centred inside the slot: input (len - 1) / decim, decim = hz / 200
+                let last = (slot.len() - 1) / (rate.hz() as usize / 200);
+                let (inside, before) = (cd0.cd0[last - 1].norm(), cd0.cd0[last - 40].norm());
+                assert!(
+                    inside > 0.9 * before,
+                    "{rate:?} gap {gap}: baseband sample {} is {inside} against {before} before it",
+                    last - 1
+                );
+                // and nothing beyond what the input fed it: the samples centred after the slot decay to zero
+                assert!(
+                    cd0.cd0[last + 40].norm() < 0.01 * before,
+                    "{rate:?} gap {gap}: after the slot"
+                );
+            }
+        }
+    }
+
     /// Several basebands from one forward read are each the baseband built alone: the streams share the
     /// blocks, not state. And the read is one sweep of the slot (what the radio can afford), whatever the
     /// number of candidates.
     #[test]
     fn a_group_is_built_from_one_forward_read_and_equals_the_basebands_built_alone() {
-        let filters = Cd0Filters::new();
+        let filters = Cd0Filters::new(Ft8Rate::Hz12000);
         let (slot, _) = slot_with(1234.567, 0.31);
         let freqs = [217.3f32, 1234.567, 1240.0, 2987.2];
         let mut src = CountingSource::new(SliceSource(&slot[..]));
@@ -432,7 +536,7 @@ mod tests {
     /// `shift_freq` is the baseband a mixer at the shifted frequency would have made.
     #[test]
     fn shifting_a_baseband_is_remixing_it() {
-        let filters = Cd0Filters::new();
+        let filters = Cd0Filters::new(Ft8Rate::Hz12000);
         let (slot, _) = slot_with(1000.0, 0.0);
         let mut a = one(&filters, &slot, 1000.0);
         a.shift_freq(1.5);

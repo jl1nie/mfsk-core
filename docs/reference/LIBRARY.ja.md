@@ -2775,15 +2775,21 @@ FT8 モジュールは共有パイプラインの上に並列のエントリ群�
 * `coarse_sync` / `coarse_sync_with_allsum` — FT8 sync grid 本体
 * `fill_symbol_spectra` / `fill_symbol_spectra_goertzel` — 音声から
   直接シンボル毎 FFT を抽出
-* `decode_block_low_mem(src, &GatedSearch, depth, LowMem)` — スロットを保持できない場合
+* `decode_block_low_mem(src, Ft8Rate, &GatedSearch, depth, LowMem)` — スロットを保持できない場合
   (前方にだけ読める SD カード) の低メモリプロファイル。候補は hard sync 順、各候補の 200 Hz ベースバンドは FIR
   カスケードで作り、どのビルドでも同じデコードをする。**`decode_block` と同じデコードではない**
   (`sync8.f90` のスコア順からの意図的な逸脱。
   [`ICAP_EMBEDDED_ANALYSIS.md`](../notes/ICAP_EMBEDDED_ANALYSIS.md) に測定)。音声は `engine::source::PcmSource`
   (どのモードでも使える。メモリ上のスロットは `SliceSource`、前方読みのカードが課す費用を数えるには `CountingSource`)。
   何を探すか (`GatedSearch`: 帯域、スコアの下限、`keep` 個の候補) と、どう保持するか (`LowMem { coarse_bands,
-  group }`: メモリと SD 読み出しと時間のトレードオフ。`LowMem::new`、`Default` は 4 と 4) は分けてある。
-* `coarse_sync_gated(src, &GatedSearch, bands)` / `coarse_sync_gated_spec(&Spectrogram, &GatedSearch)` — hard sync ゲート。
+  group }`: メモリと SD 読み出しと時間のトレードオフ。`LowMem::new`、`Default` は 4 と 4) は分けてある。レートは音声のもの
+  (`Ft8Rate::Hz12000`、または音声が 8 kHz の無線機向けの `Hz8000`: 12 kHz へのリサンプルを前に挟まず、そのまま読む。
+  12 kHz のみの WSJT-X からの逸脱)。スペクトログラムのビン (3.125 Hz) と行 (0.04 s) はどちらのレートでも同じで、
+  フレーム、FFT (1280 / 2560 サンプル)、200 Hz カスケードの第 1 段 (8 kHz から 4 kHz) だけが違う。`fixed-point` ビルドの
+  `Hz8000` は非対応 (panic する。2560 点の 16 ビット plan がない)。`fft-extern` では、バイナリの planner が 2560 点の
+  実 FFT を提供する必要がある (ESP32 のものにはない)。22 録音、30 候補での測定: ラウンドトリップの 274 に対し
+  273 / 402、extras なし、デコード時間は 21 % 短い。
+* `coarse_sync_gated(src, Ft8Rate, &GatedSearch, bands)` / `coarse_sync_gated_spec(&Spectrogram, &GatedSearch)` — hard sync ゲート。
   `PcmSource` から、または既に持っているスペクトログラム (ボードのストリーミング用: `GatedSearch::fill(SpecFill)`
   が測定済みの行数を伝える) から。どちらも `GatedSearch::new(freq_min, freq_max, sync_min, keep)` を使い、
   `.lag_s()`、`.fill()` がオプション (`bands` はスペクトログラムを何帯域に分けて作るか。1 帯域ごとに音声を 1 回読む)。各関数の doc に、どれを読むかを書いてある。
