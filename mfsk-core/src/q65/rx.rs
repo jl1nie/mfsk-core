@@ -108,7 +108,11 @@ pub(super) fn extract_data_energies_w<P: ModulationParams, W: super::windows::Sy
     let bins_per_tone = (P::TONE_SPACING_HZ / df).round() as usize;
 
     let highest_bin = base_bin + 64 * bins_per_tone;
-    if start_sample + 85 * nsps > audio.len() || highest_bin >= nsps / 2 {
+    if start_sample
+        .checked_add(85 * nsps)
+        .is_none_or(|end| end > audio.len())
+        || highest_bin >= nsps / 2
+    {
         return None;
     }
 
@@ -400,7 +404,11 @@ pub(super) fn wide_layout<P: ModulationParams>(
     let wide_start = central_data_tone0 - 64; // 64 bins of leading pad
     let bins_per_symbol = 64 * (2 + bins_per_tone);
     let wide_end_exclusive = wide_start + bins_per_symbol;
-    if start_sample + 85 * nsps > audio_len || wide_end_exclusive > nsps / 2 {
+    if start_sample
+        .checked_add(85 * nsps)
+        .is_none_or(|end| end > audio_len)
+        || wide_end_exclusive > nsps / 2
+    {
         return None;
     }
     Some(WideLayout {

@@ -389,3 +389,49 @@ pub(crate) fn q65_snr_db_averaged<P: ModulationParams>(
         None => fallback_db,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q65::{Q65a30, synthesize_standard};
+    use core::cell::Cell;
+
+    /// The fallback of `q65_snr_db_w` is lazy and gets the windows: a spectrum without a baseline (an all-zero frame: `avg <=
+    /// 0`) calls it, with the windows it was given; a frame with a signal does not. (A streamed decode makes the fallback by
+    /// reading the audio again, so it must not be made unless it is needed. No input that decodes was found that reaches it:
+    /// its content is checked only by reading, and this test pins how it is reached.)
+    #[test]
+    fn the_snr_fallback_is_lazy_and_gets_the_windows() {
+        let silence = vec![0.0_f32; 85 * 3_600];
+        let called = Cell::new(0);
+        let mut w: &[f32] = &silence;
+        let v = q65_snr_db_w::<Q65a30, _>(&mut w, 12_000, 0, 1_500.0, &[0; 63], |windows| {
+            called.set(called.get() + 1);
+            windows.len() as f32
+        });
+        assert_eq!((called.get(), v), (1, (85 * 3_600) as f32));
+
+        // a frame that does not fit has no composite spectrum at all: the fallback is the answer
+        let short = vec![0.0_f32; 84 * 3_600];
+        let mut w: &[f32] = &short;
+        let v = q65_snr_db_w::<Q65a30, _>(&mut w, 12_000, 0, 1_500.0, &[0; 63], |windows| {
+            called.set(called.get() + 1);
+            windows.len() as f32 + 0.5
+        });
+        assert_eq!((called.get(), v), (2, (84 * 3_600) as f32 + 0.5));
+
+        let signal = synthesize_standard("K1ABC", "JA1ABC", "PM95", 12_000, 1_500.0, 0.3).unwrap();
+        let codeword = crate::q65::standard_qso_codewords("K1ABC", "JA1ABC", "PM95")[0];
+        let mut w: &[f32] = &signal;
+        let v = q65_snr_db_w::<Q65a30, _>(&mut w, 12_000, 0, 1_500.0, &codeword, |_| {
+            called.set(called.get() + 1);
+            -99.0
+        });
+        assert_eq!(
+            called.get(),
+            2,
+            "a frame with a signal does not make the fallback"
+        );
+        assert_ne!(v, -99.0);
+    }
+}

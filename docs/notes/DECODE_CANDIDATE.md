@@ -27,9 +27,12 @@ synthetic slot (clean and sigma 6.5; plain, hint, list, fading, a wrong list, 3 
 (the point decodes at the alignments the scan finds, and 5 Hz off: 8 compared, message, time, flag and SNR bits equal); a counting
 source pins the reads (miss: 63 symbols, no restart; hit: plus 85 symbols from the start, one restart); a short source gives
 nothing. Mutations caught: the source scale, the read start, the wide bins, the hint in the fading branch, the model and width,
-the AP flags, the SNR, the narrow rows' start. The scale cannot change any decode (so it is pinned by `PcmWindows`' own test).
+the AP flags, the SNR, the narrow rows' start. The scale cannot change any decode (so it is pinned by `PcmWindows`' own test). Also pinned: an empty list reads nothing, a start whose frame end overflows `usize` is no decode on either side
+(`checked_add`), and the SNR fallback is lazy and gets the windows (`snr::tests`); the fallback's *content* (it re-reads the wide energies)
+is not pinned: no input that decodes reaches it.
 
-**Not verified: other platforms.** The noisy-slot conditions (WSPR sigma 45 seed 0, JT65 sigma 16, Q65 sigma 6.5, the Gaussian
+**Not verified: other platforms.** The noisy-slot conditions (WSPR sigma 45 seed 0, JT65 sigma 16, Q65 sigma 6.5 (here and in the
+streamed test, on a 16-bit slot scaled by 1/30), the Gaussian
 against the Lorentzian at 500) were chosen at the point where the options part, so they sit near a threshold. They pass on Apple
 arm64 in debug, release and with one rayon thread; they have not run on x86 (rustfft's AVX rounding differs) or in
 fixed-point. Run them on the Linux reference machine, or in CI, before relying on them; a flip there means the condition

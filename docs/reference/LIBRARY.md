@@ -1339,14 +1339,17 @@ config struct (`new(at)` and builder methods), not a builder that ends in `.deco
 | Q65 | `q65::decode_candidate::<P>(audio, rate, &Q65Candidate)`; from a store read forward, `q65::decode_candidate_streamed::<P>(&mut impl PcmSource, rate, &Q65Candidate)` | `ap_hint`, `pileup`, `ap_list`, `fading(model, b90_ts)`, `hash_table`; precedence `ap_list`, then `fading` (with `ap_hint`), then `ap_hint`, then plain |
 
 **Q65 from a source read forward** (`engine::source::PcmSource`: an SD card, or `SliceSource` for a slice): `decode_candidate_streamed`
-gives the same result without ever holding the audio. It reads one symbol's `nsps` samples at a time (as `i16 / 32768`); the plain,
-AP-hint and AP-list decodes keep the 63 narrow rows (16 KB), the fast-fading metric streams its wide rows into
-`fec::qra::FastFadingStream` and keeps the `63 x 64` metric (16 128 B whatever the sub-mode; the whole wide spectrogram is 48 KB for
-sub-mode A to 290 KB for E). A candidate that fails costs one forward sweep over the 63 data symbols; one that decodes reads once more,
+gives the same result without ever holding the audio (1.4 MB for 30 s, 14 MB for 300 s, as `f32` at 12 kHz). It reads one symbol's
+`nsps` samples at a time (as `i16 / 32768`); the plain, AP-hint and AP-list decodes keep the 63 narrow rows (16 KB), the fast-fading
+metric streams its wide rows into `fec::qra::FastFadingStream` and keeps the `63 x 64` metric (16 128 B whatever the sub-mode) in place of
+the whole wide spectrogram (48 KB for sub-mode A to 290 KB for E). What it also holds grows with the symbol: about 14 bytes a sample (the
+windows and the FFT buffer) plus the FFT plan, 50 KB at 30 s, 100 KB at 60 s, 580 KB at 300 s, and the intrinsics (16 KB). So the saving
+against the wide spectrogram is real for short symbols only; against the audio it is always large. A candidate that fails costs one forward sweep over the 63 data symbols; one that decodes reads once more,
 from the start, over all 85 symbols, for the SNR. The plain, hint and list decodes equal the slice decode's to the bit (message,
 frequency, time, SNR, flag); the fading one equal to the float rounding of `FastFadingStream` (the message, time and SNR are the
 same on every case tested). The memory figures are derived from the types, not measured on a target; the coarse search that finds
-the candidate is still a whole-audio spectrogram and is not streamed.
+the candidate is still a whole-audio spectrogram and is not streamed. (The SNR has a fallback that reads the audio a third time and
+rebuilds the wide spectrogram; no input that decodes reaches it.)
 
 **The `SniperRequest` of these four modes is deprecated** (since 0.17.0; it calls the function above, so the decode is one):
 `SniperRequest::new(audio, rate, start, freq)` is `Alignment::new(start, freq)` in the candidate; WSPR's `::baseband(..)`

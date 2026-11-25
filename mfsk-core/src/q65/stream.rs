@@ -4,8 +4,14 @@
 //! The same decode as [`super::decode_candidate`] for a slot that cannot be held (an SD card read forward). It never holds
 //! the audio: it reads one symbol's `nsps` samples at a time, makes the symbol's row, and keeps only what the metric needs.
 //! The plain, AP-hint and AP-list decodes keep the 63 narrow rows (63 x 64 `f32`, 16 KB); the **fast-fading metric streams**
-//! its wide rows into a [`FastFadingStream`], so what it keeps is the 63 x 64 metric, 16 128 B whatever the sub-mode, where
-//! the whole wide spectrogram is 48 KB (sub-mode A) to 290 KB (E).
+//! its wide rows into a [`FastFadingStream`], so what it keeps of them is the 63 x 64 metric, 16 128 B whatever the sub-mode,
+//! where the whole wide spectrogram is 48 KB (sub-mode A) to 290 KB (E).
+//!
+//! **What else it holds** (derived from the types, not measured): the per-symbol buffers, about 14 bytes a sample (the
+//! `PcmWindows` buffers, 2 + 4, and the FFT's complex buffer, 8) plus the FFT plan, and the intrinsics, another 16 128 B. They grow
+//! with the symbol length: about 50 KB for a 30 s period (`nsps` 3 600), 100 KB for 60 s, 224 KB for 120 s, 580 KB for 300 s, plus
+//! the plan. So the audio is never held (1.4 MB for 30 s, 14 MB for 300 s at 12 kHz in `f32`), but the saving against the wide
+//! spectrogram is real only where the symbol is short against it; it is not a saving at 300 s.
 //!
 //! **Reads**: one forward sweep for the decode (the 63 data symbols, the 22 sync positions skipped). A decode that succeeds
 //! reads once more, from the start, for the SNR (`q65_snr_db`'s composite spectrum, over all 85 symbols along the decoded
@@ -99,7 +105,10 @@ pub fn decode_candidate_streamed<P: Q65SubMode, A: PcmSource>(
             &ctx,
             || {
                 q65_snr_db_w::<P, _>(&mut w, sample_rate, start, freq, &codeword, |w| {
-                    // the fallback is made from the wide energies, which were not held: read them again
+                    // The fallback is made from the wide energies, which were not held: read them again (it rebuilds the whole
+                    // wide spectrogram, 48-290 KB). It is reached only when the composite spectrum has no baseline, which no
+                    // input that decodes was found to cause: its content is checked by reading, the way it is reached by
+                    // `snr::tests::the_snr_fallback_is_lazy_and_gets_the_windows`.
                     let wide = collect_data_rows(
                         w,
                         sample_rate,
@@ -322,6 +331,39 @@ mod tests {
         let c = hit.cost();
         assert_eq!(c.restarts, 1, "the SNR reads from the start again: {c:?}");
         assert_eq!(c.samples_read, (63 + 85) * NSPS, "{c:?}");
+    }
+
+    /// A start so late that the frame's end overflows `usize` is no decode, from the slice and from a source, and is not a panic
+    /// (the fit checks add with `checked_add`: an unchecked sum wraps past the check in a release build and indexes out of the
+    /// slice, and panics outright in a debug one).
+    #[test]
+    fn a_start_that_overflows_is_no_decode() {
+        let (raw, f) = slot(0.0, 0);
+        let list = standard_qso_codewords("K1ABC", "JA1ABC", "PM95");
+        let at = Alignment::new(usize::MAX - 10, 1500.0);
+        for c in [
+            Q65Candidate::new(at),
+            Q65Candidate::new(at).fading(FadingModel::Lorentzian, 0.5),
+            Q65Candidate::new(at).ap_list(&list),
+        ] {
+            let (s, t) = both(&raw, &f, &c);
+            assert!(s.is_none() && t.is_none());
+        }
+    }
+
+    /// An empty candidate list is no decode, and reads nothing: the source is not touched.
+    #[test]
+    fn an_empty_list_reads_nothing() {
+        let (raw, _) = slot(0.0, 0);
+        let mut src = CountingSource::new(SliceSource(&raw[..]));
+        let empty: [[i32; 63]; 0] = [];
+        let r = decode_candidate_streamed::<Q65a30, _>(
+            &mut src,
+            12_000,
+            &Q65Candidate::new(at()).ap_list(&empty),
+        );
+        assert!(r.is_none());
+        assert_eq!(src.cost().samples_read, 0);
     }
 
     /// A source shorter than the frame is not decoded (the frame must fit), under every strategy.
