@@ -116,6 +116,8 @@ use crate::msg::Jt72Codec;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod averaging;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+mod candidate;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod chase;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub(crate) mod decode_request;
@@ -131,6 +133,8 @@ mod subtract;
 pub mod sync_pattern;
 pub mod tx;
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub use candidate::{Jt65Candidate, Jt65Strategy, decode_candidate};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use chase::ChaseParams;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]

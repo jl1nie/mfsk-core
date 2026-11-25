@@ -20,8 +20,10 @@ use alloc::vec::Vec;
 use crate::msg::Jt72Message;
 
 use super::Jt65Result;
+use super::Jt65Strategy;
 use super::chase::ChaseParams;
 use super::search::{SearchParams, default_search_params};
+use crate::engine::alignment::Alignment;
 
 /// Wide-band JT65 decode request: coarse (freq, time) search over
 /// `params`, then Reed-Solomon on each candidate in score order,
@@ -185,14 +187,6 @@ impl<'a> DecodeRequest<'a> {
     }
 }
 
-/// How [`SniperRequest`] runs Reed-Solomon. The last of
-/// [`SniperRequest::erasures`] / [`SniperRequest::chase`] called wins.
-enum RsStrategy<'a> {
-    Hard,
-    Erasures(&'a [usize]),
-    Chase(ChaseParams),
-}
-
 /// Single-target JT65 decode at a known `(start_sample, base_freq_hz)`.
 /// Construct with `DecodeRequest::sniper` or [`SniperRequest::new`].
 ///
@@ -203,7 +197,7 @@ pub struct SniperRequest<'a> {
     sample_rate: u32,
     start_sample: usize,
     base_freq_hz: f32,
-    strategy: RsStrategy<'a>,
+    strategy: Jt65Strategy<'a>,
 }
 
 impl<'a> core::fmt::Debug for SniperRequest<'a> {
@@ -224,7 +218,7 @@ impl<'a> SniperRequest<'a> {
             sample_rate,
             start_sample,
             base_freq_hz,
-            strategy: RsStrategy::Hard,
+            strategy: Jt65Strategy::Hard,
         }
     }
 
@@ -234,37 +228,23 @@ impl<'a> SniperRequest<'a> {
     /// (`2·errors + erasures ≤ 51`); `&[0, 8, 16, 24, 32]` is a
     /// reasonable ladder. Counts above 51 are clamped.
     pub fn erasures(mut self, attempts: &'a [usize]) -> Self {
-        self.strategy = RsStrategy::Erasures(attempts);
+        self.strategy = Jt65Strategy::Erasures(attempts);
         self
     }
 
     /// WSJT-X's `ftrsdap` stochastic Chase search — randomized erasure
     /// trials with its own acceptance gate. See [`super::chase`].
     pub fn chase(mut self, params: ChaseParams) -> Self {
-        self.strategy = RsStrategy::Chase(params);
+        self.strategy = Jt65Strategy::Chase(params);
         self
     }
 
     /// `None` when RS does not converge, the acceptance gate rejects
     /// it, or the payload does not unpack.
     pub fn decode(&self) -> Option<Jt72Message> {
-        let (audio, rate, start, freq) = (
-            self.audio,
-            self.sample_rate,
-            self.start_sample,
-            self.base_freq_hz,
-        );
-        match &self.strategy {
-            RsStrategy::Hard => {
-                super::decode_at_with_snr(audio, rate, start, freq).map(|(m, ..)| m)
-            }
-            RsStrategy::Erasures(attempts) => {
-                super::decode_at_with_erasures(audio, rate, start, freq, attempts)
-            }
-            RsStrategy::Chase(params) => {
-                super::chase::decode_at_with_chase(audio, rate, start, freq, params)
-                    .map(|(m, ..)| m)
-            }
-        }
+        let mut cand =
+            super::Jt65Candidate::new(Alignment::new(self.start_sample, self.base_freq_hz));
+        cand.strategy = self.strategy.clone();
+        super::decode_candidate(self.audio, self.sample_rate, &cand)
     }
 }
