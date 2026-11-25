@@ -29,6 +29,11 @@ rust-version = "1.93"
 name = "embedded_shared"
 
 [features]
+# `apps::gate_bench`: FT8 with the hard-sync gate, `fine_sync_12k` and OSD, against the shipped pipeline, on the board
+# (`docs/notes/S3_GATE_OSD_ABLATION.md`). `mfsk-core/osd` is the OSD fallback in a build without `fft-rustfft`; without
+# it `DecodeDepth::osd` is a silent no-op. Off by default: only the CoreS3 app's `ft8-gate-bench` bin turns it on.
+gate-bench = ["mfsk-core/osd"]
+
 # Enable LX7 PIE _aes3_ esp-dsp kernels (fc32 + sc16 radix-2 FFT).
 # Default-off so LX6 (Core2, xtensa-esp32-espidf) keeps the _ae32_ path.
 # Enabled by m5stack-s3 and m5stack-s3-app via features = ["aes3"].

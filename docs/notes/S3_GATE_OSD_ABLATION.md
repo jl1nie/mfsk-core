@@ -90,6 +90,32 @@ decode is a 5 ms-scale comb in dt, so a coarser grid aliases it). Decodes of the
 - **No unexplained decode in any arm, recording or phase** (a decode that is not one of the known signals: a phantom, a signal the reference lacks, or a copy). 7 arms x 3 recordings x 81 phases.
 - What the mirror cannot say: the time. The deadline (`cut`), the stage-3 time with OSD and the 292 ms `fine_sync_split` are the board's; a candidate that OSD makes slower can be one that the deadline then drops.
 
+## The board bench (`ft8-gate-bench`, stage 1 of the plan; written, **not yet run**)
+
+`embedded-poc/embedded-shared/src/apps/gate_bench.rs`, run by `m5stack-cores3-app`'s `ft8-gate-bench` bin (feature `ft8-gate-bench`, which turns on
+`mfsk-core/osd` through `embedded-shared/gate-bench`). Six arms (`ship`, `ship+fine`, `gate`, `gate+fine`, `ship+fine+osd`, `gate+fine+osd`) on `qso3_busy`,
+`qso1`, `qso2`, each twice (cold, warm; read the warm one), one core, all through the same stage 3 as `dual_core::stage3_split` (the `cs` scratch in
+internal DRAM). It prints one `GATEBENCH` line per run: the time of the spectrogram, coarse search, `fine_sync_12k`, pass 2 and stage 3, the number of
+candidates into stage 3 and of decodes, and the minimum free internal DRAM and PSRAM and the task's stack high-water mark. The OSD arms run last, so
+the stack mark after the arms before them is the stack without OSD. It does not model the streaming spectrogram, the second core, the deadline or the prefix: read
+the candidate stages (fine sync, pass 2, stage 3), not the totals.
+
+Compile-checked (`cargo check --release --features ft8-gate-bench --bin ft8-gate-bench`) and code-generated; **not linked here** (this Mac has `espflash` but no
+`ldproxy`: `cargo install ldproxy`), so no ELF exists yet. To run it, on a machine that can build and flash:
+
+```sh
+cd embedded-poc/m5stack-cores3-app
+cargo build --release --features ft8-gate-bench --bin ft8-gate-bench
+# the reference, same board and session: the shipped driver's stage times (no OSD)
+cargo build --release --features ft8-bench --bin ft8-bench
+# flash and capture through the script only (no second `espflash monitor`); change a source line before re-flashing the same ELF
+../scripts/flash-monitor.sh target/xtensa-esp32s3-espidf/release/ft8-gate-bench logs/cores3_gate_bench_$(date +%F).log 900
+```
+
+What to read first: `us_fine` of `ship+fine` (the board's `fine_sync_split` is documented at ~292 ms), `us_stage3` of `gate+fine+osd` against `gate+fine` (OSD's cost, and `n_stage3 - decodes` is the
+count of candidates it may have been tried on), `stack_free_min` after `gate+fine` and after `gate+fine+osd` (OSD's stack against the 16 KB main task), and
+`min_free_internal` (the plan's floor is 12 KB).
+
 ## Caveats (read before relying on this)
 
 - **Host only.** LX7 times, PSRAM effects and the dual-core split are not in any of it. In particular `fine_sync_12k`

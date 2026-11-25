@@ -6,6 +6,9 @@
 //! `Cargo.toml` (target / sdkconfig) and a 5-line `bin/*.rs` shim.
 
 pub mod compute_bench;
+/// FT8 gate + `fine_sync_12k` + OSD against the shipped pipeline, on the board (the S3 plan's stage 1).
+#[cfg(feature = "gate-bench")]
+pub mod gate_bench;
 #[cfg(feature = "jtty-bench")]
 pub mod jtty_bench;
 #[cfg(feature = "fst4-bench")]

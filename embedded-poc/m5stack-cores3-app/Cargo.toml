@@ -62,6 +62,13 @@ path = "src/bin/ft8_bench.rs"
 harness = false
 required-features = ["ft8-bench"]
 
+# FT8 gate + fine sync + OSD bench. Build: `cargo build --release --features ft8-gate-bench --bin ft8-gate-bench`.
+[[bin]]
+name = "ft8-gate-bench"
+path = "src/bin/ft8_gate_bench.rs"
+harness = false
+required-features = ["ft8-gate-bench"]
+
 # The FT4 receiver's desk demo: replays the vendored golden at 12 kHz
 # and runs the shipping slot pipeline over it. No USB host, so the
 # serial console survives and the board stays flashable.
@@ -220,6 +227,11 @@ ft4-replay = ["ft4"]
 # FT8's per-stage bench (`ft8-bench` bin). The 360 KB `qso3_busy.wav`
 # it bakes is why this is opt-in rather than always linked.
 ft8-bench = []
+
+# The S3 plan's stage 1 (`docs/notes/S3_GATE_OSD_ABLATION.md`): FT8's hard-sync gate, `fine_sync_12k` and OSD against the
+# shipped pipeline, stage by stage, with the stack and heap figures. Also turns on `mfsk-core/osd` through
+# `embedded-shared`; the `ft8-bench` bin does not have OSD and is the reference to run beside it on the same board.
+ft8-gate-bench = ["embedded-shared/gate-bench"]
 
 [dependencies]
 log = "0.4"
