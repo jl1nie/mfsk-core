@@ -76,7 +76,8 @@ const NAMES: [&str; N] = [
     "xsnr",
 ];
 
-#[cfg(feature = "std")]
+// The counters are `AtomicU64`: Xtensa (the ESP32 boards, which have `std`) has none, so they get the no-op below.
+#[cfg(all(feature = "std", target_has_atomic = "64"))]
 mod imp {
     use super::{N, NAMES, Stage};
     use core::cell::RefCell;
@@ -181,7 +182,7 @@ mod imp {
     }
 }
 
-#[cfg(not(feature = "std"))]
+#[cfg(not(all(feature = "std", target_has_atomic = "64")))]
 mod imp {
     use super::Stage;
 

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### The ESP32 boards build again
+
+- **`ft8::stage_timing` no longer stops the Xtensa boards compiling.** 0.16.2's `MFSK_TRACE_STAGE_FT8` counters are `AtomicU64`, which Xtensa lacks, so `m5stack-cores3-app`, `-s3-app`, `-core2-app` and `m5stack-s3` failed with E0432 from `2ad660fe` (2026-11-23) on; host CI does not build `embedded-poc`, so nothing noticed. The tracing is now compiled only where 64-bit atomics exist (`target_has_atomic = "64"`) and is the no-op elsewhere; host behaviour is unchanged. `cargo check --release` passes for the four boards again. Not flashed: no runtime path changed.
+
 ### Skimmer
 
 - **A short hole in a SpyServer stream no longer drops the open slots.** A missed sequence number (the server dropped messages while the path stalled, seen on a tethered link on 2026-11-22) called `IqReceiver::gap`, which drops every slot open across the hole. A hole of up to `GAP_FILL_MAX_S` (0.5 s) is now filled with silence in place, so the slots go on and FT8's FEC decides; a longer one keeps the old behaviour. Silence is the byte 128 in offset-binary `Cu8`, 0 elsewhere (`silence`). Test `short_spyserver_hole_keeps_the_slot`: an FT8 frame with 0.1 s missing decodes in `Cs16` and `Cu8`, one with 0.6 s missing is dropped, and it fails with the old `gap` call; `silence_is_zero_in_every_format` guards the `Cu8` byte (a zero-byte fill still decoded in that test). Checked: `skimmer-core` tests (`--release`), clippy. Not checked: a recorded corpus of real holes, a live SpyServer session; rtl_tcp (no sequence numbers) is unchanged.
