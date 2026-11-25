@@ -14,6 +14,8 @@
 // the decode API and this is reached only through `internal-testing`, so
 // its builders are dead in a build without it.
 #![cfg_attr(not(any(test, feature = "internal-testing")), allow(dead_code))]
+// `SniperRequest` is deprecated (its decode is `decode_candidate`); this module is where it and its constructors live.
+#![allow(deprecated)]
 
 use alloc::vec::Vec;
 
@@ -159,8 +161,11 @@ impl<'a> DecodeRequest<'a> {
 ///
 /// This is the plain aligned demodulator plus Fano at the default cycle
 /// budget, with no sync search, AFC or SNR estimate — which is why it
-/// returns the message alone rather than a [`Jt9Result`]. It is what
-/// `mfsk-ffi`'s `mfsk_jt9_decode_at` wraps.
+/// returns the message alone rather than a [`Jt9Result`].
+#[deprecated(
+    since = "0.17.0",
+    note = "use `jt9::decode_candidate(audio, sample_rate, Alignment::new(start_sample, freq_hz))`"
+)]
 pub struct SniperRequest<'a> {
     audio: &'a [f32],
     sample_rate: u32,

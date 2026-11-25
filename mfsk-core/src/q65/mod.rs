@@ -95,6 +95,7 @@ pub use ap_list::{MAX_AP_CODEWORDS, standard_qso_codewords};
 pub use candidate::{Q65Candidate, decode_candidate};
 pub use contest::{Caller, Q65Callers, contest_codewords};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[allow(deprecated)]
 pub use decode_request::{Q65SubMode, SniperRequest};
 // The wide-band requests are the engine's, reached through `__internal`
 // since 0.13: `crate::decoder::Decoder` is the decode API.

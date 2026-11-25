@@ -41,6 +41,8 @@
 // the decode API and this is reached only through `internal-testing`, so
 // its builders are dead in a build without it.
 #![cfg_attr(not(any(test, feature = "internal-testing")), allow(dead_code))]
+// `SniperRequest` is deprecated (its decode is `decode_candidate`); this module is where it and its constructors live.
+#![allow(deprecated)]
 
 #[cfg(not(feature = "std"))]
 #[allow(unused_imports)]
@@ -609,6 +611,10 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
 /// Replaces `q65::rx`'s `decode_at`/`decode_at_for`/
 /// `decode_at_with_ap`/`decode_at_with_ap_for`/`decode_at_fading_for`/
 /// `decode_at_with_ap_list_for` (issue #204).
+#[deprecated(
+    since = "0.17.0",
+    note = "use `q65::decode_candidate::<P>(audio, sample_rate, &Q65Candidate::new(Alignment::new(start_sample, freq_hz)))`"
+)]
 pub struct SniperRequest<'a, P: Q65SubMode> {
     audio: &'a [f32],
     sample_rate: u32,

@@ -14,6 +14,8 @@
 // the decode API and this is reached only through `internal-testing`, so
 // its builders are dead in a build without it.
 #![cfg_attr(not(any(test, feature = "internal-testing")), allow(dead_code))]
+// `SniperRequest` is deprecated (its decode is `decode_candidate`); this module is where it and its constructors live.
+#![allow(deprecated)]
 
 use alloc::vec::Vec;
 
@@ -190,8 +192,11 @@ impl<'a> DecodeRequest<'a> {
 /// Single-target JT65 decode at a known `(start_sample, base_freq_hz)`.
 /// Construct with `DecodeRequest::sniper` or [`SniperRequest::new`].
 ///
-/// Returns the message alone, as the point decodes always have; it is
-/// what `mfsk-ffi`'s `mfsk_jt65_decode_at` wraps.
+/// Returns the message alone, as the point decodes always have.
+#[deprecated(
+    since = "0.17.0",
+    note = "use `jt65::decode_candidate(audio, sample_rate, &Jt65Candidate::new(Alignment::new(start_sample, freq_hz)))`"
+)]
 pub struct SniperRequest<'a> {
     audio: &'a [f32],
     sample_rate: u32,

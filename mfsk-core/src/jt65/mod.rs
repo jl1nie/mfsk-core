@@ -138,6 +138,7 @@ pub use candidate::{Jt65Candidate, Jt65Strategy, decode_candidate};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use chase::ChaseParams;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[allow(deprecated)]
 pub use decode_request::SniperRequest;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use hint::{HintBank, HintSpec};

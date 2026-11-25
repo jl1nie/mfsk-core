@@ -366,7 +366,7 @@ API は無い。一発の呼び出しにしかできないことが無いから�
 | 領域 | 0.12 | 0.13 |
 |---|---|---|
 | デコード入口、FT8 / FT4 / FST4 | `msg::decode_request::DecodeRequest<P>` / `SniperRequest<P>` とそのビルダー | `Decoder::<P>::new(DecodeParams)` ＋ `decode(&SlotInput)`。オプションは `P::Extras`。リクエスト型は `pub(crate)`（`internal-testing` で `mfsk_core::__internal` から再エクスポートする） |
-| デコード入口、WSPR / JT9 / JT65 / Q65 | `wspr::`、`jt9::`、`jt65::`、`q65::DecodeRequest`。Q65 の `SniperRequest`、`MultiPeriodRequest` | 同じ `Decoder<P>`。広帯域リクエストは `pub(crate)`。`SniperRequest`（既知の位置でのデコード）は公開のまま。Q65 の平均は `averaging` ＋ `SlotInput::period` |
+| デコード入口、WSPR / JT9 / JT65 / Q65 | `wspr::`、`jt9::`、`jt65::`、`q65::DecodeRequest`。Q65 の `SniperRequest`、`MultiPeriodRequest` | 同じ `Decoder<P>`。広帯域リクエストは `pub(crate)`。`SniperRequest`（既知の位置でのデコード）は非推奨: `wspr::`、`jt9::`、`jt65::`、`q65::decode_candidate`。Q65 の平均は `averaging` ＋ `SlotInput::period` |
 | オプション | リクエストごとのビルダーメソッド（`.osd()`、`.strictness()`、`.eq_mode()`、`.ap_hint()`、`.sic_*()`、`.contest()`、`.tx_freq()`…） | `DecodeParams`（WSJT-X のブロック: 帯域、`rx_freq_hz`、`tx_freq_hz`、`depth`、`station`、`qso`、`ap`、`contest`、`eme_delay`…）とモード別の `Extras`（`Tuning`、`ap_hint`、`eq`、`filter`、`a7`、`sniper`、`noise_blanker`、Q65 のもの） |
 | 周期をまたぐ状態 | `.previous_cycle()`、`.hash_table(Arc)`、WSPR の `.table(&mut)` / `.confirmed()`、`MultiPeriodRequest` | デコーダの状態: `Decoder::clear()`、`learn_callsign`、`unpack77`。ハッシュ表はデコーダごとで、共有されない |
 | `wsjtx_depth` | `WsjtxDepth::{D1, D2, D3}` を取る FT8 のコンストラクタ | `DecodeParams::depth`、`Depth::{Fast, Normal, Deep}`: モードごとに、`ndepth` と同様に**探索設定の全てを決める** |
@@ -1248,15 +1248,24 @@ DT が 0.2 秒以内、周波数が `tol_hz`（既定 50 Hz）以内のものを
 ファントムなし、雑音 200 周期は既知局 1 000 件で 0 件（10 000 件で 1 件）。
 `docs/notes/BENCHMARKS.md`。
 
-**既知の位置でのデコード。** `wspr::SniperRequest`、`jt9::SniperRequest`、
-`jt65::SniperRequest`、`q65::SniperRequest` は公開のまま残る: 呼び出し側が既に持っている
-`(start_sample, frequency)` でのデコードは探索ではなく、WSPR ボード（`embedded-shared`）
-がその上に作られているからである。`SniperRequest::new(audio, rate, start_sample, freq_hz)`。
-WSPR の `::baseband(idat, qdat, …)` は、呼び出し側が既にデシメート済みのベースバンドで同じ
-ことをし、`.drift()`、`.nblocks()`、`.confirmed(&WsprCallsignTable)`、`.refine_drift()` を
-取る — スキャン自身のパスが候補ごとに設定するつまみである（CoreS3 の WSPR 受信機が自前の
-候補ループから駆動するのがこれ）。JT65 のそれは `.chase(..)` または
-`.erasures(&[0, 8, 16, 24, 32])` を取る（後から呼んだ方が勝つ）。
+**既知の位置でのデコード。** 呼び出し側が既に持っている `(start_sample, frequency)` でのデコードは探索ではない。
+WSPR、JT9、JT65、Q65 のそれぞれに関数があり、位置は共通の型 `engine::alignment::Alignment { start_sample,
+freq_hz }` で渡す（`SyncCandidate` は探索の*結果*であり、別物）。オプションは、`.decode()` で終わるビルダーではなく、
+`#[non_exhaustive]` な設定構造体のフィールド（`new(at)` とビルダーメソッド）である:
+
+| モード | 呼び出し | オプション |
+|---|---|---|
+| WSPR | `wspr::decode_candidate(WsprInput, &WsprCandidate)`。`WsprInput::audio(samples, rate)`、または既にデシメート済みのベースバンドなら `::baseband(idat, qdat, rate)` | `drift_hz`、`nblocks`、`confirmed(&WsprCallsignTable)`、`refine_drift`: スキャンのパスが候補ごとに設定するつまみ（ボードの候補ループがこれ） |
+| JT65 | `jt65::decode_candidate(audio, rate, &Jt65Candidate)` | `Jt65Strategy::{Hard, Erasures(&[0, 8, 16, 24, 32]), Chase(ChaseParams)}` |
+| JT9 | `jt9::decode_candidate(audio, rate, Alignment)` | なし |
+| Q65 | `q65::decode_candidate::<P>(audio, rate, &Q65Candidate)` | `ap_hint`、`pileup`、`ap_list`、`fading(model, b90_ts)`、`hash_table`。優先順位は `ap_list`、次に `fading`（`ap_hint` 付き）、次に `ap_hint`、最後に素のデコード |
+
+**この 4 モードの `SniperRequest` は非推奨**（0.17.0 から。上の関数を呼ぶので、デコードは 1 つ）:
+`SniperRequest::new(audio, rate, start, freq)` は、候補の `Alignment::new(start, freq)` になる。WSPR の
+`::baseband(..)` は `WsprInput::baseband(..)`、`.drift(d)` は `.drift_hz(d)`。JT65 の `.chase(..)` /
+`.erasures(..)` は `Jt65Candidate` の同名のメソッド。Q65 の `.on_result(cb)` に対応するものはない（戻り値と
+同時に 1 回呼ばれるだけだった）。どのオプションも、効く条件のテストで固定してある。ただし Q65 の `pileup` と
+`hash_table` は、結果を変える条件が見つからなかったため、固定していない。
 
 **Q65** は 10 個のサブモード ZST で、それぞれ `Decoder<Q65a30>` などになり、最も豊富な
 extras（`Q65Extras`）を持つ:
@@ -1322,7 +1331,7 @@ extras（`Q65Extras`）を持つ:
   fast-fading メトリックと `FadingModel::Lorentzian` による `(Δf, Δt, b90)` グリッド探索を
   通る（`q65_loops.f90`、`q65_dec_q012`）。WSJT-X の自動デコーダと同じで、あちらもスキャンで
   素の AWGN パスは走らせない。素の Bessel-I0 メトリックに続けて QRA 符号上で確率伝搬を行うのは、
-  既知の位置でのデコードである `q65::SniperRequest` を何も設定せずに呼んだときである。
+  既知の位置でのデコードである `q65::decode_candidate` を何も設定せずに呼んだときである。
   つまり「AWGN」と「fast-fading」は 2 つの入口（既知の位置かスキャンか）の名前であって、
   伝搬路で選ぶ 2 つのフロントエンドではない。`fading` は `(model, b90_ts)` を明示的に選ぶためにある。
 - **`ap_hint`** は BP の前に、既知のビット位置で内在確率を固定する。正しいヒントは BP の
@@ -2084,7 +2093,7 @@ Q65-120D と -300A について同じことを確認します。C ABI は
 | **FST4** | 全 depth で単一パス BP + OSD、`Normal` から `i0 ± 1` のタイミング再試行 | フルスロット2段コヒーレント sync 探索、`noise_blanker`（固定 % またはスイープ） |
 | **WSPR** | 四半シンボル・スペクトログラム走査の上で、wsprd の `-qB` / `-C 500 -o 4` / `+ -d` の各パス | `max_cycles_per_bit` |
 | **JT9** | `jt9` の候補段: `sync9` の 0.732 Hz ビンを低い側から順に試す。`ccflim` と Fano limit は depth ごと。`rx_freq_hz` では Rx 周波数パスを先に | — |
-| **JT65** | 減算付きの 2 / 2 / 4 パス。depth の `nvec` 回の試行を持つ確率的 Chase デコーダ | `chase`（RS 消失復号は `jt65::SniperRequest::erasures`） |
+| **JT65** | 減算付きの 2 / 2 / 4 パス。depth の `nvec` 回の試行を持つ確率的 Chase デコーダ | `chase`（RS 消失復号は `jt65::decode_candidate` の `Jt65Strategy::Erasures`） |
 | **Q65** | `(Δf,Δt,b90)` グリッド + Lorentzian フェージング BP（スキャン）、グリッドの労力は depth で決まる | AP ヒント、明示的な高速フェージング、AP リスト、平均、**q3** リスト復号、Max Drift、Pileup、EME 遅延（[§2.5](#25-extras-と-decoder-の外にあるプロトコル)） |
 | **MSK144** | T/R 周期全体のバースト走査 | — |
 | **JTTY** | ストリーミング: sync サーフェス、候補、4 段の list-WAVA ラダー、ゲート。デコードしたフレームを減算し、遡及再スイープし、フレームをメッセージに組み立てる | `Params::subtract` をオフ（単一信号の受信器） |

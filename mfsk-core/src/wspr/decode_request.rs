@@ -26,6 +26,8 @@
 // the decode API and this is reached only through `internal-testing`, so
 // its builders are dead in a build without it.
 #![cfg_attr(not(any(test, feature = "internal-testing")), allow(dead_code))]
+// `SniperRequest` is deprecated (its decode is `decode_candidate`); this module is where it and its constructors live.
+#![allow(deprecated)]
 
 use alloc::vec::Vec;
 
@@ -208,6 +210,10 @@ enum Source<'a> {
 ///
 /// [`WsprResult::snr_db`] is `0.0` here: the SNR comes from a coarse
 /// candidate, and a point decode has none.
+#[deprecated(
+    since = "0.17.0",
+    note = "use `wspr::decode_candidate(WsprInput::audio(..) or WsprInput::baseband(..), &WsprCandidate::new(Alignment::new(start_sample, freq_hz)))`"
+)]
 pub struct SniperRequest<'a> {
     source: Source<'a>,
     sample_rate: u32,

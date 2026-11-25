@@ -71,6 +71,7 @@ pub use candidate::decode_candidate;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use decode::Jt9Depth;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[allow(deprecated)]
 pub use decode_request::SniperRequest;
 // The wide-band request is the engine's, reached through `__internal`
 // since 0.13: `crate::decoder::Decoder` is the decode API.

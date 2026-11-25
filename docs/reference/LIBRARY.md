@@ -377,7 +377,7 @@ QSO, set `station`, or the `ap_hint` extra.
 | area | 0.12 | 0.13 |
 |---|---|---|
 | decode entry, FT8 / FT4 / FST4 | `msg::decode_request::DecodeRequest<P>` / `SniperRequest<P>` and their builders | `Decoder::<P>::new(DecodeParams)` + `decode(&SlotInput)`; options in `P::Extras`. The request types are `pub(crate)` (`internal-testing` re-exports them from `mfsk_core::__internal`) |
-| decode entry, WSPR / JT9 / JT65 / Q65 | `wspr::`, `jt9::`, `jt65::`, `q65::DecodeRequest`; Q65 `SniperRequest`, `MultiPeriodRequest` | the same `Decoder<P>`; the wide-band requests are `pub(crate)`. `SniperRequest` (decode at a known alignment) stays public. Q65 averaging is `averaging` + `SlotInput::period` |
+| decode entry, WSPR / JT9 / JT65 / Q65 | `wspr::`, `jt9::`, `jt65::`, `q65::DecodeRequest`; Q65 `SniperRequest`, `MultiPeriodRequest` | the same `Decoder<P>`; the wide-band requests are `pub(crate)`. `SniperRequest` (decode at a known alignment) is deprecated: `wspr::`, `jt9::`, `jt65::`, `q65::decode_candidate`, [§2.5](#25-extras-and-the-protocols-outside-decoder). Q65 averaging is `averaging` + `SlotInput::period` |
 | options | builder methods per request (`.osd()`, `.strictness()`, `.eq_mode()`, `.ap_hint()`, `.sic_*()`, `.contest()`, `.tx_freq()`, …) | `DecodeParams` (WSJT-X's block: band, `rx_freq_hz`, `tx_freq_hz`, `depth`, `station`, `qso`, `ap`, `contest`, `eme_delay`, …) and per-mode `Extras` (`Tuning`, `ap_hint`, `eq`, `filter`, `a7`, `sniper`, `noise_blanker`, Q65's) |
 | cross-period state | `.previous_cycle()`, `.hash_table(Arc)`, WSPR `.table(&mut)` / `.confirmed()`, `MultiPeriodRequest` | decoder state: `Decoder::clear()`, `learn_callsign`, `unpack77`; hash tables per decoder, never shared |
 | `wsjtx_depth` | FT8 constructor with `WsjtxDepth::{D1, D2, D3}` | `DecodeParams::depth`, `Depth::{Fast, Normal, Deep}`: **decides every search setting**, per mode, as `ndepth` |
@@ -1326,16 +1326,23 @@ averaged path. On the `jt65sim` corpus it takes the lowest cell (-25 dB) from 0/
 against a bank that lacks the station and none on 200 noise periods at 1 000
 known calls (1 at 10 000). `docs/notes/BENCHMARKS.md`.
 
-**Decoding at a known alignment.** `wspr::SniperRequest`, `jt9::SniperRequest`,
-`jt65::SniperRequest` and `q65::SniperRequest` stay public: a decode at a
-`(start_sample, frequency)` the caller already has is not a search, and the
-WSPR boards (`embedded-shared`) build on it. `SniperRequest::new(audio, rate,
-start_sample, freq_hz)`; WSPR's `::baseband(idat, qdat, …)` does the same on a
-baseband the caller already decimated, with `.drift()`, `.nblocks()`,
-`.confirmed(&WsprCallsignTable)` and `.refine_drift()` — the knobs the scan's own passes set per
-candidate (that is what the CoreS3 WSPR receiver drives from its own candidate
-loop). JT65's takes `.chase(..)` or `.erasures(&[0, 8, 16, 24, 32])` (the last
-of the two called wins).
+**Decoding at a known alignment.** A decode at a `(start_sample, frequency)` the caller already has is not a search;
+each of WSPR, JT9, JT65 and Q65 has a function for it, over one shared position type, `engine::alignment::Alignment {
+start_sample, freq_hz }` (not `SyncCandidate`, which is a search's *result*). Options are fields of a `#[non_exhaustive]`
+config struct (`new(at)` and builder methods), not a builder that ends in `.decode()`:
+
+| mode | call | options |
+|---|---|---|
+| WSPR | `wspr::decode_candidate(WsprInput, &WsprCandidate)`; `WsprInput::audio(samples, rate)` or `::baseband(idat, qdat, rate)` on a baseband already decimated | `drift_hz`, `nblocks`, `confirmed(&WsprCallsignTable)`, `refine_drift`: the knobs the scan's passes set per candidate (the boards' candidate loop is this) |
+| JT65 | `jt65::decode_candidate(audio, rate, &Jt65Candidate)` | `Jt65Strategy::{Hard, Erasures(&[0, 8, 16, 24, 32]), Chase(ChaseParams)}` |
+| JT9 | `jt9::decode_candidate(audio, rate, Alignment)` | none |
+| Q65 | `q65::decode_candidate::<P>(audio, rate, &Q65Candidate)` | `ap_hint`, `pileup`, `ap_list`, `fading(model, b90_ts)`, `hash_table`; precedence `ap_list`, then `fading` (with `ap_hint`), then `ap_hint`, then plain |
+
+**The `SniperRequest` of these four modes is deprecated** (since 0.17.0; it calls the function above, so the decode is one):
+`SniperRequest::new(audio, rate, start, freq)` is `Alignment::new(start, freq)` in the candidate; WSPR's `::baseband(..)`
+is `WsprInput::baseband(..)`, its `.drift(d)` is `.drift_hz(d)`; JT65's `.chase(..)` / `.erasures(..)` are the same
+methods of `Jt65Candidate`; Q65's `.on_result(cb)` has no counterpart (it fired once with the return value). Every option is
+pinned by a test where it decides, except Q65's `pileup` and `hash_table`, for which no case that changes a result was found.
 
 **Q65** is ten sub-mode ZSTs, one `Decoder<Q65a30>` etc. each, with the
 richest extras (`Q65Extras`):
@@ -1407,7 +1414,7 @@ against a different channel pathology:
   the fast-fading metric and `FadingModel::Lorentzian` (`q65_loops.f90`,
   `q65_dec_q012`), as WSJT-X's automatic decoder does: it never runs a
   plain-AWGN pass for its scan either. The plain Bessel-I0 metric followed
-  by belief propagation on the QRA code is what `q65::SniperRequest`, a
+  by belief propagation on the QRA code is what `q65::decode_candidate`, a
   decode at a known alignment, runs with nothing set. So "AWGN" and
   "fast-fading" name two entry points (known alignment vs scan), not two
   front ends picked by channel; `fading` is for choosing `(model, b90_ts)`
@@ -2240,7 +2247,7 @@ slot model with a burst scan, and JTTY with an incremental receiver.
 | **FST4** | single-pass BP + OSD at every depth; the `i0 ± 1` timing retry from `Normal` | full-slot two-stage coherent sync search; `noise_blanker` (fixed % or sweep) |
 | **WSPR** | wsprd's `-qB` / `-C 500 -o 4` / `+ -d` passes over the quarter-symbol spectrogram scan | `max_cycles_per_bit` |
 | **JT9**  | `jt9`'s candidate stage: `sync9`'s 0.732 Hz bins walked upwards, `ccflim` and the Fano limit by depth; the Rx-frequency pass first at `rx_freq_hz` | — |
-| **JT65** | 2 / 2 / 4 passes with subtraction; stochastic Chase decoder with the depth's `nvec` trials | `chase` (RS erasure decode is `jt65::SniperRequest::erasures`) |
+| **JT65** | 2 / 2 / 4 passes with subtraction; stochastic Chase decoder with the depth's `nvec` trials | `chase` (RS erasure decode is `Jt65Strategy::Erasures` in `jt65::decode_candidate`) |
 | **Q65**  | `(Δf,Δt,b90)` grid + Lorentzian fading BP (scan), grid effort by depth | AP-hint, explicit fast-fading, AP-list, averaging; **q3** list decode; Max Drift; Pileup; EME delay ([§2.5](#25-extras-and-the-protocols-outside-decoder)) |
 | **MSK144** | burst scan over the whole T/R period | — |
 | **JTTY** | streaming: sync surface, candidates, four-rung list-WAVA ladder, gate; decoded frames subtracted, retro re-sweep, frames assembled into messages | `Params::subtract` off (single-signal receiver) |
