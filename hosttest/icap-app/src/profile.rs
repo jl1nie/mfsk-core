@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::band_bb::{
-    BandBaseband, BandFilters, decode_band, decode_band_sic,
+    BandBaseband, BandFilters, SubMode, decode_band, decode_band_sic,
 };
 use mfsk_core::ft8::decode_block::source::{CountingSource, ReadCost, SliceSource};
 use mfsk_core::ft8::decode_block::{
@@ -429,6 +429,18 @@ pub fn run_slot_band_sic(
     group: usize,
     passes: usize,
 ) -> BandSicRun {
+    run_slot_band_sic_with(slot, max_cand, bands, group, passes, SubMode::F64)
+}
+
+/// [`run_slot_band_sic`] with the subtraction's arithmetic chosen.
+pub fn run_slot_band_sic_with(
+    slot: &[i16],
+    max_cand: usize,
+    bands: usize,
+    group: usize,
+    passes: usize,
+    sub: SubMode,
+) -> BandSicRun {
     let mut src = CountingSource::new(SliceSource(slot));
     let base = heap::reset_peak();
     let t = Instant::now();
@@ -446,6 +458,7 @@ pub fn run_slot_band_sic(
         bands,
         group,
         passes,
+        sub,
         &mut || t_sub.elapsed().as_secs_f64() * 1e3,
     );
     let ms = t.elapsed().as_secs_f64() * 1e3;

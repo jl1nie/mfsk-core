@@ -297,6 +297,132 @@ impl BandBaseband {
         peak
     }
 
+    /// [`Self::subtract`] with no `f64`: the same algorithm in `f32` throughout (the window's phasors, the running
+    /// sums, the weights), for a target whose `f64` is software (Xtensa LX7). The running sums add and remove
+    /// terms for up to 38 000 samples and nothing in the recursion removes their rounding error, but it stays
+    /// at the baseband's own `i16` rounding: against `subtract` the result differs by 1 LSB at most, on a
+    /// near-full-scale signal too (`subtracting_without_f64_is_the_f64_subtraction`). Re-making the sums exactly
+    /// every 64 or 512 samples was tried and changed nothing (1 LSB, 55 % more time), so it is not here.
+    /// Returns the largest `|amp|`.
+    pub fn subtract_f32(&mut self, tones: &[u8], freq_hz: f32, dt_sec: f32) -> f32 {
+        use crate::engine::dsp::gfsk::{GfskCfg, GfskStream};
+        type C = (f32, f32);
+        let cfg = GfskCfg {
+            sample_rate: SAMPLE_RATE_HZ,
+            samples_per_symbol: NSPS,
+            bt: 2.0,
+            hmod: 1.0,
+            ramp_samples: NSPS / 8,
+        };
+        let nwave = (tones.len() * NSPS) as i64;
+        let s0 = ((0.5 + dt_sec) * SAMPLE_RATE_HZ).round() as i64;
+        let kfirst = (s0 + DB as i64 - 1).div_euclid(DB as i64).max(0);
+        let klast = (s0 + nwave - 1)
+            .div_euclid(DB as i64)
+            .min(self.data.len() as i64 - 1);
+        if klast < kfirst {
+            return 0.0;
+        }
+        let n = (klast - kfirst + 1) as usize;
+        let base = kfirst as usize;
+        let j0 = (DB as i64 * kfirst - s0) as usize;
+        let mk = || {
+            let mut st = GfskStream::new(tones, freq_hz - BB_CENTER_HZ, &cfg);
+            st.skip(j0);
+            st
+        };
+        let (mut ra, mut rb) = (mk(), mk());
+
+        const H: usize = SUB_H;
+        const RL: usize = 2 * H + 2;
+        let th = core::f32::consts::PI / H as f32;
+        let (e1, e1c): (C, C) = ((th.cos(), th.sin()), (th.cos(), -th.sin()));
+        // e^{+j th m} for m = -H..=H
+        let tab: Vec<C> = (0..=2 * H)
+            .map(|i| {
+                let a = th * (i as f32 - H as f32);
+                (a.cos(), a.sin())
+            })
+            .collect();
+        let mul = |a: C, b: C| (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0);
+        let add = |a: C, b: C| (a.0 + b.0, a.1 + b.1);
+        let sub = |a: C, b: C| (a.0 - b.0, a.1 - b.1);
+
+        let mut ring = alloc::vec![(0.0f32, 0.0f32); RL];
+        let mut next_in = 0usize;
+        let mut c_in = |this: &Self, ra: &mut GfskStream, ring: &mut Vec<C>| -> C {
+            if next_in >= n {
+                next_in += 1;
+                return (0.0, 0.0);
+            }
+            let (rr, ri) = ra.peek_complex();
+            ra.skip(DB);
+            let (xr, xi) = this.get((base + next_in) as i64);
+            let c = (xr * rr + xi * ri, xi * rr - xr * ri);
+            ring[next_in % RL] = c;
+            next_in += 1;
+            c
+        };
+
+        let (mut z0, mut zp, mut zm) = ((0.0f32, 0.0f32), (0.0f32, 0.0f32), (0.0f32, 0.0f32));
+        let (mut w0, mut wp, mut wm) = (0.0f32, (0.0f32, 0.0f32), (0.0f32, 0.0f32));
+        for m in 0..=H {
+            let c = c_in(self, &mut ra, &mut ring);
+            let ind = if m < n { 1.0 } else { 0.0 };
+            let up = tab[m + H];
+            let um = (up.0, -up.1);
+            z0 = add(z0, c);
+            zp = add(zp, mul(up, c));
+            zm = add(zm, mul(um, c));
+            w0 += ind;
+            wp = add(wp, (up.0 * ind, up.1 * ind));
+            wm = add(wm, (um.0 * ind, um.1 * ind));
+        }
+
+        let mut peak = 0.0f32;
+        for t in 0..n {
+            let num = (
+                0.5 * z0.0 + 0.25 * (zp.0 + zm.0),
+                0.5 * z0.1 + 0.25 * (zp.1 + zm.1),
+            );
+            let den = 0.5 * w0 + 0.25 * (wp.0 + wm.0);
+            let (ar, ai) = if den > 1e-6 {
+                (num.0 / den, num.1 / den)
+            } else {
+                (0.0, 0.0)
+            };
+            let (rr, ri) = rb.peek_complex();
+            rb.skip(DB);
+            peak = peak.max((ar * ar + ai * ai).sqrt());
+            let (sr, si) = (ar * rr - ai * ri, ar * ri + ai * rr);
+            let v = &mut self.data[base + t];
+            let q = |x: f32| x.round().clamp(-32768.0, 32767.0) as i16;
+            v[0] = q(v[0] as f32 - sr);
+            v[1] = q(v[1] as f32 - si);
+
+            let (leave, ind_l) = if t >= H {
+                (ring[(t - H) % RL], 1.0f32)
+            } else {
+                ((0.0, 0.0), 0.0)
+            };
+            let ind_e = if t + H + 1 < n { 1.0f32 } else { 0.0 };
+            let enter = c_in(self, &mut ra, &mut ring);
+            z0 = add(sub(z0, leave), enter);
+            zp = mul(e1c, sub(add(zp, leave), mul(e1, enter)));
+            zm = mul(e1, sub(add(zm, leave), mul(e1c, enter)));
+            w0 += ind_e - ind_l;
+            wp = mul(
+                e1c,
+                sub(add(wp, (ind_l, 0.0)), (e1.0 * ind_e, e1.1 * ind_e)),
+            );
+            wm = mul(
+                e1,
+                sub(add(wm, (ind_l, 0.0)), (e1c.0 * ind_e, e1c.1 * ind_e)),
+            );
+        }
+        peak
+    }
+
     /// The spectrogram of the bins `lo..hi` of `NFFT_SPEC` (3.125 Hz apart), on the audio spectrogram's frame
     /// grid, from this baseband: each frame's `NSPS / 4` baseband samples zero-padded to `NFFT_SPEC / 4` and
     /// transformed (complex), the bin `i` of the audio being the baseband's bin `i - 512` (1600 Hz = bin
@@ -477,6 +603,14 @@ pub fn decode_band(
     )
 }
 
+/// How [`decode_band_sic`] subtracts: [`BandBaseband::subtract`] with `f64` sums, or [`BandBaseband::subtract_f32`]
+/// without `f64`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubMode {
+    F64,
+    F32,
+}
+
 /// What [`decode_band_sic`] did.
 #[derive(Debug, Default)]
 pub struct SicReport {
@@ -501,6 +635,7 @@ pub fn decode_band_sic(
     bands: usize,
     group: usize,
     passes: usize,
+    sub: SubMode,
     now_ms: &mut dyn FnMut() -> f64,
 ) -> (Vec<DecodeResult>, SicReport) {
     let mut all: Vec<DecodeResult> = Vec::new();
@@ -517,7 +652,10 @@ pub fn decode_band_sic(
         let t0 = now_ms();
         for r in &fresh {
             let tones = crate::engine::tx::message_to_tones::<crate::ft8::Ft8>(r.message77());
-            bb.subtract(&tones, r.freq_hz, r.dt_sec);
+            match sub {
+                SubMode::F64 => bb.subtract(&tones, r.freq_hz, r.dt_sec),
+                SubMode::F32 => bb.subtract_f32(&tones, r.freq_hz, r.dt_sec),
+            };
         }
         rep.subtract_ms += now_ms() - t0;
         let none = fresh.is_empty();
@@ -664,6 +802,9 @@ mod tests {
             "noise power ratio {noise_ratio}"
         );
     }
+
+    /// The most the `f32` subtraction may differ from the `f64` one, LSB of the baseband.
+    const F32_SUB_LSB: i32 = 2;
 
     /// What the mutation checks perturb the reference's frequency by; 0 in the committed test.
     const SUB_TEST_DF: f32 = 0.0;
@@ -834,5 +975,43 @@ mod tests {
         let uneven = s.finish();
         assert_eq!(whole.data, uneven.data, "uneven chunks");
         assert_eq!(whole.peak, uneven.peak);
+    }
+
+    /// The `f32` subtraction is the `f64` one, to rounding: on a busy slot with a strong signal (so the amplitude
+    /// is large and the sums long) the baseband after `subtract_f32` differs from `subtract`'s by at most
+    /// [`F32_SUB_LSB`] LSB. A recursion with a sign wrong
+    /// in `f32` only, or a re-made sum with a window off by one, differs by far more.
+    #[test]
+    fn subtracting_without_f64_is_the_f64_subtraction() {
+        let f = BandFilters::new();
+        let (freq, dt) = (1500.3f32, 0.2f32);
+        let mut slot = busy_slot();
+        for (o, x) in slot.iter_mut().zip(slot_with(freq, dt)) {
+            *o = o.saturating_add(x.saturating_mul(3));
+        }
+        let base = BandBaseband::from_source(&f, &mut SliceSource(&slot));
+        let tones = tones_of(freq);
+        let clone = || BandBaseband {
+            data: base.data.clone(),
+            peak: base.peak,
+        };
+        let mut want = clone();
+        want.subtract(&tones, freq, dt);
+        {
+            let mut got = clone();
+            got.subtract_f32(&tones, freq, dt);
+            let worst = want
+                .data
+                .iter()
+                .zip(&got.data)
+                .map(|(a, b)| {
+                    (a[0] as i32 - b[0] as i32)
+                        .abs()
+                        .max((a[1] as i32 - b[1] as i32).abs())
+                })
+                .max()
+                .unwrap();
+            assert!(worst <= F32_SUB_LSB, "{worst} LSB");
+        }
     }
 }

@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 
 use icap_app_hosttest::{fft_shim, profile, resample::resample, wav};
+use mfsk_core::ft8::decode_block::band_bb::SubMode;
 
 #[path = "../../../mfsk-core/tests/common/ft8_qso3.rs"]
 #[allow(dead_code)]
@@ -155,4 +156,42 @@ fn the_busy_slot_gives_19_of_20() {
             "max_cand {max_cand}: not in the golden: {extra:?}"
         );
     }
+}
+
+/// The subtraction with no `f64` (`SubMode::F32`, for a target whose `f64` is software) gives the `f64` one's
+/// recall: at the ship setting the same floor holds on the 22 recordings (measured 2026-11-25: f32 335, fixed-point
+/// 345, against 334 and 345 with `f64`), and the busy slot is still 19 of 20.
+#[test]
+fn subtraction_without_f64_keeps_the_recall() {
+    let mut runs = BTreeMap::new();
+    for (stem, slot) in slots() {
+        let r = profile::run_slot_band_sic_with(&slot, 15, 4, 4, 3, SubMode::F32);
+        runs.insert(stem, r.run.decodes);
+    }
+    assert_embedded_path();
+    let s = profile::score(&runs);
+    println!(
+        "f32 subtraction, 15 candidates: recall {}/{} unexplained {}",
+        s.hits, s.reference, s.unexplained
+    );
+    assert!(
+        s.hits >= THREE_PASS_15,
+        "recall {} < {THREE_PASS_15}",
+        s.hits
+    );
+    assert!(
+        s.unexplained <= MAX_UNEXPLAINED,
+        "{} unexplained",
+        s.unexplained
+    );
+
+    let slot12 = wav::load_i16(profile::asset_path("qso3_busy"));
+    let slot = resample(&resample(&slot12, 12_000, 8_000), 8_000, 12_000);
+    let r = profile::run_slot_band_sic_with(&slot, 15, 4, 4, 3, SubMode::F32);
+    let msgs: Vec<String> = r.run.decodes.iter().map(|d| d.0.clone()).collect();
+    let hits = QSO3_KNOWN_REAL_SIGNALS
+        .iter()
+        .filter(|g| msgs.contains(&profile::norm(g.msg)))
+        .count();
+    assert!(hits >= 19, "qso3_busy: {hits}/20");
 }

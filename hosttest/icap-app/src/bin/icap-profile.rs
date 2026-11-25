@@ -14,6 +14,7 @@ fn main() {
     let mut band: Option<usize> = None;
     let mut band_coarse = false;
     let mut band_sic = 0usize;
+    let mut sub = mfsk_core::ft8::decode_block::band_bb::SubMode::F64;
     let mut band_ms = [0.0f64; 3];
     let (mut sd_bytes, mut sd_calls, mut sd_restarts, mut sd_max) = (0u64, 0u64, 0u64, 0u64);
     let mut wavs: Vec<String> = Vec::new();
@@ -31,6 +32,15 @@ fn main() {
             }
             "--stream" => {
                 stream = Some(a[i + 1].parse::<usize>().expect("--stream GROUP"));
+                i += 2;
+            }
+            "--band-sub" => {
+                use mfsk_core::ft8::decode_block::band_bb::SubMode;
+                sub = match a[i + 1].as_str() {
+                    "f64" => SubMode::F64,
+                    "f32" => SubMode::F32,
+                    x => panic!("--band-sub f64 | f32, not {x}"),
+                };
                 i += 2;
             }
             "--band-sic" => {
@@ -103,12 +113,13 @@ fn main() {
                 continue;
             }
             if band_sic > 0 {
-                let s = profile::run_slot_band_sic(
+                let s = profile::run_slot_band_sic_with(
                     &slot,
                     max_cand,
                     bands.unwrap_or(4),
                     band.unwrap_or(4),
                     band_sic,
+                    sub,
                 );
                 println!(
                     "\n== {w}  (method C, max_cand {max_cand}, passes {band_sic}, new per pass {:?}, {:.0} ms of which subtraction {:.0}, peak heap {} B)",
@@ -186,8 +197,14 @@ fn main() {
             resample(&resample(&slot12, 12_000, rate), rate, 12_000)
         };
         let r = if let (Some(group), true) = (band, band_sic > 0) {
-            let s =
-                profile::run_slot_band_sic(&slot, max_cand, bands.unwrap_or(4), group, band_sic);
+            let s = profile::run_slot_band_sic_with(
+                &slot,
+                max_cand,
+                bands.unwrap_or(4),
+                group,
+                band_sic,
+                sub,
+            );
             sd_bytes += s.cost.bytes_moved();
             sd_calls += s.cost.calls;
             sd_restarts += s.cost.restarts;

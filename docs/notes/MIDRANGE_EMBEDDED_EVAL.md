@@ -116,6 +116,31 @@ quarter-second amplitude filter set the floor), so the baseband version loses no
   in `ICAP_EMBEDDED_ANALYSIS.md` does not reproduce with this build (a different configuration; not found again).
   Either is over ICAP's 80 KiB window.
 
+### Subtraction without `f64` (for a target whose `f64` is software, e.g. Xtensa LX7)
+
+`BandBaseband::subtract_f32` is `subtract` with every phasor, running sum and weight in `f32` (`SubMode::F32`).
+Measured 2026-11-25, host:
+
+| | 22 recordings, 15 cand. f32 / fixed | 30 cand. | `qso3_busy` | subtract, 22 files |
+|---|---:|---:|---:|---:|
+| `f64` | 334 / 345 | 353 / 350 | 19 of 20 | 390-413 ms |
+| **`f32`** | **335 / 345** | 353 / 350 | 19 of 20 | 397-418 ms |
+| `f32`, sums re-made exactly every 64 / 512 samples | 334 / 344 | 353 / 350 | 19 of 20 | 609-641 / 423-448 ms |
+
+At the sample level the `f32` result is the `f64` one's to **1 LSB** of the baseband (the baseband's own `i16`
+rounding), also with a near-full-scale signal, the worst case for the running sums. The recursion adds and removes
+terms for up to 38 000 samples and nothing in it removes the rounding, but at `f32` it does not matter here; the
+periodic exact re-sum (tried first, as insurance) buys nothing and costs 55 %, so it is not in the code. The test
+(`subtracting_without_f64_is_the_f64_subtraction`, 2 LSB) fails on a flipped window rotation, a leaving sample off by
+one and a missing end correction (11 238, 45 and 12 584 LSB).
+
+**This is the subtraction only.** `band_bb` still uses `f64` in three places, all small counts but each a software
+call on an LX7: the filter design (once per decode, `BandFilters::new`), the mixer's phase refreshed exactly every
+4 096 input samples (`BandStream`, about 45 times a slot) and every 64 baseband samples (`BandBaseband::cd0`, about 750
+times a candidate). Those were not changed, and **nothing was run on an Xtensa core**: that the recall holds says the
+arithmetic is enough, not that it is fast there. Not measured either: the `f32` build's own cost on LX7 (its FPU is
+single precision, so the `f32` sums are hardware there).
+
 ## 4. What was verified, and how
 
 Each new test was made to fail once by mutating the code it guards (`band_bb.rs`):
@@ -126,6 +151,7 @@ Each new test was made to fail once by mutating the code it guards (`band_bb.rs`
 | `the_band_spectrogram_is_the_audios` (main lobes 6 %, measured 3 %; noise power 10 %, measured 1.5 %) | the centre bin +1, scale x1.15, a frame of 3/4 length. **Not caught: a frame grid off by one baseband sample (0.33 ms), which moves the cells by under 0.5 %.** |
 | `subtracting_a_clean_signal_takes_it_out` (within 1 dB of the audio path) | a reference 0.5 Hz off, 3 Hz off, a start one baseband sample late, no end correction, a window phasor of the wrong sign, an amplitude x0.9 |
 | `the_sliding_window_is_the_direct_convolution` (2 LSB, measured 0) | the same last four |
+| `subtracting_without_f64_is_the_f64_subtraction` (2 LSB, measured 1) | a flipped window rotation, a leaving sample off by one, no end correction |
 | `the_baseband_does_not_depend_on_how_the_audio_arrives` | a phasor restarted per chunk |
 | `tests/band_baseband.rs`, `icap_budget.rs` | floors on the 22 recordings and `qso3_busy`; one read, no restart, no skipped sample; the heap ceiling |
 
