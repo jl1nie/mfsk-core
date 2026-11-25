@@ -81,6 +81,18 @@ fn extract_data_energies<P: ModulationParams>(
     start_sample: usize,
     base_freq_hz: f32,
 ) -> Option<Vec<f32>> {
+    let mut windows = audio;
+    extract_data_energies_w::<P, _>(&mut windows, sample_rate, start_sample, base_freq_hz)
+}
+
+/// [`extract_data_energies`] over any [`SymbolWindows`](super::windows::SymbolWindows): the 63 narrow rows, one symbol's
+/// samples read at a time.
+pub(super) fn extract_data_energies_w<P: ModulationParams, W: super::windows::SymbolWindows>(
+    audio: &mut W,
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+) -> Option<Vec<f32>> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps as f32;
     // The carrier is taken to the nearest bin and the residual is **not** mixed
@@ -102,7 +114,7 @@ fn extract_data_energies<P: ModulationParams>(
 
     // Q65 data tones are 1..=64 (tone 0 is reserved for sync). The
     // 6-bit symbol value `s` is on bin `base_bin + (s + 1) * bins_per_tone`.
-    Some(data_symbol_rows_chirped(
+    Some(collect_data_rows(
         audio,
         sample_rate,
         start_sample,
@@ -222,8 +234,8 @@ pub(crate) struct Chirp {
 /// takes them as they come. `sink` is handed the same `row_len` buffer each time, so it must copy what it keeps.
 /// The caller has already checked that the frame and every bin fit.
 #[allow(clippy::too_many_arguments)]
-fn for_each_data_row(
-    audio: &[f32],
+pub(super) fn for_each_data_row<W: super::windows::SymbolWindows>(
+    audio: &mut W,
     sample_rate: u32,
     start_sample: usize,
     nsps: usize,
@@ -243,14 +255,15 @@ fn for_each_data_row(
             continue;
         }
         let n0 = start_sample + sym_idx as usize * nsps;
+        let win = audio.window(n0, nsps);
         let buf = match chirp {
-            None => fft.real(audio, n0),
+            None => fft.real(win, 0),
             Some(chirp) => fft.with_input(|b| {
                 let mut phi = 0.0f32;
                 for (i, slot) in b.iter_mut().enumerate() {
                     let n = n0 + i;
                     let (sn, cs) = phi.sin_cos();
-                    *slot = Complex32::new(audio[n] * cs, -audio[n] * sn);
+                    *slot = Complex32::new(win[i] * cs, -win[i] * sn);
                     phi = (phi + w * chirp.hz * (n as f32 - chirp.centre) / chirp.len)
                         % core::f32::consts::TAU;
                 }
@@ -276,9 +289,32 @@ fn data_symbol_rows_chirped(
     bin_of: impl Fn(usize) -> usize,
     chirp: Option<Chirp>,
 ) -> Vec<f32> {
+    let mut windows = audio;
+    collect_data_rows(
+        &mut windows,
+        sample_rate,
+        start_sample,
+        nsps,
+        row_len,
+        bin_of,
+        chirp,
+    )
+}
+
+/// [`data_symbol_rows_chirped`] over any [`SymbolWindows`](super::windows::SymbolWindows).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn collect_data_rows<W: super::windows::SymbolWindows>(
+    windows: &mut W,
+    sample_rate: u32,
+    start_sample: usize,
+    nsps: usize,
+    row_len: usize,
+    bin_of: impl Fn(usize) -> usize,
+    chirp: Option<Chirp>,
+) -> Vec<f32> {
     let mut energies = Vec::with_capacity(row_len * 63);
     for_each_data_row(
-        audio,
+        windows,
         sample_rate,
         start_sample,
         nsps,
@@ -322,6 +358,35 @@ fn extract_data_energies_wide_chirped<P: ModulationParams>(
     base_freq_hz: f32,
     chirp: Option<Chirp>,
 ) -> Option<Vec<f32>> {
+    let lay = wide_layout::<P>(sample_rate, base_freq_hz, audio.len(), start_sample)?;
+    Some(data_symbol_rows_chirped(
+        audio,
+        sample_rate,
+        start_sample,
+        lay.nsps,
+        lay.bins_per_symbol,
+        |i| lay.wide_start + i,
+        chirp,
+    ))
+}
+
+/// Where the wide rows of a candidate sit in a symbol's spectrum, and whether they fit.
+pub(super) struct WideLayout {
+    pub(super) nsps: usize,
+    /// First FFT bin of a row: 64 bins before the central bin of data tone 0.
+    pub(super) wide_start: usize,
+    /// `64 * (2 + bins_per_tone)`.
+    pub(super) bins_per_symbol: usize,
+}
+
+/// The geometry [`extract_data_energies_wide_chirped`] and a streamed decode share. `None` when the frame does not fit in
+/// `audio_len` samples at `start_sample`, or the carrier is too close to DC, or the wide window runs past Nyquist.
+pub(super) fn wide_layout<P: ModulationParams>(
+    sample_rate: u32,
+    base_freq_hz: f32,
+    audio_len: usize,
+    start_sample: usize,
+) -> Option<WideLayout> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps as f32;
     let base_bin = (base_freq_hz / df).round() as usize;
@@ -335,19 +400,14 @@ fn extract_data_energies_wide_chirped<P: ModulationParams>(
     let wide_start = central_data_tone0 - 64; // 64 bins of leading pad
     let bins_per_symbol = 64 * (2 + bins_per_tone);
     let wide_end_exclusive = wide_start + bins_per_symbol;
-    if start_sample + 85 * nsps > audio.len() || wide_end_exclusive > nsps / 2 {
+    if start_sample + 85 * nsps > audio_len || wide_end_exclusive > nsps / 2 {
         return None;
     }
-
-    Some(data_symbol_rows_chirped(
-        audio,
-        sample_rate,
-        start_sample,
+    Some(WideLayout {
         nsps,
+        wide_start,
         bins_per_symbol,
-        |i| wide_start + i,
-        chirp,
-    ))
+    })
 }
 
 /// Submode index (0..=4 ⇒ A..E) inferred from `P::TONE_SPACING_HZ`
@@ -439,7 +499,7 @@ fn q65_bw_offset_db<P: ModulationParams>() -> f32 {
 /// either re-encoded via [`fec::qra::Q65Codec::encode`] from the
 /// recovered info symbols, or the winning AP-list candidate), noise =
 /// mean power of the other 63 tones in the same symbol slot.
-fn snr_db_narrow<P: ModulationParams>(energies: &[f32], codeword: &[i32]) -> f32 {
+pub(super) fn snr_db_narrow<P: ModulationParams>(energies: &[f32], codeword: &[i32]) -> f32 {
     let mut xsig = 0.0f32;
     let mut xnoi = 0.0f32;
     for (k, &sym) in codeword.iter().enumerate() {
@@ -463,7 +523,11 @@ fn snr_db_narrow<P: ModulationParams>(energies: &[f32], codeword: &[i32]) -> f32
 /// bins_per_tone` within the `64 * (2 + bins_per_tone)`-wide window —
 /// see [`extract_data_energies_wide`]'s doc comment for the layout
 /// derivation.
-fn snr_db_wide<P: ModulationParams>(energies: &[f32], sample_rate: u32, codeword: &[i32]) -> f32 {
+pub(super) fn snr_db_wide<P: ModulationParams>(
+    energies: &[f32],
+    sample_rate: u32,
+    codeword: &[i32],
+) -> f32 {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps as f32;
     let bins_per_tone = (P::TONE_SPACING_HZ / df).round().max(1.0) as usize;
@@ -508,7 +572,7 @@ pub(crate) struct Q65Ap<'a> {
 /// information. The one copy of the match every BP decode path used to
 /// write out for itself (#418).
 /// Whether [`bp_decode`] locks any symbols for this hint.
-fn ap_used(ap_hint: Option<Q65Ap<'_>>) -> bool {
+pub(super) fn ap_used(ap_hint: Option<Q65Ap<'_>>) -> bool {
     matches!(ap_hint, Some(ap) if ap.hint.has_info())
 }
 
@@ -517,9 +581,9 @@ fn ap_used(ap_hint: Option<Q65Ap<'_>>) -> bool {
 /// Was 50 here, with no source. 40 is 13 % faster on noise and lost 3 of
 /// 2 640 sweep trials (c60 plain at -24 dB, e60 cq at -25 dB; crossings
 /// +0.05 and +0.16 dB), all decodes upstream does not make either (#555).
-const MAXITERS_DEPTH1: u32 = 40;
+pub(super) const MAXITERS_DEPTH1: u32 = 40;
 
-fn bp_decode(
+pub(super) fn bp_decode(
     codec: &mut Q65Codec,
     intrinsics: &[f32],
     info_syms: &mut [i32; 13],
@@ -536,7 +600,7 @@ fn bp_decode(
 }
 
 /// The 63-symbol channel codeword for `info_syms`, as transmitted.
-fn reencode(codec: &mut Q65Codec, info_syms: &[i32; 13]) -> [i32; 63] {
+pub(super) fn reencode(codec: &mut Q65Codec, info_syms: &[i32; 13]) -> [i32; 63] {
     let mut codeword = [0_i32; 63];
     codec.encode(info_syms, &mut codeword);
     codeword
@@ -576,32 +640,55 @@ pub(crate) fn finish<P: ModulationParams>(
     base_freq_hz: f32,
     ctx: &DecodeContext,
 ) -> Option<Q65Result> {
+    finish_with(
+        info_syms,
+        iterations,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+        ctx,
+        || {
+            let fallback = match energies {
+                Energies::Narrow(e) => snr_db_narrow::<P>(e, codeword),
+                Energies::Wide(e) => snr_db_wide::<P>(e, sample_rate, codeword),
+            };
+            match audio {
+                SnrAudio::Slot(a) => super::snr::q65_snr_db::<P>(
+                    a,
+                    sample_rate,
+                    start_sample,
+                    base_freq_hz,
+                    codeword,
+                    fallback,
+                ),
+                SnrAudio::Averaged(h) => super::snr::q65_snr_db_averaged::<P>(
+                    h,
+                    sample_rate,
+                    start_sample,
+                    base_freq_hz,
+                    codeword,
+                    fallback,
+                ),
+            }
+        },
+    )
+}
+
+/// [`finish`] with the SNR made by `snr`, which runs only once the message has unpacked: a streamed decode makes it by
+/// reading the audio a second time, and only for the (few) decodes that succeed.
+pub(super) fn finish_with(
+    info_syms: &[i32; 13],
+    iterations: u32,
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+    ctx: &DecodeContext,
+    snr: impl FnOnce() -> f32,
+) -> Option<Q65Result> {
     // 13 GF(64) symbols → 77-bit Wsjt77 → human-readable.
     let bits77 = unpack_symbols_to_bits77(info_syms);
     let text = Q65Message.unpack(&bits77, ctx)?;
-
-    let fallback = match energies {
-        Energies::Narrow(e) => snr_db_narrow::<P>(e, codeword),
-        Energies::Wide(e) => snr_db_wide::<P>(e, sample_rate, codeword),
-    };
-    let snr_db = match audio {
-        SnrAudio::Slot(a) => super::snr::q65_snr_db::<P>(
-            a,
-            sample_rate,
-            start_sample,
-            base_freq_hz,
-            codeword,
-            fallback,
-        ),
-        SnrAudio::Averaged(h) => super::snr::q65_snr_db_averaged::<P>(
-            h,
-            sample_rate,
-            start_sample,
-            base_freq_hz,
-            codeword,
-            fallback,
-        ),
-    };
+    let snr_db = snr();
 
     Some(Q65Result {
         copied_last_tx: unpack_flag(info_syms),
@@ -819,7 +906,7 @@ pub(crate) const PLOG_MIN: f32 = -242.0;
 /// (`if(sum(dat4).le.0) irc=-2`; `if(irc.ge.0 .and. plog.gt.PLOG_MIN)`).
 /// The list-size threshold alone is `-260 + ln(ncw/3)`, about -256 for
 /// the 206-entry standard list: 14 below the floor WSJT-X decodes with.
-fn list_decode(
+pub(super) fn list_decode(
     codec: &Q65Codec,
     intrinsics: &[f32],
     candidates: &[[i32; 63]],
@@ -2065,7 +2152,7 @@ mod tests {
             let mut seen = Vec::new();
             let mut calls = 0usize;
             for_each_data_row(
-                &audio,
+                &mut audio.as_slice(),
                 sample_rate,
                 start,
                 nsps,

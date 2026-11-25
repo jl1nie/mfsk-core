@@ -81,7 +81,7 @@ impl<'a> Q65Candidate<'a> {
         self
     }
 
-    fn ap(&self) -> Option<Q65Ap<'a>> {
+    pub(super) fn ap(&self) -> Option<Q65Ap<'a>> {
         self.ap_hint.map(|hint| Q65Ap {
             hint,
             pileup: self.pileup,

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Q65: decode one candidate from a source read forward (`decode_candidate_streamed`)
+
+- **`q65::decode_candidate_streamed::<P>(&mut impl PcmSource, rate, &Q65Candidate)`**: `decode_candidate` for a slot that cannot be held. One symbol's samples at a time (`i16 / 32768`); the fast-fading metric streams its wide rows through `FastFadingStream` (keeps 16 128 B, not 48-290 KB); a failing candidate is one forward sweep, a decode reads once more for the SNR. Plain, hint and list equal the slice decode to the bit, fading to float rounding (a real 10 GHz EME recording: 8 point decodes compared, SNR bits equal). Underneath, `SymbolWindows` (a slice or a `PcmSource`) replaced the audio slice in the row loop and the SNR's composite spectrum, with no result moved. Not streamed: the coarse search. Memory figures are derived, not measured on a target.
+
 ### Decoding one known candidate: `Alignment` and `decode_candidate` (`SniperRequest` deprecated)
 
 - **`engine::alignment::Alignment`** (`start_sample`, `freq_hz`; each mode re-exports it) and, per mode, a config struct and one function: **`wspr::decode_candidate(WsprInput::{audio, baseband}, &WsprCandidate)`**, **`jt65::decode_candidate(audio, rate, &Jt65Candidate)`** (`Jt65Strategy::{Hard, Erasures, Chase}`), **`jt9::decode_candidate(audio, rate, &Jt9Candidate)`**, **`q65::decode_candidate::<P>(audio, rate, &Q65Candidate)`** (precedence `ap_list`, `fading`, `ap_hint`, plain). Table and migration: `docs/reference/LIBRARY.md` §2.5.

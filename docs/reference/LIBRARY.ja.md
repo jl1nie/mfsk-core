@@ -1258,7 +1258,16 @@ freq_hz }` で渡す（`SyncCandidate` は探索の*結果*であり、別物）
 | WSPR | `wspr::decode_candidate(WsprInput, &WsprCandidate)`。`WsprInput::audio(samples, rate)`、または既にデシメート済みのベースバンドなら `::baseband(idat, qdat, rate)` | `drift_hz`、`nblocks`、`confirmed(&WsprCallsignTable)`、`refine_drift`: スキャンのパスが候補ごとに設定するつまみ（ボードの候補ループがこれ） |
 | JT65 | `jt65::decode_candidate(audio, rate, &Jt65Candidate)` | `Jt65Strategy::{Hard, Erasures(&[0, 8, 16, 24, 32]), Chase(ChaseParams)}` |
 | JT9 | `jt9::decode_candidate(audio, rate, &Jt9Candidate)` | 今はなし（候補は `Alignment` そのもの） |
-| Q65 | `q65::decode_candidate::<P>(audio, rate, &Q65Candidate)` | `ap_hint`、`pileup`、`ap_list`、`fading(model, b90_ts)`、`hash_table`。優先順位は `ap_list`、次に `fading`（`ap_hint` 付き）、次に `ap_hint`、最後に素のデコード |
+| Q65 | `q65::decode_candidate::<P>(audio, rate, &Q65Candidate)`。前方にだけ読めるストアからは `q65::decode_candidate_streamed::<P>(&mut impl PcmSource, rate, &Q65Candidate)` | `ap_hint`、`pileup`、`ap_list`、`fading(model, b90_ts)`、`hash_table`。優先順位は `ap_list`、次に `fading`（`ap_hint` 付き）、次に `ap_hint`、最後に素のデコード |
+
+**前方にだけ読めるソースからの Q65**（`engine::source::PcmSource`: SD カード。スライスなら `SliceSource`）: `decode_candidate_streamed`
+は、音声を保持せずに同じ結果を返す。1 シンボル分の `nsps` サンプルずつ（`i16 / 32768` として）読み、素の復号・AP ヒント・
+AP リストは狭い行 63 本（16 KB）を保持し、フェーディングのメトリックは広い行を `fec::qra::FastFadingStream` へ流して `63 x 64` の
+メトリック（サブモードによらず 16 128 B。広帯域スペクトログラム全体は、サブモード A で 48 KB、E で 290 KB）だけを保持する。
+失敗する候補は、63 のデータシンボルを前方に 1 回掃引する費用で済み、復号できた候補は、SNR のために、先頭から 85 シンボル全部を
+もう 1 回読む。素・ヒント・リストの復号は、スライスのそれとビット単位で同じ（メッセージ、周波数、時刻、SNR、フラグ）。フェーディングは
+`FastFadingStream` の浮動小数点の丸めの範囲で同じ（試した全ケースで、メッセージ、時刻、SNR は同じ）。メモリの数字は型から導いたもので、
+ターゲットでの実測ではない。候補を見つける粗探索は、まだスロット全体のスペクトログラムで、ストリーミングしていない。
 
 **この 4 モードの `SniperRequest` は非推奨**（0.17.0 から。上の関数を呼ぶので、デコードは 1 つ）:
 `SniperRequest::new(audio, rate, start, freq)` は、候補の `Alignment::new(start, freq)` になる。WSPR の

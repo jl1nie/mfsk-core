@@ -257,6 +257,111 @@ fn samples_dir(rel: &str) -> Option<PathBuf> {
     common::corpus::golden_subdir(&format!("q65/{rel}"))
 }
 
+/// A source read forward gives the decode of the slice, on a real recording: the 10 GHz EME file. The wide-band scan (through
+/// the fast-fading metric, as `eme_10ghz_reference_decodes_with_fast_fading` runs it) finds where the signal is; at that
+/// `(start_sample, freq_hz)` the point decode is made from the slice and from a source read forward, under the fast-fading
+/// metric (the streamed one makes its metric a symbol row at a time) and plain, and at a place 5 Hz off. The message, frequency,
+/// time, AP flag and SNR (a second read of the audio) must be the slice decode's, to the bit; `iterations` is not compared (the
+/// fast-fading metric differs by float rounding). Something decodes, so this cannot pass by both sides finding nothing.
+#[test]
+fn a_streamed_decode_equals_the_slice_decode_on_a_real_recording() {
+    use mfsk_core::engine::source::SliceSource;
+    use mfsk_core::q65::decode_candidate_streamed;
+
+    let Some(dir) = samples_dir("60D_EME_10GHz") else {
+        common::skip_or_fail("Q65 golden 10 GHz EME");
+        return;
+    };
+    let params = SearchParams {
+        freq_min_hz: 200.0,
+        freq_max_hz: 3_000.0,
+        time_tolerance_early_sec: 30.0,
+        time_tolerance_late_sec: 30.0,
+        score_threshold: 0.05,
+        max_candidates: 32,
+    };
+    let same = |slice: &Option<mfsk_core::q65::Q65Result>,
+                streamed: &Option<mfsk_core::q65::Q65Result>,
+                what: &str| {
+        match (slice, streamed) {
+            (None, None) => false,
+            (Some(a), Some(b)) => {
+                assert_eq!(a.message, b.message, "{what}");
+                assert_eq!(a.freq_hz.to_bits(), b.freq_hz.to_bits(), "{what}");
+                assert_eq!(a.start_sample, b.start_sample, "{what}");
+                assert_eq!(a.dt_sec.to_bits(), b.dt_sec.to_bits(), "{what}");
+                assert_eq!(a.ap, b.ap, "{what}");
+                assert_eq!(
+                    a.snr_db.to_bits(),
+                    b.snr_db.to_bits(),
+                    "{what}: {}: snr {} against {}",
+                    a.message,
+                    a.snr_db,
+                    b.snr_db
+                );
+                true
+            }
+            (a, b) => panic!(
+                "{what}: the slice decode {}, the streamed one {}",
+                if a.is_some() { "decodes" } else { "does not" },
+                if b.is_some() { "decodes" } else { "does not" },
+            ),
+        }
+    };
+    let mut compared = 0usize;
+    for path in std::fs::read_dir(&dir)
+        .expect("read samples dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
+    {
+        let Some(audio) = read_wsjtx_wav(&path) else {
+            continue;
+        };
+        // the f32 of a 16-bit WAV is `i16 / 32768`: the i16 comes back exactly
+        let raw: Vec<i16> = audio
+            .iter()
+            .map(|&x| (x * 32_768.0).round() as i16)
+            .collect();
+        for model in [FadingModel::Gaussian, FadingModel::Lorentzian] {
+            for b90 in [3.0_f32, 8.0, 15.0] {
+                let found = DecodeRequest::<Q65d60>::new(&audio, FS_U, FS_U as usize * 30, params)
+                    .fading(model, b90)
+                    .decode();
+                for d in &found {
+                    for (what, freq_shift, cand) in [
+                        ("fading", 0.0_f32, Some((model, b90))),
+                        ("plain", 0.0, None),
+                        ("fading, 5 Hz off", 5.0, Some((model, b90))),
+                    ] {
+                        let mut c = Q65Candidate::new(Alignment::new(
+                            d.start_sample,
+                            d.freq_hz + freq_shift,
+                        ));
+                        if let Some((m, b)) = cand {
+                            c = c.fading(m, b);
+                        }
+                        let slice = decode_candidate::<Q65d60>(&audio, FS_U, &c);
+                        let streamed = decode_candidate_streamed::<Q65d60, _>(
+                            &mut SliceSource(&raw[..]),
+                            FS_U,
+                            &c,
+                        );
+                        if same(&slice, &streamed, what) {
+                            compared += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("{compared} point decodes compared, slice against source");
+    assert!(
+        compared > 0,
+        "nothing decoded on either side: the test compares nothing"
+    );
+}
+
 #[test]
 fn eme_10ghz_reference_decodes_with_fast_fading() {
     // Q65-60D 10 GHz EME recording. Fast-fading is REQUIRED for this

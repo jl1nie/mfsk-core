@@ -191,7 +191,8 @@ response test at the aliasing frequencies (`cd0_fir.rs`), and a weak-signal coun
   with other decimations (18 and 60): to be unified then, against the S3's numbers. Open: the ICAP's FT4 deadline and SD speed.
 - **Q65 on the ICAP** uses mfsk-core 0.10.1 with `apps/q65/decoder/mfsk-core-0.10.1-icap.patch` (icap-sdk). Of its five parts, the no_std build
   (`q65 = []`, gating, `alloc` / `Float` imports) is in the library since; the per-row fast-fading API is now too, in the library's own shape: `fec::qra::FastFadingStream` (`push_row` per symbol,
-  `finish`; one pass, the mean energy not needed in advance; probabilities to float rounding, the state to the bit). Rows come from
-  `q65::rx`'s `for_each_data_row` (the data symbols one at a time); feeding them from a `PcmSource` is the open part (2b).
+  `finish`; one pass, the mean energy not needed in advance), fed by `q65::decode_candidate_streamed` from a `PcmSource` read forward (the
+  decode keeps 16 128 B for the fading metric; a failing candidate is one forward sweep, a decode reads once more for the SNR). Open: the
+  coarse search (a whole-audio spectrogram) and measuring the heap on a target.
 - **FT4, WSPR, Q65 on the same footing.** The pieces that carry: `PcmSource`/`CountingSource`, the heap meter and
   `--diag`, `cd0_fir` (parameterised by the protocol's decimation), the hard-sync gate (by `SyncMode`), the OSD gate.

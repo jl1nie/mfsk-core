@@ -87,8 +87,12 @@ pub mod rx;
 pub mod search;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub(crate) mod snr;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+mod stream;
 pub mod sync_pattern;
 pub mod tx;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub(crate) mod windows;
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use crate::engine::alignment::Alignment;
@@ -99,6 +103,8 @@ pub use contest::{Caller, Q65Callers, contest_codewords};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 #[allow(deprecated)]
 pub use decode_request::{Q65SubMode, SniperRequest};
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub use stream::decode_candidate_streamed;
 // The wide-band requests are the engine's, reached through `__internal`
 // since 0.13: `crate::decoder::Decoder` is the decode API.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]

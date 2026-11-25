@@ -93,6 +93,7 @@ use crate::engine::ModulationParams;
 use crate::engine::dsp::symbol_fft::SymbolFft;
 
 use super::sync_pattern::Q65_SYNC_POSITIONS;
+use super::windows::SymbolWindows;
 
 /// Build the composite, tone-aligned power spectrum `q65_snr`
 /// (`q65.f90:744-766`) sums across all 85 symbols.
@@ -114,6 +115,24 @@ use super::sync_pattern::Q65_SYNC_POSITIONS;
 /// spectrum (candidate too close to DC or Nyquist).
 pub(crate) fn q65_composite_spectrum<P: ModulationParams>(
     audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+    codeword: &[i32],
+) -> Option<(Vec<f32>, i64)> {
+    let mut windows = audio;
+    q65_composite_spectrum_w::<P, _>(
+        &mut windows,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+        codeword,
+    )
+}
+
+/// [`q65_composite_spectrum`] over any [`SymbolWindows`]: one symbol's samples at a time, in increasing order.
+pub(crate) fn q65_composite_spectrum_w<P: ModulationParams, W: SymbolWindows>(
+    audio: &mut W,
     sample_rate: u32,
     start_sample: usize,
     base_freq_hz: f32,
@@ -162,7 +181,8 @@ pub(crate) fn q65_composite_spectrum<P: ModulationParams>(
             t
         };
 
-        let buf = fft.real(audio, start_sample + sym_idx as usize * nsps);
+        let win = audio.window(start_sample + sym_idx as usize * nsps, nsps);
+        let buf = fft.real(win, 0);
 
         // `spec(i) += s1(i + mode_q65·itone(k), j)` for `i` in
         // `[ia, ib]` — `i`/`ii` are absolute bin indices in WSJT-X's
@@ -250,11 +270,35 @@ pub(crate) fn q65_snr_db<P: ModulationParams>(
     codeword: &[i32],
     fallback_db: f32,
 ) -> f32 {
+    let mut windows = audio;
+    q65_snr_db_w::<P, _>(
+        &mut windows,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+        codeword,
+        |_| fallback_db,
+    )
+}
+
+/// [`q65_snr_db`] over any [`SymbolWindows`], with the fallback made only when the composite spectrum gives no estimate,
+/// from the same windows (a streamed decode does not hold the energies the fallback is made from, and reads them again).
+pub(crate) fn q65_snr_db_w<P: ModulationParams, W: SymbolWindows>(
+    audio: &mut W,
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+    codeword: &[i32],
+    fallback: impl FnOnce(&mut W) -> f32,
+) -> f32 {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps.max(1) as f32;
-    match q65_composite_spectrum::<P>(audio, sample_rate, start_sample, base_freq_hz, codeword) {
-        Some((spec, nsum)) => q65_snr_from_spectrum(&spec, nsum, df).unwrap_or(fallback_db),
-        None => fallback_db,
+    match q65_composite_spectrum_w::<P, W>(audio, sample_rate, start_sample, base_freq_hz, codeword)
+    {
+        Some((spec, nsum)) => {
+            q65_snr_from_spectrum(&spec, nsum, df).unwrap_or_else(|| fallback(audio))
+        }
+        None => fallback(audio),
     }
 }
 

@@ -22,6 +22,13 @@ gate.
 The deprecated builders are pinned as shims too (`the_deprecated_builder_is_the_function` in WSPR and JT65): a shim that dropped
 `refine_drift`, `confirmed` or the strategy fails them.
 
+**The streamed Q65 decode** (`q65::decode_candidate_streamed`) is pinned against the slice decode, which is the reference: on a
+synthetic slot (clean and sigma 6.5; plain, hint, list, fading, a wrong list, 3 Hz off) and on the vendored 10 GHz EME recording
+(the point decodes at the alignments the scan finds, and 5 Hz off: 8 compared, message, time, flag and SNR bits equal); a counting
+source pins the reads (miss: 63 symbols, no restart; hit: plus 85 symbols from the start, one restart); a short source gives
+nothing. Mutations caught: the source scale, the read start, the wide bins, the hint in the fading branch, the model and width,
+the AP flags, the SNR, the narrow rows' start. The scale cannot change any decode (so it is pinned by `PcmWindows`' own test).
+
 **Not verified: other platforms.** The noisy-slot conditions (WSPR sigma 45 seed 0, JT65 sigma 16, Q65 sigma 6.5, the Gaussian
 against the Lorentzian at 500) were chosen at the point where the options part, so they sit near a threshold. They pass on Apple
 arm64 in debug, release and with one rayon thread; they have not run on x86 (rustfft's AVX rounding differs) or in
