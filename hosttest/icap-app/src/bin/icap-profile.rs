@@ -14,6 +14,7 @@ fn main() {
     let mut band: Option<usize> = None;
     let mut band_coarse = false;
     let mut band_sic = 0usize;
+    let mut variant: Option<profile::Variant> = None;
     let mut sub = mfsk_core::ft8::decode_block::band_bb::SubMode::F64;
     let mut band_ms = [0.0f64; 3];
     let (mut sd_bytes, mut sd_calls, mut sd_restarts, mut sd_max) = (0u64, 0u64, 0u64, 0u64);
@@ -32,6 +33,10 @@ fn main() {
             }
             "--stream" => {
                 stream = Some(a[i + 1].parse::<usize>().expect("--stream GROUP"));
+                i += 2;
+            }
+            "--variant" => {
+                variant = Some(profile::Variant::parse(&a[i + 1]).expect("--variant v0..v8"));
                 i += 2;
             }
             "--band-sub" => {
@@ -90,6 +95,19 @@ fn main() {
             } else {
                 resample(&resample(&slot12, 12_000, rate), rate, 12_000)
             };
+            if let Some(v) = variant {
+                let r = profile::run_slot_variant(&slot, v, max_cand);
+                println!(
+                    "\n== {w}  (variant {v:?}, max_cand {max_cand}, {:.0} ms, peak heap {} B)",
+                    r.ms, r.peak_heap
+                );
+                let mut d = r.decodes.clone();
+                d.sort_by(|a, b| a.1.total_cmp(&b.1));
+                for (m, f) in d {
+                    println!("{f:>7.1}  {m}");
+                }
+                continue;
+            }
             if let (Some(group), 0) = (stream, band_sic) {
                 let s = profile::run_slot_stream(
                     &slot,
@@ -196,7 +214,9 @@ fn main() {
         } else {
             resample(&resample(&slot12, 12_000, rate), rate, 12_000)
         };
-        let r = if let (Some(group), true) = (band, band_sic > 0) {
+        let r = if let Some(v) = variant {
+            profile::run_slot_variant(&slot, v, max_cand)
+        } else if let (Some(group), true) = (band, band_sic > 0) {
             let s = profile::run_slot_band_sic_with(
                 &slot,
                 max_cand,

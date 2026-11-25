@@ -164,6 +164,16 @@ pub const ATTESTED_EXTRAS: &[(&str, &str, &str)] = &[
         "`jt9` has it at 2229 Hz (+11 dB); this is a copy 150 Hz higher, the strong signal's splatter (as `websdr_test11`'s copies of the same pair), kept where the first found of a message is kept",
     ),
     (
+        "191111_110615",
+        "PA3EPP SP8NFO KN09",
+        "`jt9` has it at 906 Hz (+22 dB); this is a copy 250 Hz lower, the strong signal's splatter, kept because the per-candidate entry points have no per-message dedupe (the boards' `run_speculative_slot` does: `dedup_by_message`)",
+    ),
+    (
+        "191111_110645",
+        "PA3EPP SP8NFO R+01",
+        "`jt9` has it at 906 Hz (+12 dB); this is a copy 150 Hz lower, as above",
+    ),
+    (
         "191111_110645",
         "PB5DX OM4TC JN98",
         "undecided: no other decoder lists it. The message is consistent (OM4TC is a Slovak call and JN98 a Slovak grid) and PB5DX is heard in the neighbouring recordings, which a CRC chance match would not produce",
@@ -477,5 +487,153 @@ pub fn run_slot_band_sic_with(
         cost: src.cost(),
         per_pass: rep.per_pass,
         subtract_ms: rep.subtract_ms,
+    }
+}
+
+/// The ablation of `docs/notes/MIDRANGE_EMBEDDED_EVAL.md` / the S3 plan, stage 0: which part of the low-memory
+/// profile's recall comes from which piece, with the candidates' symbol spectra from Goertzel (what the ESP32 boards
+/// run) or from the FIR baseband. All with the coarse search in 1 band, `LlrEffort::Minimal`, 4-iteration-free defaults.
+///
+/// | | candidates | fine refine | symbol spectra | OSD |
+/// |---|---|---|---|---|
+/// | `V0` | coarse score order (`decode_block`, the ESP32 driver) | none (the embedded `fine_refine_pass1` is a no-op) | Goertzel | no |
+/// | `V1` | hard-sync gate | none | Goertzel | no |
+/// | `V2` | hard-sync gate | none | Goertzel | yes |
+/// | `V3` | coarse score order | none | Goertzel | yes |
+/// | `V4` | hard-sync gate | FIR baseband (`fine_refine_3stage`) | FIR baseband | yes (the ICAP profile) |
+/// | `V5` | hard-sync gate | FIR baseband | FIR baseband | no |
+/// | `V6` | hard-sync gate | `fine_sync_12k` (Goertzel; the board's `fine_sync_split`) | Goertzel | no |
+/// | `V7` | hard-sync gate | `fine_sync_12k` | Goertzel | yes |
+/// | `V8` | coarse score order | `fine_sync_12k` | Goertzel | no (the board with time to spare) |
+/// | `V9` | hard-sync gate, **the first `max_cand` by hard sync** (no pass-2 re-rank by block-0 quality) | `fine_sync_12k` | Goertzel | yes |
+/// | `V10` | as `V9` | `fine_sync_12k` | Goertzel | no |
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Variant {
+    V0,
+    V1,
+    V2,
+    V3,
+    V4,
+    V5,
+    V6,
+    V7,
+    V8,
+    V9,
+    V10,
+}
+
+impl Variant {
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "v0" => Self::V0,
+            "v1" => Self::V1,
+            "v2" => Self::V2,
+            "v3" => Self::V3,
+            "v4" => Self::V4,
+            "v5" => Self::V5,
+            "v6" => Self::V6,
+            "v7" => Self::V7,
+            "v8" => Self::V8,
+            "v9" => Self::V9,
+            "v10" => Self::V10,
+            _ => return None,
+        })
+    }
+}
+
+/// Candidates kept by the gate before the pass-2 re-rank: `pass1_limit` of the ESP32 driver.
+pub const GATE_KEEP: usize = 30;
+
+/// One slot through variant `v` with `max_cand` candidates. `V1` and `V2` need the fixed-point build (the
+/// per-candidate entry points are `fixed-point`-gated); in the f32 build they decode nothing and say so.
+pub fn run_slot_variant(slot: &[i16], v: Variant, max_cand: usize) -> Run {
+    let base = heap::reset_peak();
+    let t = Instant::now();
+    let osd_on = DecodeDepth {
+        osd: true,
+        ..DecodeDepth::EMBEDDED
+    };
+    let out: Vec<mfsk_core::ft8::decode::DecodeResult> = match v {
+        Variant::V0 => decode_block(
+            slot,
+            200.0,
+            3000.0,
+            SYNC_MIN,
+            DecodeDepth::EMBEDDED,
+            max_cand,
+        ),
+        Variant::V3 => decode_block(slot, 200.0, 3000.0, SYNC_MIN, osd_on, max_cand),
+        Variant::V4 => {
+            decode_block_low_mem(slot, 200.0, 3000.0, SYNC_MIN, LOW_MEM_DEPTH, max_cand, 1)
+        }
+        Variant::V5 => decode_block_low_mem(
+            slot,
+            200.0,
+            3000.0,
+            SYNC_MIN,
+            DecodeDepth {
+                osd: false,
+                ..LOW_MEM_DEPTH
+            },
+            max_cand,
+            1,
+        ),
+        Variant::V1
+        | Variant::V2
+        | Variant::V6
+        | Variant::V7
+        | Variant::V8
+        | Variant::V9
+        | Variant::V10 => {
+            #[cfg(feature = "fixed-point")]
+            {
+                use mfsk_core::ft8::decode_block::{
+                    DEFAULT_Q_THRESH, coarse_sync, coarse_sync_gated, compute_spectrogram,
+                    fine_sync_12k, process_candidates_into, refine_candidates_into,
+                };
+                let keep = GATE_KEEP.max(max_cand);
+                let mut cands: Vec<_> = if v == Variant::V8 {
+                    let spec = compute_spectrogram(slot, 3000.0);
+                    coarse_sync(&spec, 200.0, 3000.0, SYNC_MIN, keep)
+                } else {
+                    coarse_sync_gated(slot, 200.0, 3000.0, SYNC_MIN, keep, 1)
+                        .into_iter()
+                        .map(|c| c.0)
+                        .collect()
+                };
+                if matches!(v, Variant::V9 | Variant::V10) {
+                    cands.truncate(max_cand);
+                }
+                if matches!(
+                    v,
+                    Variant::V6 | Variant::V7 | Variant::V8 | Variant::V9 | Variant::V10
+                ) {
+                    cands = fine_sync_12k(slot, &cands);
+                }
+                let refined = refine_candidates_into(slot, cands, max_cand);
+                let depth = if matches!(v, Variant::V2 | Variant::V7 | Variant::V9) {
+                    osd_on
+                } else {
+                    DecodeDepth::EMBEDDED
+                };
+                process_candidates_into(slot, refined, depth, DEFAULT_Q_THRESH)
+            }
+            #[cfg(not(feature = "fixed-point"))]
+            {
+                Vec::new()
+            }
+        }
+    };
+    let ms = t.elapsed().as_secs_f64() * 1e3;
+    let peak_heap = heap::peak().saturating_sub(base);
+    let decodes = out
+        .iter()
+        .filter_map(|d| unpack77(d.message77()).map(|m| (norm(&m), d.freq_hz)))
+        .collect();
+    Run {
+        decodes,
+        ms,
+        peak_heap,
+        big: Vec::new(),
     }
 }
