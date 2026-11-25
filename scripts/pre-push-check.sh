@@ -148,6 +148,13 @@ RUSTFLAGS="-D warnings" MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core --release 
 RUSTFLAGS="-D warnings" MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core --release --no-default-features \
   --features alloc,ft8,fft-extern,fixed-point,internal-testing \
   --test ft8_embedded_driver_recall
+# The embedded profile's host tests (`hosttest/icap-app`): the low-memory decode, the band baseband and its
+# subtraction, the hard-sync gate and OSD on the boards' own pieces, against the 22 recordings and `qso3_busy`,
+# with the precision checks (a decode `jt9` lacks must be attested or pinned debt). Fixed-point here, the numeric
+# path the boards ship; CI (`icap-hosttest`) runs f32 as well. By package: `--workspace` would unify
+# `fft-rustfft` into mfsk-core and the tests would refuse to run (they assert the extern planner was asked for).
+echo "► cargo test -p icap-app-hosttest (fixed-point)"
+RUSTFLAGS="-D warnings" cargo test -p icap-app-hosttest --release --features fixed-point
 fi
 
 echo "✓ pre-push checks passed"

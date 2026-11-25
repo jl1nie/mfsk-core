@@ -12,7 +12,7 @@ Host workspace members (`Cargo.toml` `[workspace] members`):
 | `mfsk-ffi/` | C ABI over *all* protocols; `include/mfsk.h` is cbindgen-generated and committed; `examples/cpp_smoke/` is a real C++ driver run by CI | no |
 | `mfsk-ffi-abi/` | shared `#[repr(C)]` mode / status / params / row types `mfsk-ffi` re-emits (issue #205) | no |
 | `hosttest/mfsk-app-shared/` | runs the host-testable parts of `embedded-poc/mfsk-app-shared` under a normal `cargo test` | no |
-| `hosttest/icap-app/` | ICAP profile: mfsk-core's embedded FT8 path (`decode_block`, no `fft-rustfft`) at the radio's 8 kHz input under a heap meter, on the 22 real recordings vs `jt9`; run by package (`-p icap-app-hosttest`). Not the radio app (`embedded-poc/icap-app/` does not exist yet) | no |
+| `hosttest/icap-app/` | the embedded profile's host tests: the low-memory decode, the band baseband and its subtraction, and the hard-sync gate / OSD on the ESP32 pipeline's own pieces, at the radio's 8 kHz input under a heap meter, on the 22 real recordings vs `jt9` and `qso3_busy`; **run by package** (`-p icap-app-hosttest`, f32 and `--features fixed-point`) by CI's `icap-hosttest` job and, fixed-point, by pre-push. Not the radio app (`embedded-poc/icap-app/` does not exist yet) | no |
 | `apps/skimmer/core/`, `apps/skimmer/cli/` | sample app: mfsk-skimmer over `IqReceiver` (`skimmer-core` + the `skimmer` CLI); see `apps/skimmer/README.md`. `mfsk-core` itself has no network code, by decision | no |
 | `apps/sdr-io/` | std-only IQ clients (SpyServer, `rtl_tcp`), the NTP clock and the stream anchor, split out of `skimmer-core` (which re-exports them) so a light receiver can use them without its SQLite store, PSK Reporter and every mode; takes only `IqSampleFormat` from `mfsk-core` | no |
 | `apps/serve/` | sample app: `mfsk-serve`, one resident process that decodes and encodes through `mfsk-core` on JSON lines (stdin/stdout), keeping each mode's decoder (hash table, period checkpoints) between requests; `bench` times a recording per depth. Installed with `cargo install --git`, no tag of its own; see `apps/serve/README.md` (#760) | no |
@@ -48,7 +48,7 @@ is green" says nothing about an embedded change. Three things under
 recordings and fixtures (`assets/golden/**`, `assets/*.wav`,
 `assets/*.bin`, which start tier A+B alone) and
 `mfsk-app-shared/src/**` (which `hosttest/` compiles, and starts the
-`ffi` job). Before 2026-09-24 the trigger was `paths-ignore`, which
+`ffi` job). `hosttest/icap-app`'s tests read the recordings too: the `icap-hosttest` job runs on the same paths as tier A+B. Before 2026-09-24 the trigger was `paths-ignore`, which
 cannot re-include anything, so replacing a golden recording ran no CI.
 
 `bindings/` is not Rust and so is in neither list — no `Cargo.toml`,

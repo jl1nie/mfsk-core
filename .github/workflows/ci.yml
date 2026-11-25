@@ -670,6 +670,42 @@ jobs:
   # (issue #251's own exit condition) once the v2 ABI covered its
   # streaming and TX pipelines for every mode rather than FT8 alone.
   # ───────────────────────────────────────────────────────────────
+  # The embedded profile's host tests (`hosttest/icap-app`): the low-memory decode, the band baseband and
+  # its subtraction, and the hard-sync gate / OSD on the ESP32 pipeline's own pieces, against ft8_lib's 22
+  # recordings (`jt9`'s 402 decodes) and `qso3_busy`. They hold the recall floors **and** the precision of the
+  # strategies that exist only here (a decode `jt9` lacks must be attested or pinned debt), the memory and
+  # read budgets (`icap_budget`), and the gate-on-a-spectrogram equalities. Nothing else runs them: the crate
+  # is a workspace member, so lint compiles it, but a test that is not run cannot fail.
+  #
+  # **By package, not `--workspace`.** `fft-rustfft` unified into mfsk-core would switch `decode_block` to the
+  # host driver and the tests would measure the wrong one (they assert the extern FFT planner was asked for).
+  # `fixed-point` is the numeric path the boards ship; f32 is the radio's FPU path.
+  icap-hosttest:
+    name: icap-app hosttest (f32, fixed-point)
+    needs: changes
+    # The recordings are under `embedded-poc/assets`, which `tier_ab` already names, beside `src`.
+    if: >-
+      github.event_name == 'push'
+      || needs.changes.outputs.tier_ab == 'true'
+      || needs.changes.outputs.hosttest == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (pinned, rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@1.100.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo test -p icap-app-hosttest (f32)
+        run: cargo test -p icap-app-hosttest --release
+
+      - name: cargo test -p icap-app-hosttest (fixed-point)
+        run: cargo test -p icap-app-hosttest --release --features fixed-point
+
+  # ───────────────────────────────────────────────────────────────
   ffi:
     name: mfsk-ffi + C++ driver
     needs: changes
