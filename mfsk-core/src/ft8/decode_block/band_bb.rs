@@ -28,11 +28,11 @@ use num_traits::Float;
 use super::cd0_fir::{BLOCK, Cd0, Cd0Filters, Scratch};
 /// The gate on the band baseband's spectrogram (re-exported with the rest of this module in `__internal::ft8_band_bb`).
 pub use super::coarse_sync::coarse_sync_gated_band;
-use super::source::PcmSource;
 use super::spectrogram::{SpecCell, Spectrogram};
 use super::types::SAMPLE_RATE_HZ;
 use crate::engine::dsp::fir_decimate::{FirStage, design_lowpass_kaiser};
 use crate::engine::dsp::nco::Rotor;
+use crate::engine::source::PcmSource;
 use crate::engine::sync::SyncCandidate;
 use crate::ft8::decode::{DecodeDepth, DecodeResult};
 use crate::ft8::params::DEFAULT_BP_MAX_ITER;
@@ -659,7 +659,8 @@ pub fn decode_band_sic(
     for _ in 0..passes {
         let gated = coarse_sync_gated_band(
             bb,
-            &super::GatedSearch::new(freq_min, freq_max, sync_min, max_cand).bands(bands),
+            &super::GatedSearch::new(freq_min, freq_max, sync_min, max_cand),
+            bands,
         );
         let found = decode_band(bb, f, &gated, depth, group);
         let fresh: Vec<DecodeResult> = found
@@ -688,10 +689,10 @@ pub fn decode_band_sic(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::source::SliceSource;
     use crate::engine::tx::{message_to_tones, synthesize_i16};
     use crate::ft8::Ft8;
     use crate::ft8::decode_block::cd0_fir::build_group;
-    use crate::ft8::decode_block::source::SliceSource;
     use crate::msg::wsjt77::pack77;
 
     fn slot_with(freq: f32, dt: f32) -> Vec<i16> {

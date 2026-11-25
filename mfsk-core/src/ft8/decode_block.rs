@@ -65,7 +65,6 @@ mod fill_symbol_spectra;
 mod fine_sync_12k;
 mod osd_strategy;
 mod process_candidates;
-pub mod source;
 pub(crate) mod spectrogram;
 mod types;
 

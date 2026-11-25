@@ -54,6 +54,9 @@ pub mod llr;
 pub(crate) mod pipeline;
 pub mod protocol;
 pub mod scalar;
+// Audio read forward from a store (an SD card, a slice): the mode-independent half of a low-memory decoder.
+#[cfg(feature = "alloc")]
+pub mod source;
 // Routes through `engine::fft` (#390), so it builds under either FFT
 // backend, like `sync` / `llr` / `pipeline`.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]

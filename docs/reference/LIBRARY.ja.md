@@ -2729,17 +2729,18 @@ FT8 モジュールは共有パイプラインの上に並列のエントリ群�
 * `coarse_sync` / `coarse_sync_with_allsum` — FT8 sync grid 本体
 * `fill_symbol_spectra` / `fill_symbol_spectra_goertzel` — 音声から
   直接シンボル毎 FFT を抽出
-* `decode_block_low_mem(src, freq_min, freq_max, sync_min, depth, max_cand, LowMem)` — スロットを保持できない場合
+* `decode_block_low_mem(src, &GatedSearch, depth, LowMem)` — スロットを保持できない場合
   (前方にだけ読める SD カード) の低メモリプロファイル。候補は hard sync 順、各候補の 200 Hz ベースバンドは FIR
   カスケードで作り、どのビルドでも同じデコードをする。**`decode_block` と同じデコードではない**
   (`sync8.f90` のスコア順からの意図的な逸脱。
-  [`ICAP_EMBEDDED_ANALYSIS.md`](../notes/ICAP_EMBEDDED_ANALYSIS.md) に測定)。音声は `source::PcmSource`
-  (メモリ上のスロットは `SliceSource`、前方読みのカードが課す費用を数えるには `CountingSource`)。
-  `LowMem { coarse_bands, group }` はメモリと SD 読み出しと時間のトレードオフ (`LowMem::new`、`Default` は 4 と 4)。
-* `coarse_sync_gated(src, &GatedSearch)` / `coarse_sync_gated_spec(&Spectrogram, &GatedSearch)` — hard sync ゲート。
+  [`ICAP_EMBEDDED_ANALYSIS.md`](../notes/ICAP_EMBEDDED_ANALYSIS.md) に測定)。音声は `engine::source::PcmSource`
+  (どのモードでも使える。メモリ上のスロットは `SliceSource`、前方読みのカードが課す費用を数えるには `CountingSource`)。
+  何を探すか (`GatedSearch`: 帯域、スコアの下限、`keep` 個の候補) と、どう保持するか (`LowMem { coarse_bands,
+  group }`: メモリと SD 読み出しと時間のトレードオフ。`LowMem::new`、`Default` は 4 と 4) は分けてある。
+* `coarse_sync_gated(src, &GatedSearch, bands)` / `coarse_sync_gated_spec(&Spectrogram, &GatedSearch)` — hard sync ゲート。
   `PcmSource` から、または既に持っているスペクトログラム (ボードのストリーミング用: `GatedSearch::fill(SpecFill)`
   が測定済みの行数を伝える) から。どちらも `GatedSearch::new(freq_min, freq_max, sync_min, keep)` を使い、
-  `.bands()`、`.lag_s()`、`.fill()` がオプション。各関数の doc に、どれを読むかを書いてある。
+  `.lag_s()`、`.fill()` がオプション (`bands` はスペクトログラムを何帯域に分けて作るか。1 帯域ごとに音声を 1 回読む)。各関数の doc に、どれを読むかを書いてある。
 * `osd_available()` — このビルドに FT8 の OSD フォールバックがあるか。`DecodeDepth::osd` と `Tuning::osd` が
   効くのはある場合だけ (`fft-rustfft`、なければ `osd` feature)。ない場合はエラーなしで無視されるので、OSD が必須の
   アプリはコンパイル時に assert する。

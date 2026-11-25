@@ -34,11 +34,11 @@ use num_traits::Float;
 
 use super::super::params::NN;
 use super::fill_symbol_spectra::{SymMask, sym_in_mask};
-use super::source::PcmSource;
 use super::types::{SAMPLE_RATE_HZ, TX_START_OFFSET_S};
 use crate::engine::dsp::fir_decimate::{FirStage, design_lowpass_kaiser};
 use crate::engine::dsp::nco::Rotor;
 use crate::engine::scalar::Cmplx;
+use crate::engine::source::PcmSource;
 use crate::ft8::refine_fine::CD0_LEN;
 use num_complex::Complex;
 
@@ -298,10 +298,10 @@ pub(super) fn fill_from_cd0(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::source::{CountingSource, SliceSource};
     use crate::engine::tx::{message_to_tones, synthesize_i16};
     use crate::ft8::Ft8;
     use crate::ft8::decode_block::fill_symbol_spectra::fill_symbol_spectra_goertzel;
-    use crate::ft8::decode_block::source::{CountingSource, SliceSource};
     use crate::msg::wsjt77::pack77;
 
     /// A slot holding one clean signal of tone-0 frequency `freq` starting at `dt`, and its 79 tones.

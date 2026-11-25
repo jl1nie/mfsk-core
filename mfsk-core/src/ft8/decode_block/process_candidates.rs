@@ -1517,59 +1517,38 @@ impl Default for LowMem {
 ///   heap of stage 3 is the group's basebands, whatever `max_cand` is (`decode_block` holds
 ///   `5 056 B x max_cand` from Pass 2 to stage 3).
 ///
-/// The audio comes from a [`PcmSource`](super::source::PcmSource) (a slot in memory is
-/// [`SliceSource`](super::source::SliceSource)): the form the radio needs, where the slot is on the SD card
+/// The audio comes from a [`PcmSource`](crate::engine::source::PcmSource) (a slot in memory is
+/// [`SliceSource`](crate::engine::source::SliceSource)): the form the radio needs, where the slot is on the SD card
 /// and is never held. The reads are all forward sweeps of the source: one for the fixed-point build's gain,
 /// one per coarse band, one per group of candidates (`LowMem::group`); nothing else touches the audio, because
 /// the candidates are refined (`ft8b.f90`'s stages A-C, [`fine_refine_3stage`]) and decoded from their 200 Hz
 /// basebands (`hosttest/icap-app/tests/icap_budget.rs` pins the count and the bytes).
 ///
+/// `search` is what is looked for (`GatedSearch::new(freq_min, freq_max, sync_min, max_cand)`: `keep` is the number of
+/// candidates decoded), `mem` how it is held (`LowMem`): the first changes what is found, the second only memory, SD reads
+/// and time.
+///
 /// `LowMem::coarse_bands` changes memory and time only: the decodes are the same for any number of bands.
 ///
 /// [`fine_refine_3stage`]: crate::ft8::refine_fine::fine_refine_3stage
-#[allow(clippy::too_many_arguments)]
-pub fn decode_block_low_mem<A: super::source::PcmSource>(
+pub fn decode_block_low_mem<A: crate::engine::source::PcmSource>(
     src: &mut A,
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
+    search: &GatedSearch,
     depth: DecodeDepth,
-    max_cand: usize,
-    cfg: LowMem,
-) -> Vec<DecodeResult> {
-    decode_low_mem_src(
-        src,
-        freq_min,
-        freq_max,
-        sync_min,
-        depth,
-        max_cand,
-        cfg,
-        DEFAULT_BP_MAX_ITER,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn decode_low_mem_src<A: super::source::PcmSource>(
-    src: &mut A,
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    depth: DecodeDepth,
-    max_cand: usize,
-    cfg: LowMem,
-    bp_max_iter: u32,
+    mem: LowMem,
 ) -> Vec<DecodeResult> {
     use super::cd0_fir::{Cd0Filters, build_group};
 
-    let gated = coarse_sync_gated(
-        src,
-        &GatedSearch::new(freq_min, freq_max, sync_min, max_cand).bands(cfg.coarse_bands),
-    );
+    let gated = coarse_sync_gated(src, search, mem.coarse_bands);
     let filters = Cd0Filters::new();
-    decode_from_basebands(&gated, &filters, cfg.group, depth, bp_max_iter, |freqs| {
-        build_group(&filters, src, freqs)
-    })
+    decode_from_basebands(
+        &gated,
+        &filters,
+        mem.group,
+        depth,
+        DEFAULT_BP_MAX_ITER,
+        |freqs| build_group(&filters, src, freqs),
+    )
 }
 
 /// The candidate loop of the low-memory decoders: `gated`'s candidates in groups of `group`, each group's

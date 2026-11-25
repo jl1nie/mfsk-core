@@ -18,7 +18,6 @@ use alloc::vec::Vec;
 use num_traits::Float;
 
 use super::super::params::{COSTAS, COSTAS_POS, NSPS, NTONES};
-use super::source::{PcmSource, SliceSource};
 use super::spectrogram::{
     CoarseAcc, Spectrogram, compute_spectrogram_bins_src, spectrogram_gain, spectrogram_n_freq,
 };
@@ -27,6 +26,7 @@ use super::types::{
     NFFT_SPEC, NSSY, NSTEP, SAMPLE_RATE_HZ, TONE_SPACING_HZ, TX_START_OFFSET_S, ratio_eps,
     sync_lag_s,
 };
+use crate::engine::source::{PcmSource, SliceSource};
 use crate::engine::sync::SyncCandidate;
 
 // ── Coarse sync ─────────────────────────────────────────────────────────────
@@ -1284,18 +1284,18 @@ pub const HARD_SYNC_POOL: usize = 300;
 /// `spec_hard_sync` below; the decodes still pass `ft8b`'s own gates (the 21-symbol `nsync`, BP/CRC).
 ///
 /// The audio comes from a [`PcmSource`] (a slot in memory is `SliceSource`), the form the radio needs: the slot is
-/// never held. It is read forward `search.bands` times, plus once more in the fixed-point build for the slot's
+/// never held. It is read forward `bands` times (the spectrogram is built a band of carriers at a time), plus once more in the fixed-point build for the slot's
 /// peak (a value the capture could hand over instead).
 pub fn coarse_sync_gated<A: PcmSource>(
     src: &mut A,
     search: &GatedSearch,
+    bands: usize,
 ) -> Vec<(SyncCandidate, u8)> {
     let GatedSearch {
         freq_min,
         freq_max,
         sync_min,
         keep,
-        bands,
         ..
     } = *search;
     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::CoarseSync);
@@ -1357,7 +1357,8 @@ impl SpecFill {
 }
 
 /// What the hard-sync gate searches: the carrier band, the score floor, how many candidates it keeps, and,
-/// for the forms that need them, how the spectrogram is built or read. One value serves
+/// for the form that needs them, how the spectrogram is read. (How it is *held*, bands of it at a time, is the
+/// caller's memory budget, [`LowMem`](super::LowMem): not part of what is searched.) One value serves
 /// [`coarse_sync_gated`] (from a [`PcmSource`]), [`coarse_sync_gated_spec`] (from a spectrogram you hold) and
 /// the band baseband's; each reads the fields that are its own and says which.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1371,9 +1372,6 @@ pub struct GatedSearch {
     pub sync_min: f32,
     /// Candidates kept, after the reorder by hard sync.
     pub keep: usize,
-    /// Bands the spectrogram is built in, one read of the audio each (`coarse_sync_gated`, and the band
-    /// baseband's). Default 4, [`LowMem`](super::LowMem)'s.
-    pub bands: usize,
     /// The lag window, s (`coarse_sync_gated_spec` only; `None`: the crate's default, as the audio form uses).
     pub lag_s: Option<f32>,
     /// The fill state of a streaming spectrogram (`coarse_sync_gated_spec` only; `None`: a whole slot).
@@ -1389,16 +1387,9 @@ impl GatedSearch {
             freq_max,
             sync_min,
             keep,
-            bands: 4,
             lag_s: None,
             fill: None,
         }
-    }
-
-    /// Set [`bands`](Self::bands).
-    pub const fn bands(mut self, bands: usize) -> Self {
-        self.bands = bands;
-        self
     }
 
     /// Set [`lag_s`](Self::lag_s).
@@ -1502,13 +1493,13 @@ fn banded_peaks_with<B: FnMut(usize, usize) -> Spectrogram>(
 pub fn coarse_sync_gated_band(
     bb: &super::band_bb::BandBaseband,
     search: &GatedSearch,
+    n_bands: usize,
 ) -> Vec<(SyncCandidate, u8)> {
     let GatedSearch {
         freq_min,
         freq_max,
         sync_min,
         keep,
-        bands: n_bands,
         ..
     } = *search;
     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::CoarseSync);

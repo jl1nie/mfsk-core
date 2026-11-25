@@ -16,56 +16,8 @@ use super::super::params::NSPS;
 
 // ── Audio sample trait ──────────────────────────────────────────────────────
 
-/// Trait for audio sample types accepted by `decode_block`. Lets the
-/// caller hand in either `i16` (the canonical FT8 PCM) or `i8`
-/// (half-storage, ~45 dB SQNR — plenty for FT8's -24 dB threshold —
-/// useful when the slot needs to fit in scarce internal SRAM on
-/// embedded targets where PSRAM access is the bottleneck).
-///
-/// The `to_f32` implementation must produce values on the same
-/// amplitude scale as `i16` so the LLR computation downstream keeps
-/// its calibration; for `i8` we therefore multiply by 256.
-///
-/// `Copy` only — no `Sync` supertrait. An earlier version added `+
-/// Sync` here so `&[S]` could cross a `rayon` task boundary in the
-/// old auto-AP per-callsign parallel loop (issue #117); that whole
-/// mechanism was removed in the 0.8.0 `DecodeDepth` redesign (issue
-/// #182 follow-up — it was firing unconditionally on every `depth.osd`
-/// call regardless of AP usage, for zero measured recall benefit once
-/// the OSD `bp_llr_zsum` fix landed), and no other `AudioSample`-
-/// generic function crosses a thread boundary. Re-add `+ Sync` only
-/// alongside a real generic-over-`S` parallel caller, not preemptively.
-pub trait AudioSample: Copy {
-    fn to_f32(self) -> f32;
-    /// Promote to i16 range. i8 → i16 via `<<8`; i16 → i16
-    /// identity. Used by the fixed-point FFT input path.
-    fn to_i16(self) -> i16;
-}
-
-impl AudioSample for i16 {
-    #[inline]
-    fn to_f32(self) -> f32 {
-        self as f32
-    }
-    #[inline]
-    fn to_i16(self) -> i16 {
-        self
-    }
-}
-
-impl AudioSample for i8 {
-    #[inline]
-    fn to_f32(self) -> f32 {
-        // Match i16 amplitude scale (multiply by 2^8). LLR
-        // calibration (LLR_SCALE in ft8::params) thus stays
-        // valid without per-sample-type rescaling.
-        (self as i32 * 256) as f32
-    }
-    #[inline]
-    fn to_i16(self) -> i16 {
-        (self as i16) << 8
-    }
-}
+// Defined with the audio sources (`engine::source`): the sample type of a slot, whichever mode reads it.
+pub use crate::engine::source::AudioSample;
 
 // ── Tunables ────────────────────────────────────────────────────────────────
 

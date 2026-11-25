@@ -19,7 +19,7 @@
 mod common;
 use common::load_wav_i16;
 
-use mfsk_core::ft8::decode_block::source::{CountingSource, SliceSource};
+use mfsk_core::engine::source::{CountingSource, SliceSource};
 use mfsk_core::ft8::decode_block::{
     GatedSearch, HARD_SYNC_POOL, LowMem, coarse_sync, coarse_sync_banded, coarse_sync_gated,
     coarse_sync_gated_spec, compute_spectrogram, decode_block_low_mem,
@@ -36,7 +36,8 @@ fn gated(
 ) -> Vec<(mfsk_core::engine::sync::SyncCandidate, u8)> {
     coarse_sync_gated(
         &mut SliceSource(slot),
-        &GatedSearch::new(freq_min, freq_max, sync_min, keep).bands(bands),
+        &GatedSearch::new(freq_min, freq_max, sync_min, keep),
+        bands,
     )
 }
 
@@ -138,10 +139,7 @@ fn gated_coarse_sync_through_a_counting_source_is_unchanged_and_reads_forward() 
     for bands in [1usize, 4] {
         let want = gated(&slot, 200.0, 3000.0, 1.3, 30, bands);
         let mut src = CountingSource::new(SliceSource(&slot[..]));
-        let got = coarse_sync_gated(
-            &mut src,
-            &GatedSearch::new(200.0, 3000.0, 1.3, 30).bands(bands),
-        );
+        let got = coarse_sync_gated(&mut src, &GatedSearch::new(200.0, 3000.0, 1.3, 30), bands);
         let key =
             |v: &[(mfsk_core::engine::sync::SyncCandidate, u8)]| -> Vec<((u32, u32, u32), u8)> {
                 v.iter()
@@ -227,11 +225,8 @@ fn the_low_memory_decode_does_not_depend_on_the_band_split() {
     let run = |bands: usize| {
         decode_block_low_mem(
             &mut SliceSource(&slot[..]),
-            200.0,
-            3000.0,
-            1.3,
+            &GatedSearch::new(200.0, 3000.0, 1.3, 15),
             DecodeDepth::EMBEDDED,
-            15,
             LowMem::new(bands, 4),
         )
     };

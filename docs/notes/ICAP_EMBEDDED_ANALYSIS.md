@@ -146,7 +146,7 @@ response test at the aliasing frequencies (`cd0_fir.rs`), and a weak-signal coun
    holds the whole band (ft8dec's u8 log waterfall) makes every later stage free of the SD; one that holds only
    candidates (mfsk-core's basebands) pays a read per group. Write the budget as `reads x slot bytes`, not as a heap
    size. The `CountingSource` model (read, skip to a read ahead, restart behind) is in
-   `ft8/decode_block/source.rs`; `hosttest/icap-app/tests/icap_budget.rs` holds it as a test.
+   `engine/source.rs`; `hosttest/icap-app/tests/icap_budget.rs` holds it as a test.
 2. **Hold a ceiling for the heap and the reads in a test from the start**, per recording, on the build the target
    ships (`fixed-point`). A heap meter is the process's allocator: such a test needs a binary of its own.
 3. **Subtract while reading**, not in a copy of the audio: ft8dec's pass 2 is the same read as its pass 1 with the
@@ -181,5 +181,16 @@ response test at the aliasing frequencies (`cd0_fir.rs`), and a weak-signal coun
   10 KB?) is worth in a window of 80 KiB. The ARM figures above are for a stub FFT.
 - **8 kHz native.** `Protocol` constants are 12 kHz; the FIR cascade and the spectrogram would take an `NDOWN` and an
   `NSPS` from them (FT4: `NDOWN` 18, 32 samples a symbol, as FT8's 60 and 32).
+- **FT4 on the ICAP.** What the code says (not measured on the radio): FT4's coarse search is `Ft4SavgBuilder::push(&[i16])`, one forward
+  sweep (a `PcmSource` consumer as it is), and a candidate's baseband is `CandidateDdc::push_i16` fed forward, so the reads are
+  `1 + ceil(candidates / group)`. A candidate's `cd0` is `CD0_LEN = 5 120` complex `f32`, **40 960 B** (FT8's is 25.6 KB): four held
+  together are about 164 KB of the 240 KiB region, so `group` is the knob there too. `LowMem::coarse_bands` is not: the savg is a
+  1-D average and small. **Provisional**: the shape of FT8's entry (`decode_block_low_mem(src, &search, depth, mem)`, what is looked for apart
+  from how it is held) is the starting point for an `ft4::` one, to be checked when that is written; the S3's FT4 receiver (`ft4_rx.rs`) is
+  deadline-bound and holds its audio, and stays the regression baseline (not rewritten). `CandidateDdc` and `cd0_fir` are the same cascade
+  with other decimations (18 and 60): to be unified then, against the S3's numbers. Open: the ICAP's FT4 deadline and SD speed.
+- **Q65 on the ICAP** uses mfsk-core 0.10.1 with `apps/q65/decoder/mfsk-core-0.10.1-icap.patch` (icap-sdk). Of its five parts, the no_std build
+  (`q65 = []`, gating, `alloc` / `Float` imports) is in the library since; the per-row fast-fading API (`FastFadingRowCtx`,
+  `fast_fading_row[_ctx]`, `lorentz_taps`: stream the wide-energy spectrogram from the SD) is not.
 - **FT4, WSPR, Q65 on the same footing.** The pieces that carry: `PcmSource`/`CountingSource`, the heap meter and
   `--diag`, `cd0_fir` (parameterised by the protocol's decimation), the hard-sync gate (by `SyncMode`), the OSD gate.

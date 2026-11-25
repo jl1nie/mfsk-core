@@ -22,8 +22,8 @@ use num_complex::Complex;
 use num_traits::Float;
 
 use super::super::params::{NMAX, NSPS, NTONES};
-use super::source::{PcmSource, SliceSource, Window};
 use super::types::{AudioSample, NFFT_SPEC, NSTEP, SAMPLE_RATE_HZ, TONE_SPACING_HZ};
+use crate::engine::source::{PcmSource, SliceSource, Window};
 
 // Needed by the f32 builder below, which exists in a `fixed-point`
 // build too — `compute_spectrogram_f32_timed` is how such a build
