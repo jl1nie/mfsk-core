@@ -1,7 +1,7 @@
 //! Q65 EME sub-mode end-to-end roundtrip tests.
 //!
 //! Verifies that the generic `synthesize_standard_for<P>` /
-//! `DecodeRequest<P>`/`SniperRequest<P>` paths work with each of
+//! `DecodeRequest<P>` path works with each of
 //! the wired EME sub-modes (Q65-60A through Q65-60E). One synthetic
 //! frame per sub-mode is enough to prove the type parameter cleanly
 //! propagates NSPS and tone-spacing constants through the entire

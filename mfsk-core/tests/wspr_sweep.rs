@@ -49,8 +49,10 @@ use common::{load_wav_f32_opt, parse_snr_tag};
 #[cfg(feature = "internal-testing")]
 use mfsk_core::__internal::wspr::DecodeRequest;
 #[cfg(all(feature = "internal-testing", feature = "instrument"))]
-use mfsk_core::wspr::SniperRequest;
+use mfsk_core::engine::alignment::Alignment;
 use mfsk_core::wspr::WsprCallsignTable;
+#[cfg(all(feature = "internal-testing", feature = "instrument"))]
+use mfsk_core::wspr::{WsprCandidate, WsprInput, decode_candidate};
 
 const GOLDEN_MSG: &str = "JL1NIE PM95 37";
 const GOLDEN_FREQ_HZ: f32 = 1500.0;
@@ -502,13 +504,15 @@ fn wspr_rank_sweep() {
                 debug_refined_sync(&idat, &qdat, c.start_sample, c.freq_hz, c.drift_hz, false);
             let kept = sync > MINSYNC2_FINAL;
             let before = instrument::snapshot();
-            let msg = SniperRequest::baseband(&idat, &qdat, sample_rate, c.start_sample, c.freq_hz)
-                .drift(c.drift_hz)
-                .nblocks(&[1, 2, 3, 0])
-                .confirmed(&table)
-                .refine_drift(false)
-                .decode()
-                .filter(|d| d.message.to_string() == GOLDEN_MSG);
+            let msg = decode_candidate(
+                WsprInput::baseband(&idat, &qdat, sample_rate),
+                &WsprCandidate::new(Alignment::new(c.start_sample, c.freq_hz))
+                    .drift_hz(c.drift_hz)
+                    .nblocks(&[1, 2, 3, 0])
+                    .confirmed(&table)
+                    .refine_drift(false),
+            )
+            .filter(|d| d.message.to_string() == GOLDEN_MSG);
             let after = instrument::snapshot();
             let via = if msg.is_none() {
                 "none"

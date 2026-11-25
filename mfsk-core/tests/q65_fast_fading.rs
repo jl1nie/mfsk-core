@@ -1,7 +1,7 @@
 //! Q65 fast-fading metric integration tests.
 //!
 //! Validates the Doppler-spread-aware path
-//! ([`mfsk_core::q65::SniperRequest::fading`] +
+//! ([`mfsk_core::q65::Q65Candidate::fading`] +
 //! [`mfsk_core::__internal::q65::DecodeRequest::fading`]) end-to-end:
 //! - clean synthetic input round-trips at every wired sub-mode;
 //! - the metric tolerates injected frequency spread that defeats the
@@ -18,11 +18,13 @@ use common::load_wav_f32_opt as read_wsjtx_wav;
 use std::path::PathBuf;
 
 use mfsk_core::__internal::q65::DecodeRequest;
+use mfsk_core::engine::alignment::Alignment;
 use mfsk_core::fec::qra::FadingModel;
 use mfsk_core::msg::ApHint;
 use mfsk_core::q65::search::{SearchParams, default_search_params};
 use mfsk_core::q65::{
-    Q65a30, Q65a60, Q65d60, SniperRequest, synthesize_standard, synthesize_standard_for,
+    Q65Candidate, Q65a30, Q65a60, Q65d60, decode_candidate, synthesize_standard,
+    synthesize_standard_for,
 };
 
 const FS: f32 = 12_000.0;
@@ -72,10 +74,12 @@ fn fast_fading_decodes_clean_q65a30_signal() {
     // intrinsics → QRA path on the most common Q65 sub-mode.
     let freq = 1500.0;
     let audio = synthesize_standard("CQ", "K1ABC", "FN42", FS_U, freq, 0.3).expect("synth");
-    let result = SniperRequest::<Q65a30>::new(&audio, FS_U, 0, freq)
-        .fading(FadingModel::Gaussian, 0.05)
-        .decode()
-        .expect("fast-fading decode of a clean Q65-30A signal must succeed");
+    let result = decode_candidate::<Q65a30>(
+        &audio,
+        FS_U,
+        &Q65Candidate::new(Alignment::new(0, freq)).fading(FadingModel::Gaussian, 0.05),
+    )
+    .expect("fast-fading decode of a clean Q65-30A signal must succeed");
     assert_eq!(result.message, "CQ K1ABC FN42");
 }
 
@@ -88,10 +92,12 @@ fn fast_fading_decodes_clean_q65d60_signal() {
     let freq = 1500.0;
     let audio =
         synthesize_standard_for::<Q65d60>("CQ", "W7GJ", "DN27", FS_U, freq, 0.3).expect("synth");
-    let result = SniperRequest::<Q65d60>::new(&audio, FS_U, 0, freq)
-        .fading(FadingModel::Gaussian, 0.1)
-        .decode()
-        .expect("fast-fading decode of a clean Q65-60D signal must succeed");
+    let result = decode_candidate::<Q65d60>(
+        &audio,
+        FS_U,
+        &Q65Candidate::new(Alignment::new(0, freq)).fading(FadingModel::Gaussian, 0.1),
+    )
+    .expect("fast-fading decode of a clean Q65-60D signal must succeed");
     assert_eq!(result.message, "CQ W7GJ DN27");
 }
 
@@ -103,11 +109,14 @@ fn fast_fading_with_ap_hint_decodes_clean_signal() {
     let freq = 1500.0;
     let audio = synthesize_standard("CQ", "JA1ABC", "PM95", FS_U, freq, 0.3).expect("synth");
     let hint = ApHint::new().with_call1("CQ");
-    let result = SniperRequest::<Q65a30>::new(&audio, FS_U, 0, freq)
-        .fading(FadingModel::Gaussian, 0.05)
-        .ap_hint(&hint)
-        .decode()
-        .expect("fast-fading + AP must decode a clean signal");
+    let result = decode_candidate::<Q65a30>(
+        &audio,
+        FS_U,
+        &Q65Candidate::new(Alignment::new(0, freq))
+            .fading(FadingModel::Gaussian, 0.05)
+            .ap_hint(&hint),
+    )
+    .expect("fast-fading + AP must decode a clean signal");
     assert_eq!(result.message, "CQ JA1ABC PM95");
 }
 

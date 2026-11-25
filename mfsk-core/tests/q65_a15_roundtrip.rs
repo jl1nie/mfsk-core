@@ -3,7 +3,7 @@
 //! Q65-15A is the fastest wired Q65 sub-mode (15 s T/R period,
 //! NSPS=1800). Mirrors `tests/q65_eme_submodes.rs`'s pattern for the
 //! EME sub-modes: verifies the generic `synthesize_standard_for<P>` /
-//! `DecodeRequest<P>`/`SniperRequest<P>` paths correctly propagate
+//! `DecodeRequest<P>` path correctly propagates
 //! Q65a15's NSPS/tone-spacing constants through the entire tx → rx
 //! pipeline, including the sync-search path at a non-zero offset
 //! inside the (short) 15 s slot.

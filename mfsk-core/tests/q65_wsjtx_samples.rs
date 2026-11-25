@@ -1255,8 +1255,9 @@ fn q65_candidate_score_calibration_diag() {
 #[test]
 #[ignore = "manual diagnostic — Q65-60A candidate-score calibration (2026-07-20 speed follow-up)"]
 fn q65_60a_eme6m_candidate_score_calibration_diag() {
+    use mfsk_core::engine::alignment::Alignment;
     use mfsk_core::q65::search::coarse_search_for;
-    use mfsk_core::q65::{Q65a60, SniperRequest};
+    use mfsk_core::q65::{Q65Candidate, Q65a60, decode_candidate};
 
     let Some(dir) = samples_dir("60A_EME_6m") else {
         common::skip_or_fail("Q65 golden 6m EME");
@@ -1290,12 +1291,17 @@ fn q65_60a_eme6m_candidate_score_calibration_diag() {
             cands.len()
         );
         for (rank, c) in cands.iter().enumerate() {
-            let plain =
-                SniperRequest::<Q65a60>::new(&audio, 12_000, c.start_sample, c.freq_hz).decode();
+            let plain = decode_candidate::<Q65a60>(
+                &audio,
+                12_000,
+                &Q65Candidate::new(Alignment::new(c.start_sample, c.freq_hz)),
+            );
             let ap_hint = ApHint::new().with_call1("W7GJ");
-            let ap = SniperRequest::<Q65a60>::new(&audio, 12_000, c.start_sample, c.freq_hz)
-                .ap_hint(&ap_hint)
-                .decode();
+            let ap = decode_candidate::<Q65a60>(
+                &audio,
+                12_000,
+                &Q65Candidate::new(Alignment::new(c.start_sample, c.freq_hz)).ap_hint(&ap_hint),
+            );
             let decoded = plain.as_ref().or(ap.as_ref());
             if rank < 12 || decoded.is_some() {
                 println!(
@@ -1432,8 +1438,9 @@ fn q65_multi_period_streaming_matches_batch_exactly() {
 #[test]
 #[ignore = "manual diagnostic — Q65-60D/120D/120E/300A fading-metric candidate-score calibration (2026-07-20 speed follow-up)"]
 fn q65_fading_candidate_score_calibration_diag() {
-    use mfsk_core::q65::SniperRequest;
+    use mfsk_core::engine::alignment::Alignment;
     use mfsk_core::q65::search::coarse_search_for;
+    use mfsk_core::q65::{Q65Candidate, decode_candidate};
 
     struct Golden<'a> {
         want: &'a [&'a str],
@@ -1465,9 +1472,11 @@ fn q65_fading_candidate_score_calibration_diag() {
         // rather than the sequential loop an earlier version of this
         // diagnostic used; the 300A file alone has 3094 candidates.
         let decode_one = |(rank, c): (usize, &mfsk_core::q65::search::SyncCandidate)| {
-            let d = SniperRequest::<P>::new(audio, 12_000, c.start_sample, c.freq_hz)
-                .fading(model, b90_ts)
-                .decode();
+            let d = decode_candidate::<P>(
+                audio,
+                12_000,
+                &Q65Candidate::new(Alignment::new(c.start_sample, c.freq_hz)).fading(model, b90_ts),
+            );
             let is_hit = d.as_ref().is_some_and(|d| {
                 golden.want.iter().all(|w| d.message.contains(w))
                     && (d.freq_hz - golden.freq_hz).abs() <= golden.tol_hz

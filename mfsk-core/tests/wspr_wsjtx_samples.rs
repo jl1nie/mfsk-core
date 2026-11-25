@@ -9,10 +9,11 @@
 use std::path::PathBuf;
 
 use mfsk_core::__internal::wspr::DecodeRequest;
+use mfsk_core::engine::alignment::Alignment;
 use mfsk_core::wspr::SearchParams;
-use mfsk_core::wspr::SniperRequest;
 use mfsk_core::wspr::WsprResult;
 use mfsk_core::wspr::search::default_search_params;
+use mfsk_core::wspr::{WsprCandidate, WsprInput, decode_candidate};
 // The deprecated double-SIC wrappers are still exercised here on
 // purpose: two diagnostics measure them, and one test guards their
 // streaming parity. See `decode_scan_subtract`'s doc comment.
@@ -670,9 +671,10 @@ fn wspr_diag_candidate_cost_split() {
     let t0 = Instant::now();
     let mut pass1: Vec<(mfsk_core::wspr::WsprResult, usize)> = Vec::new();
     for c in &cands1 {
-        if let Some(mut d) =
-            SniperRequest::baseband(&idat, &qdat, sample_rate, c.start_sample, c.freq_hz).decode()
-        {
+        if let Some(mut d) = decode_candidate(
+            WsprInput::baseband(&idat, &qdat, sample_rate),
+            &WsprCandidate::new(Alignment::new(c.start_sample, c.freq_hz)),
+        ) {
             let start_refined = d.start_sample;
             d.start_sample = start_refined.saturating_sub(pad);
             pass1.push((d, start_refined));
@@ -705,11 +707,13 @@ fn wspr_diag_candidate_cost_split() {
     let t0 = Instant::now();
     let mut n_pass2_decoded = 0;
     for c in &cands2 {
-        if SniperRequest::baseband(&idat, &qdat, sample_rate, c.start_sample, c.freq_hz)
-            .drift(c.drift_hz)
-            .nblocks(&[1, 2, 3])
-            .decode()
-            .is_some()
+        if decode_candidate(
+            WsprInput::baseband(&idat, &qdat, sample_rate),
+            &WsprCandidate::new(Alignment::new(c.start_sample, c.freq_hz))
+                .drift_hz(c.drift_hz)
+                .nblocks(&[1, 2, 3]),
+        )
+        .is_some()
         {
             n_pass2_decoded += 1;
         }
@@ -813,9 +817,10 @@ fn wspr_diag_pass_ablation() {
     cands.truncate(params.max_candidates);
     let mut a_results: Vec<WsprResult> = Vec::new();
     for c in &cands {
-        let Some(mut d) =
-            SniperRequest::baseband(&idat, &qdat, sample_rate, c.start_sample, c.freq_hz).decode()
-        else {
+        let Some(mut d) = decode_candidate(
+            WsprInput::baseband(&idat, &qdat, sample_rate),
+            &WsprCandidate::new(Alignment::new(c.start_sample, c.freq_hz)),
+        ) else {
             continue;
         };
         let start_refined = d.start_sample;
@@ -1169,11 +1174,10 @@ fn wspr_diag_g8vdq_rank_after_minsync2() {
         cands.truncate(params.max_candidates);
         let mut this_pass: Vec<(WsprResult, usize)> = Vec::new();
         for c in &cands {
-            let Some(mut d) =
-                SniperRequest::baseband(&idat, &qdat, sample_rate, c.start_sample, c.freq_hz)
-                    .drift(c.drift_hz)
-                    .decode()
-            else {
+            let Some(mut d) = decode_candidate(
+                WsprInput::baseband(&idat, &qdat, sample_rate),
+                &WsprCandidate::new(Alignment::new(c.start_sample, c.freq_hz)).drift_hz(c.drift_hz),
+            ) else {
                 continue;
             };
             let start_refined = d.start_sample;
@@ -1231,13 +1235,15 @@ fn wspr_diag_g8vdq_rank_after_minsync2() {
     for (i, c) in cands2.iter().enumerate() {
         let refined_sync =
             debug_refined_sync(&idat, &qdat, c.start_sample, c.freq_hz, c.drift_hz, false);
-        let message = SniperRequest::baseband(&idat, &qdat, sample_rate, c.start_sample, c.freq_hz)
-            .drift(c.drift_hz)
-            .nblocks(&[1, 2, 3, 0])
-            .confirmed(&confirmed)
-            .refine_drift(false)
-            .decode()
-            .map(|d| d.message.to_string());
+        let message = decode_candidate(
+            WsprInput::baseband(&idat, &qdat, sample_rate),
+            &WsprCandidate::new(Alignment::new(c.start_sample, c.freq_hz))
+                .drift_hz(c.drift_hz)
+                .nblocks(&[1, 2, 3, 0])
+                .confirmed(&confirmed)
+                .refine_drift(false),
+        )
+        .map(|d| d.message.to_string());
         rows.push(Row {
             rank_by_coarse: i,
             refined_sync,
@@ -1388,11 +1394,10 @@ fn wspr_diag_rank_by_pass() {
             let refined_sync =
                 debug_refined_sync(&idat, &qdat, c.start_sample, c.freq_hz, c.drift_hz, true);
             let kept = refined_sync > MINSYNC2_EARLY;
-            let Some(mut d) =
-                SniperRequest::baseband(&idat, &qdat, sample_rate, c.start_sample, c.freq_hz)
-                    .drift(c.drift_hz)
-                    .decode()
-            else {
+            let Some(mut d) = decode_candidate(
+                WsprInput::baseband(&idat, &qdat, sample_rate),
+                &WsprCandidate::new(Alignment::new(c.start_sample, c.freq_hz)).drift_hz(c.drift_hz),
+            ) else {
                 ranked.push((refined_sync, kept, None));
                 continue;
             };
@@ -1447,13 +1452,15 @@ fn wspr_diag_rank_by_pass() {
         let refined_sync =
             debug_refined_sync(&idat, &qdat, c.start_sample, c.freq_hz, c.drift_hz, false);
         let kept = refined_sync > MINSYNC2_FINAL;
-        let msg = SniperRequest::baseband(&idat, &qdat, sample_rate, c.start_sample, c.freq_hz)
-            .drift(c.drift_hz)
-            .nblocks(&[1, 2, 3, 0])
-            .confirmed(&confirmed)
-            .refine_drift(false)
-            .decode()
-            .map(|d| d.message.to_string());
+        let msg = decode_candidate(
+            WsprInput::baseband(&idat, &qdat, sample_rate),
+            &WsprCandidate::new(Alignment::new(c.start_sample, c.freq_hz))
+                .drift_hz(c.drift_hz)
+                .nblocks(&[1, 2, 3, 0])
+                .confirmed(&confirmed)
+                .refine_drift(false),
+        )
+        .map(|d| d.message.to_string());
         ranked2.push((refined_sync, kept, msg));
     }
     ranked2.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
@@ -1542,11 +1549,10 @@ fn wspr_ladder_budget_cuts_off_the_failing_candidate_without_losing_the_real_one
         cands.truncate(params.max_candidates);
         let mut this_pass: Vec<(WsprResult, usize)> = Vec::new();
         for c in &cands {
-            let Some(mut d) =
-                SniperRequest::baseband(&idat, &qdat, sample_rate, c.start_sample, c.freq_hz)
-                    .drift(c.drift_hz)
-                    .decode()
-            else {
+            let Some(mut d) = decode_candidate(
+                WsprInput::baseband(&idat, &qdat, sample_rate),
+                &WsprCandidate::new(Alignment::new(c.start_sample, c.freq_hz)).drift_hz(c.drift_hz),
+            ) else {
                 continue;
             };
             let start_refined = d.start_sample;
