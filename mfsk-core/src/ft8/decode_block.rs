@@ -81,9 +81,10 @@ pub use coarse_sync::{
 };
 pub use fill_symbol_spectra::{
     SymMask, fill_symbol_spectra, fill_symbol_spectra_generic, fill_symbol_spectra_goertzel,
-    goertzel_window_end_sample, symbol_spectra_direct,
+    fill_symbol_spectra_goertzel_at, goertzel_window_end_sample, goertzel_window_end_sample_at,
+    symbol_spectra_direct,
 };
-pub use fine_sync_12k::fine_sync_12k;
+pub use fine_sync_12k::{fine_sync_12k, fine_sync_at};
 pub use process_candidates::decode_block_streaming;
 /// Phase 1.7.7-Stick: fill-closure variant for host research /
 /// regression tests (spec-lookup vs BASIS dot product comparison).
@@ -95,6 +96,7 @@ pub use process_candidates::{
     decode_block_into, decode_block_into_tuned, process_candidates_into,
     process_candidates_into_tuned, process_candidates_into_with_cs_scratch,
     process_candidates_into_with_cs_scratch_tuned, refine_candidates_into,
+    refine_candidates_into_at,
 };
 #[cfg(feature = "fft-rustfft")]
 pub use process_candidates::{decode_block_with_ap, decode_block_with_ap_tuned};

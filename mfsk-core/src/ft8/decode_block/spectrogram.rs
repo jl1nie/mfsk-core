@@ -22,15 +22,19 @@ use num_complex::Complex;
 use num_traits::Float;
 
 use super::super::params::NTONES;
-// the 12 kHz constants: the fixed-point builder is still in them (its 8 kHz needs a 2560-point 16-bit plan), and so is
-// `compute_spectrogram_f32_timed`; the f32 builder takes everything from its `Ft8Rate`
+// the 12 kHz constants: `compute_spectrogram_f32_timed` and the fixed-point gain are still in them; the builders take
+// everything else from their `Ft8Rate`
 #[cfg(any(feature = "fixed-point", feature = "internal-testing"))]
-use super::super::params::{NMAX, NSPS};
+use super::super::params::NMAX;
+#[cfg(feature = "internal-testing")]
+use super::super::params::NSPS;
+#[cfg(any(feature = "fixed-point", feature = "internal-testing"))]
+use super::types::NFFT_SPEC;
+#[cfg(feature = "internal-testing")]
+use super::types::NSTEP;
 #[cfg(any(not(feature = "fixed-point"), feature = "internal-testing"))]
 use super::types::SAMPLE_RATE_HZ;
 use super::types::{AudioSample, Ft8Rate, TONE_SPACING_HZ};
-#[cfg(any(feature = "fixed-point", feature = "internal-testing"))]
-use super::types::{NFFT_SPEC, NSTEP};
 use crate::engine::source::{PcmSource, SliceSource, Window};
 
 // Needed by the f32 builder below, which exists in a `fixed-point`
@@ -415,17 +419,21 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
 ) -> Spectrogram {
     use crate::engine::fft::default_planner_16;
 
-    assert!(
-        rate == Ft8Rate::Hz12000,
-        "the fixed-point spectrogram is 12 kHz only: there is no 2560-point 16-bit plan, and `FP_SPEC_SHIFT` is calibrated for 3840"
-    );
+    // The frame, the FFT and the step in samples of `rate` (the 2560-point plan at 8 kHz has the 3840 one's inner kernel and
+    // gain `1/256`, so `FP_SPEC_SHIFT` is the same); the bins and rows are the same at either rate.
+    let (nsps, nfft, nstep, nmax) = (rate.nsps(), rate.nfft(), rate.nstep(), rate.nmax());
+    // A frame of `nsps` samples has a tone `amp x nsps` strong, so 8 kHz frames give cells 4/9 of 12 kHz's at the same
+    // amplitude. The input is scaled by 12000 / rate (3/2 at 8 kHz) after the shift, which makes a cell the same at either
+    // rate for the same signal (and, at the same noise density, for noise): `FP_SPEC_SHIFT`, `ratio_eps` and the SNR's
+    // `cell_scale` carry over, and the u16 cells keep the resolution they have at 12 kHz. 1 / 1 at 12 kHz.
+    let (gain_num, gain_den) = rate.input_gain();
 
     assert!(
-        lo <= hi && hi <= NFFT_SPEC / 2 + 1,
+        lo <= hi && hi <= nfft / 2 + 1,
         "spectrogram bins out of range"
     );
     let n_freq = hi - lo;
-    let n_time = NMAX / NSTEP - 3;
+    let n_time = nmax / nstep - 3;
 
     // The pre-scale gain (`shift`, from `spectrogram_gain`): the slot's peak lands at `2 x NFFT`, so that after
     // `log2(NFFT)` stages of /2 the post-FFT peak still has a usable mantissa of ~2. The scan covers the full
@@ -435,10 +443,10 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
     // rectangular window's sidelobes do not leak onto adjacent FT8 tones.
 
     let mut planner = default_planner_16();
-    let fft = planner.plan_forward(NFFT_SPEC);
+    let fft = planner.plan_forward(nfft);
 
     let mut data: Vec<u16> = vec![0u16; n_freq * n_time];
-    let mut buf: Vec<Complex<i16>> = vec![Complex::new(0i16, 0i16); NFFT_SPEC];
+    let mut buf: Vec<Complex<i16>> = vec![Complex::new(0i16, 0i16); nfft];
 
     // **Two-for-one real-FFT trick**. Each frame's audio is real; we
     // pack two consecutive frames as `re = windowed(frame_a)`,
@@ -469,18 +477,26 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
     // coherent gain 0.5 (≈ -6 dB SNR penalty) + 2-bin mainlobe spread
     // would be pure cost.
     let mut win = Window::new(src);
-    let (mut fa, mut fb) = (vec![0i16; NSPS], vec![0i16; NSPS]);
+    let (mut fa, mut fb) = (vec![0i16; nsps], vec![0i16; nsps]);
     let mut pack = |buf: &mut [Complex<i16>], ia_a: usize, ia_b: Option<usize>| {
         win.read_into(ia_a as i64, &mut fa);
         if let Some(ia_b) = ia_b {
             win.read_into(ia_b as i64, &mut fb);
         }
-        let scale =
-            |raw: i16| (((raw as i32) << shift).clamp(i16::MIN as i32, i16::MAX as i32)) as i16;
+        let scale = |raw: i16| {
+            let v = (raw as i32) << shift;
+            // `gain_num == gain_den` at 12 kHz: the sample is as it was
+            let v = if gain_num == gain_den {
+                v
+            } else {
+                v * gain_num / gain_den
+            };
+            v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+        };
         for (k, c) in buf.iter_mut().enumerate() {
-            let re = if k < NSPS { scale(fa[k]) } else { 0 };
+            let re = if k < nsps { scale(fa[k]) } else { 0 };
             let im = match ia_b {
-                Some(_) if k < NSPS => scale(fb[k]),
+                Some(_) if k < nsps => scale(fb[k]),
                 _ => 0,
             };
             *c = Complex::new(re, im);
@@ -490,12 +506,12 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
     for jj in 0..n_pairs {
         let j_a = 2 * jj;
         let j_b = j_a + 1;
-        pack(&mut buf, j_a * NSTEP, Some(j_b * NSTEP));
+        pack(&mut buf, j_a * nstep, Some(j_b * nstep));
         fft.process(&mut buf);
 
         let row_a = j_a * n_freq;
         let row_b = j_b * n_freq;
-        // Demux. Modular wrap (NFFT_SPEC=3840 isn't a power of two so
+        // Demux. Modular wrap (NFFT_SPEC=3840 (2560 at 8 kHz) isn't a power of two so
         // `& (NFFT-1)` would alias the high bins). `kn = (NFFT-k) mod
         // NFFT` collapses k=0 to 0 — DC bin is real.
         //
@@ -519,10 +535,10 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
             let yk1 = buf[k + 1];
             let yk2 = buf[k + 2];
             let yk3 = buf[k + 3];
-            let yn0 = buf[NFFT_SPEC - k];
-            let yn1 = buf[NFFT_SPEC - k - 1];
-            let yn2 = buf[NFFT_SPEC - k - 2];
-            let yn3 = buf[NFFT_SPEC - k - 3];
+            let yn0 = buf[nfft - k];
+            let yn1 = buf[nfft - k - 1];
+            let yn2 = buf[nfft - k - 2];
+            let yn3 = buf[nfft - k - 3];
 
             let (a0r, a0i) = (
                 (yk0.re as i32 + yn0.re as i32) >> 1,
@@ -583,7 +599,7 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
             k += 4;
         }
         while k < hi {
-            let yn = buf[NFFT_SPEC - k];
+            let yn = buf[nfft - k];
             let yk = buf[k];
             let (ar, ai) = (
                 (yk.re as i32 + yn.re as i32) >> 1,
@@ -606,7 +622,7 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
     // is exercised only by truncated inputs / regression-test fixtures.
     if n_odd != 0 {
         let j = 2 * n_pairs;
-        pack(&mut buf, j * NSTEP, None);
+        pack(&mut buf, j * nstep, None);
         fft.process(&mut buf);
         let row_base = j * n_freq;
         for i in lo..hi {
@@ -682,5 +698,100 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "fixed-point"))]
+mod tests_fixed {
+    use super::*;
+
+    /// A full slot holding a steady tone of `f` Hz at amplitude `amp`, at input rate `rate`, and one spike of 20 000 in the
+    /// first frame: the auto-gain follows the slot's peak, so a bare tone would be brought to the top of the u16 range (a
+    /// real slot's strongest signal is well below its peak sample); with the spike the shift is 0 and the tone keeps its size.
+    fn tone(rate: Ft8Rate, f: f32, amp: f32) -> Vec<i16> {
+        let hz = rate.hz() as f32;
+        let mut v: Vec<i16> = (0..rate.nmax())
+            .map(|n| (amp * (core::f32::consts::TAU * f * n as f32 / hz).cos()) as i16)
+            .collect();
+        v[5] = 20_000;
+        v
+    }
+
+    fn build(rate: Ft8Rate, slot: &[i16]) -> Spectrogram {
+        let mut src = SliceSource(slot);
+        let gain = spectrogram_gain(&mut src);
+        compute_spectrogram_bins_src(&mut src, rate, 0, spectrogram_n_freq(3000.0, rate), gain)
+    }
+
+    /// The fixed-point spectrogram at 8 kHz is the 12 kHz one's grid **and cells**: the same bins and rows, a tone in the same
+    /// bin, and the same u16 value in it (to the rounding of the 15-bit pre-scale and the `>> FP_SPEC_SHIFT`), because the
+    /// input is scaled by 12000 / rate. Fails if the 2560-point plan's gain is not `1/256`, the frame, FFT or step is not the
+    /// rate's, the input gain is missing (the cell would be 4/9 of it) or the demux index is the 12 kHz one.
+    #[test]
+    fn the_fixed_point_spectrogram_of_either_rate_has_the_same_cells() {
+        for f in [500.0f32, 1000.0, 2500.0] {
+            let a = build(Ft8Rate::Hz12000, &tone(Ft8Rate::Hz12000, f, 500.0));
+            let b = build(Ft8Rate::Hz8000, &tone(Ft8Rate::Hz8000, f, 500.0));
+            assert_eq!((a.n_freq, a.n_time), (b.n_freq, b.n_time), "{f} Hz");
+            let bin = (f / 3.125) as usize;
+            let mid = a.n_time / 2;
+            let cell = |s: &Spectrogram, i: usize| s.data[mid * s.n_freq + i] as f32;
+            let (ca, cb) = (cell(&a, bin), cell(&b, bin));
+            assert!(ca > 500.0, "{f} Hz: the 12 kHz cell is {ca}, no signal");
+            assert!(
+                (cb / ca - 1.0).abs() < 0.03,
+                "{f} Hz: 8 kHz cell {cb} against 12 kHz {ca}"
+            );
+            // the tone's bin is the strongest of the row at either rate
+            for (name, s) in [("12k", &a), ("8k", &b)] {
+                let row = &s.data[mid * s.n_freq..][..s.n_freq];
+                let peak = row.iter().enumerate().max_by_key(|x| *x.1).unwrap().0;
+                assert_eq!(
+                    peak,
+                    bin,
+                    "{name} {f} Hz row {:?}",
+                    &row[bin.saturating_sub(3)..bin + 4]
+                );
+            }
+            // and the slot, not a longer one, is what the rows cover: the last row still holds the tone
+            let last = |s: &Spectrogram| s.data[(s.n_time - 1) * s.n_freq + bin] as f32;
+            assert!(
+                last(&b) > 0.5 * cell(&b, bin),
+                "{f} Hz: last row {}",
+                last(&b)
+            );
+        }
+    }
+
+    /// The same noise **density** gives the same noise cells at either rate (the rate's `sqrt(rate / 12000)` on the sample
+    /// deviation): the mean cell of a noise-only slot within 5 %. Fails if the input gain is not `12000 / rate`.
+    #[test]
+    fn noise_of_the_same_density_gives_the_same_cells() {
+        let noise = |rate: Ft8Rate| -> Vec<i16> {
+            let sigma = 1500.0 * (rate.hz() as f32 / 12_000.0).sqrt();
+            let mut s = 0x1234_5678_9abc_def0u64;
+            (0..rate.nmax())
+                .map(|_| {
+                    let mut a = 0.0f32;
+                    for _ in 0..12 {
+                        s = s
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407);
+                        a += ((s >> 40) as f32) / (1u64 << 24) as f32;
+                    }
+                    ((a - 6.0) * sigma) as i16
+                })
+                .collect()
+        };
+        let mean = |rate: Ft8Rate| -> f64 {
+            let sp = build(rate, &noise(rate));
+            sp.data.iter().map(|&v| v as f64).sum::<f64>() / sp.data.len() as f64
+        };
+        let (a, b) = (mean(Ft8Rate::Hz12000), mean(Ft8Rate::Hz8000));
+        assert!(a > 50.0, "12 kHz mean cell {a}");
+        assert!(
+            (b / a - 1.0).abs() < 0.05,
+            "8 kHz mean cell {b} against 12 kHz {a}"
+        );
     }
 }

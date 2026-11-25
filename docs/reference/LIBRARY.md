@@ -2953,6 +2953,9 @@ and differ only in which inner steps they enable:
   either rate; only the frame, the FFT (1280 / 2560 samples) and the first stage of the 200 Hz cascade (8 kHz to 4 kHz)
   differ. Not in the `fixed-point` build at `Hz8000` (it panics: there is no 2560-point 16-bit plan); with `fft-extern`, the binary's planner must give a 2560-point real FFT (the ESP32 one does not). Measured on the 22
   recordings, 30 candidates: 273 of 402 against the round trip's 274, no extras, the decode 21 % shorter.
+* `fine_sync_at(audio, Ft8Rate, &cands)`, `fill_symbol_spectra_goertzel_at(out, audio, Ft8Rate, ..)`, `refine_candidates_into_at` (fixed-point), `goertzel_window_end_sample_at` —
+  the board-path pieces on 8 kHz audio (the S3's flow; the 12 kHz functions are these at `Hz12000`). The fixed-point spectrogram also takes an `Ft8Rate`;
+  its 8 kHz FFT is `Plan2560Sc16` (256 x 10). Host only so far: no board uses them.
 * `coarse_sync_gated(src, Ft8Rate, &GatedSearch, bands)` / `coarse_sync_gated_spec(&Spectrogram, &GatedSearch)` — the hard-sync gate,
   from a `PcmSource` or from a spectrogram you already hold (the boards' streaming one: `GatedSearch::fill(SpecFill)`
   says how many rows are measured). One `GatedSearch::new(freq_min, freq_max, sync_min, keep)` serves both; `.lag_s()`

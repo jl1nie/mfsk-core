@@ -417,6 +417,22 @@ mod rustfft_backend_i16 {
         }
     }
 
+    /// The 2560-pt FFT of the FT8 spectrogram at 8 kHz (`Ft8Rate::Hz8000`): 256 x 10, the same 256-point sc16 kernel and
+    /// total gain `1/256` as the 3840 one. The generic fallback below would scale by `1/2560` and quantise every cell
+    /// to a tenth of what the 3840 path has.
+    struct MixedRadix2560Sc16Adapter {
+        plan: crate::engine::dsp::fft_mixed_2560_sc16::Plan2560Sc16,
+    }
+
+    impl Fft16 for MixedRadix2560Sc16Adapter {
+        fn process(&self, buf: &mut [Complex<i16>]) {
+            self.plan.process(buf);
+        }
+        fn len(&self) -> usize {
+            2560
+        }
+    }
+
     impl FftPlanner16 for RustFftPlanner16 {
         fn plan_forward(&mut self, len: usize) -> Box<dyn Fft16> {
             if len == 3840 {
@@ -424,14 +440,19 @@ mod rustfft_backend_i16 {
                     plan: crate::engine::dsp::fft_mixed_3840_sc16::Plan3840Sc16::new(),
                 });
             }
+            if len == 2560 {
+                return Box::new(MixedRadix2560Sc16Adapter {
+                    plan: crate::engine::dsp::fft_mixed_2560_sc16::Plan2560Sc16::new(),
+                });
+            }
             Box::new(RustFft16Adapter {
                 inner: self.inner.plan_fft_forward(len),
             })
         }
         fn plan_inverse(&mut self, len: usize) -> Box<dyn Fft16> {
-            assert_ne!(
-                len, 3840,
-                "inverse 3840-pt sc16 FFT not implemented \
+            assert!(
+                len != 3840 && len != 2560,
+                "inverse 3840- and 2560-pt sc16 FFTs not implemented \
                  (FT8 spectrogram path is forward only)"
             );
             Box::new(RustFft16Adapter {

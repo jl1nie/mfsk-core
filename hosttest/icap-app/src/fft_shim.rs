@@ -66,6 +66,7 @@ pub extern "Rust" fn mfsk_core_make_default_fft_planner() -> Box<dyn FftPlanner>
 mod fx {
     use std::sync::Arc;
 
+    use mfsk_core::engine::dsp::fft_mixed_2560_sc16::Plan2560Sc16;
     use mfsk_core::engine::dsp::fft_mixed_3840_sc16::Plan3840Sc16;
     use mfsk_core::engine::fft::{Fft16, FftPlanner16};
     use num_complex::Complex;
@@ -111,11 +112,30 @@ mod fx {
         }
     }
 
+    /// 2560 = 256 x 10 (the 8 kHz spectrogram): the same inner kernel and gain `1/256` as 3840, not the generic 1/N.
+    struct Mixed2560 {
+        plan: Plan2560Sc16,
+    }
+
+    impl Fft16 for Mixed2560 {
+        fn process(&self, buf: &mut [Complex<i16>]) {
+            self.plan.process(buf);
+        }
+        fn len(&self) -> usize {
+            2560
+        }
+    }
+
     impl FftPlanner16 for Planner16 {
         fn plan_forward(&mut self, len: usize) -> Box<dyn Fft16> {
             if len == 3840 {
                 return Box::new(Mixed3840 {
                     plan: Plan3840Sc16::new(),
+                });
+            }
+            if len == 2560 {
+                return Box::new(Mixed2560 {
+                    plan: Plan2560Sc16::new(),
                 });
             }
             Box::new(Generic {

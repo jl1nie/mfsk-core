@@ -582,6 +582,62 @@ pub const UNMEASURED_ROWS: usize = 10;
 /// Candidates kept by the gate before the pass-2 re-rank: `pass1_limit` of the ESP32 driver.
 pub const GATE_KEEP: usize = 30;
 
+/// The S3's own flow (`V9`: `S3_GATE_OSD_ABLATION.md`) on audio at `rate`: the gate from the audio (candidates by hard sync, the first
+/// `max_cand`), `fine_sync_at`, block-0 refine, stage 3 with OSD, all in the fixed-point numeric path and the f32 Goertzel
+/// the boards run (no FIR baseband). `Hz8000` reads the radio's 8 kHz as it is. Fixed-point build only.
+#[cfg(feature = "fixed-point")]
+pub fn run_slot_s3(slot: &[i16], rate: Ft8Rate, max_cand: usize) -> Run {
+    use mfsk_core::engine::scalar::Cmplx;
+    use mfsk_core::ft8::decode_block::{
+        DEFAULT_Q_THRESH, SymMask, fill_symbol_spectra_goertzel_at, fine_sync_at,
+        process_candidates_into_with_cs_scratch_tuned_with_fill, refine_candidates_into_at,
+    };
+    let base = heap::reset_peak();
+    let t = Instant::now();
+    let osd_on = DecodeDepth {
+        osd: true,
+        ..DecodeDepth::EMBEDDED
+    };
+    let keep = GATE_KEEP.max(max_cand);
+    let mut cands: Vec<_> = coarse_sync_gated(
+        &mut SliceSource(slot),
+        rate,
+        &GatedSearch::new(200.0, 3000.0, SYNC_MIN, keep),
+        1,
+    )
+    .into_iter()
+    .map(|c| c.0)
+    .collect();
+    cands.truncate(max_cand);
+    let cands = fine_sync_at(slot, rate, &cands);
+    let refined = refine_candidates_into_at(slot, rate, cands, max_cand);
+    let mut cs_scratch: Box<[[Cmplx<f32>; 8]; 79]> =
+        vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
+    let out = process_candidates_into_with_cs_scratch_tuned_with_fill(
+        slot,
+        refined,
+        osd_on,
+        DEFAULT_Q_THRESH,
+        mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
+        &mut cs_scratch,
+        |cs, cand, mask: SymMask| {
+            fill_symbol_spectra_goertzel_at(cs, slot, rate, cand.freq_hz, cand.dt_sec, mask)
+        },
+    );
+    let ms = t.elapsed().as_secs_f64() * 1e3;
+    let peak_heap = heap::peak().saturating_sub(base);
+    let decodes = out
+        .iter()
+        .filter_map(|d| unpack77(d.message77()).map(|m| (norm(&m), d.freq_hz)))
+        .collect();
+    Run {
+        decodes,
+        ms,
+        peak_heap,
+        big: Vec::new(),
+    }
+}
+
 /// One slot through variant `v` with `max_cand` candidates. `V1` and `V2` need the fixed-point build (the
 /// per-candidate entry points are `fixed-point`-gated); in the f32 build they decode nothing and say so.
 pub fn run_slot_variant(slot: &[i16], v: Variant, max_cand: usize) -> Run {

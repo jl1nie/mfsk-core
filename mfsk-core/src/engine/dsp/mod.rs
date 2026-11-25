@@ -19,6 +19,7 @@ pub mod downsample;
 pub mod envelope;
 pub mod fft_15;
 pub mod fft_mixed_2304;
+pub mod fft_mixed_2560_sc16;
 pub mod fft_mixed_3840;
 pub mod fft_mixed_3840_sc16;
 pub mod fft_mixed_5120;

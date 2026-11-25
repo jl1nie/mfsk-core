@@ -77,12 +77,16 @@ use num_complex::Complex;
 use num_traits::Float;
 
 use super::super::params::{COSTAS, COSTAS_POS, NSPS};
-use super::types::{AudioSample, SAMPLE_RATE_HZ, TONE_SPACING_HZ, TX_START_OFFSET_S};
+#[cfg(test)]
+use super::types::SAMPLE_RATE_HZ;
+use super::types::{AudioSample, Ft8Rate, TONE_SPACING_HZ, TX_START_OFFSET_S};
 use crate::engine::sync::SyncCandidate;
 
-/// 12 kHz samples per cd0 sample (`ft8_downsample`'s `NDOWN = 60`).
+/// 12 kHz samples per cd0 sample (`ft8_downsample`'s `NDOWN = 60`); 40 at 8 kHz (`Ft8Rate::bin`). The scratch is
+/// sized for the larger.
 const BIN: usize = NSPS / 32;
-/// cd0 sample rate, Hz.
+/// cd0 sample rate, Hz (200 at either rate).
+#[cfg(test)]
 const CD0_RATE_HZ: f32 = SAMPLE_RATE_HZ / BIN as f32;
 /// Stage A half-width in cd0 samples (`ft8b.f90`: `i0-10, i0+10`).
 const STAGE_A_REACH: i32 = 10;
@@ -121,6 +125,17 @@ struct Scratch {
 /// in `sync8d` — so a prefix of the slot can be passed while the rest
 /// is still arriving, at the cost of the late symbols.
 pub fn fine_sync_12k<S: AudioSample>(audio: &[S], cands: &[SyncCandidate]) -> Vec<SyncCandidate> {
+    fine_sync_at(audio, Ft8Rate::Hz12000, cands)
+}
+
+/// [`fine_sync_12k`] on audio at `rate` ([`Ft8Rate`]): the same search on the same 200 Hz grid, its bins `rate / 200`
+/// samples wide (60 at 12 kHz, 40 at 8 kHz). Only the sums over a bin's samples and the mixer's phase step are in the
+/// rate; the candidates it returns are on the same frequency and time grid.
+pub fn fine_sync_at<S: AudioSample>(
+    audio: &[S],
+    rate: Ft8Rate,
+    cands: &[SyncCandidate],
+) -> Vec<SyncCandidate> {
     if cands.is_empty() {
         return Vec::new();
     }
@@ -131,9 +146,10 @@ pub fn fine_sync_12k<S: AudioSample>(audio: &[S], cands: &[SyncCandidate]) -> Ve
         lo_im: [[0.0; BIN]; 8],
         tweak: [[zero; 32]; 2 * STAGE_B_STEPS as usize + 1],
     });
+    let cd0_rate = rate.hz() as f32 / rate.bin() as f32;
     for (k, row) in sc.tweak.iter_mut().enumerate() {
         let delf = (k as i32 - STAGE_B_STEPS) as f32 * STAGE_B_STEP_HZ;
-        let dphi = core::f32::consts::TAU * delf / CD0_RATE_HZ;
+        let dphi = core::f32::consts::TAU * delf / cd0_rate;
         for (m, c) in row.iter_mut().enumerate() {
             let ph = dphi * m as f32;
             *c = Complex::new(ph.cos(), -ph.sin());
@@ -141,25 +157,32 @@ pub fn fine_sync_12k<S: AudioSample>(audio: &[S], cands: &[SyncCandidate]) -> Ve
     }
     cands
         .iter()
-        .map(|c| refine_one(audio, c, &mut sc))
+        .map(|c| refine_one(audio, rate, c, &mut sc))
         .collect()
 }
 
-fn refine_one<S: AudioSample>(audio: &[S], c: &SyncCandidate, sc: &mut Scratch) -> SyncCandidate {
-    let two_pi_over_fs = core::f32::consts::TAU / SAMPLE_RATE_HZ;
+fn refine_one<S: AudioSample>(
+    audio: &[S],
+    rate: Ft8Rate,
+    c: &SyncCandidate,
+    sc: &mut Scratch,
+) -> SyncCandidate {
+    let bin = rate.bin();
+    let cd0_rate = rate.hz() as f32 / bin as f32;
+    let two_pi_over_fs = core::f32::consts::TAU / rate.hz() as f32;
     // cd0 index of symbol 0: `ft8b.f90`'s `i0 = nint((xdt+0.5)*fs2)`.
-    let i0 = ((c.dt_sec + TX_START_OFFSET_S) * CD0_RATE_HZ).round() as i32;
+    let i0 = ((c.dt_sec + TX_START_OFFSET_S) * cd0_rate).round() as i32;
 
     // Only the 7 Costas tones are ever mixed.
     let mut rot = [Complex::new(0.0f32, 0.0); 8];
     for &tone in COSTAS.iter() {
         let w = two_pi_over_fs * (c.freq_hz + tone as f32 * TONE_SPACING_HZ);
-        for n in 0..BIN {
+        for n in 0..bin {
             let ph = w * n as f32;
             sc.lo_re[tone][n] = ph.cos();
             sc.lo_im[tone][n] = ph.sin();
         }
-        let ph = w * BIN as f32;
+        let ph = w * bin as f32;
         rot[tone] = Complex::new(ph.cos(), -ph.sin());
     }
 
@@ -172,11 +195,11 @@ fn refine_one<S: AudioSample>(audio: &[S], c: &SyncCandidate, sc: &mut Scratch) 
             let mut phasor = Complex::new(1.0f32, 0.0);
             let (lo_re, lo_im) = (&sc.lo_re[tone], &sc.lo_im[tone]);
             for j in 0..NB {
-                let st = (first as i64 + j as i64) * BIN as i64;
-                sc.bins[s][j] = if st >= 0 && st + BIN as i64 <= len {
-                    let win = &audio[st as usize..st as usize + BIN];
+                let st = (first as i64 + j as i64) * bin as i64;
+                sc.bins[s][j] = if st >= 0 && st + bin as i64 <= len {
+                    let win = &audio[st as usize..st as usize + bin];
                     let (mut re, mut im) = (0.0f32, 0.0f32);
-                    for n in 0..BIN {
+                    for n in 0..bin {
                         let x = win[n].to_f32();
                         re += x * lo_re[n];
                         im -= x * lo_im[n];
@@ -246,7 +269,7 @@ fn refine_one<S: AudioSample>(audio: &[S], c: &SyncCandidate, sc: &mut Scratch) 
 
     SyncCandidate {
         freq_hz: c.freq_hz + delf,
-        dt_sec: (i0 + dc) as f32 / CD0_RATE_HZ - TX_START_OFFSET_S,
+        dt_sec: (i0 + dc) as f32 / cd0_rate - TX_START_OFFSET_S,
         score: c.score,
     }
 }

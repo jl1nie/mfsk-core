@@ -12,6 +12,8 @@ fn main() {
         (8_000u32, 15usize, None::<usize>, false, 0usize);
     let mut dump: Option<String> = None;
     let mut native = false;
+    // `--s3`: the S3's own flow (V9) at the rate (`--native`: 8 kHz as it is), fixed-point build
+    let mut s3 = false;
     // `--reps N`: decode each `--wav` slot N times (the load and the resample once): the difference of two N is the decode's
     // instructions alone
     let mut reps = 1usize;
@@ -35,6 +37,10 @@ fn main() {
             "--reps" => {
                 reps = a[i + 1].parse().expect("--reps N");
                 i += 2;
+            }
+            "--s3" => {
+                s3 = true;
+                i += 1;
             }
             "--native" => {
                 native = true;
@@ -94,7 +100,7 @@ fn main() {
                 i += 2;
             }
             x => panic!(
-                "unknown argument {x} (usage: icap-profile [--rate 8000|12000] [--max-cand N] [--low-mem BANDS] [--native] [--reps N] [--stream GROUP] [--sic PASSES] [--dump FILE] [--wav FILE]... [--diag])"
+                "unknown argument {x} (usage: icap-profile [--rate 8000|12000] [--max-cand N] [--low-mem BANDS] [--native] [--s3] [--reps N] [--stream GROUP] [--sic PASSES] [--dump FILE] [--wav FILE]... [--diag])"
             ),
         }
     }
@@ -114,6 +120,32 @@ fn main() {
             } else {
                 resample(&resample(&slot12, 12_000, rate), rate, 12_000)
             };
+            #[cfg(feature = "fixed-point")]
+            if s3 {
+                let mut r = None;
+                for _ in 0..reps {
+                    r = Some(profile::run_slot_s3(
+                        &slot,
+                        if native {
+                            Ft8Rate::Hz8000
+                        } else {
+                            Ft8Rate::Hz12000
+                        },
+                        max_cand,
+                    ));
+                }
+                let r = r.expect("--reps 0");
+                println!(
+                    "\n== {w}  (S3 flow, max_cand {max_cand}, {:.0} ms, peak heap {} B)",
+                    r.ms, r.peak_heap
+                );
+                let mut d = r.decodes.clone();
+                d.sort_by(|a, b| a.1.total_cmp(&b.1));
+                for (m, f) in d {
+                    println!("{f:>7.1}  {m}");
+                }
+                continue;
+            }
             if let Some(v) = variant {
                 let r = profile::run_slot_variant(&slot, v, max_cand);
                 println!(
@@ -246,7 +278,24 @@ fn main() {
         } else {
             resample(&resample(&slot12, 12_000, rate), rate, 12_000)
         };
-        let r = if native {
+        let r = if s3 {
+            #[cfg(feature = "fixed-point")]
+            {
+                profile::run_slot_s3(
+                    &slot,
+                    if native {
+                        Ft8Rate::Hz8000
+                    } else {
+                        Ft8Rate::Hz12000
+                    },
+                    max_cand,
+                )
+            }
+            #[cfg(not(feature = "fixed-point"))]
+            {
+                panic!("--s3 needs --features fixed-point")
+            }
+        } else if native {
             profile::run_slot_at(&slot, Ft8Rate::Hz8000, max_cand, bands)
         } else if let Some(v) = variant {
             profile::run_slot_variant(&slot, v, max_cand)

@@ -77,6 +77,7 @@ mod fft_extern_impl {
 mod fft_extern_impl_16 {
     use std::sync::Arc;
 
+    use mfsk_core::engine::dsp::fft_mixed_2560_sc16::Plan2560Sc16;
     use mfsk_core::engine::dsp::fft_mixed_3840_sc16::Plan3840Sc16;
     use mfsk_core::engine::fft::{Fft16, FftPlanner16};
     use num_complex::Complex;
@@ -125,11 +126,30 @@ mod fft_extern_impl_16 {
         }
     }
 
+    /// The 8 kHz spectrogram's 2560 = 256 x 10 (gain `1/256` like 3840, not the generic `1/N`).
+    struct MixedRadix2560Adapter {
+        plan: Plan2560Sc16,
+    }
+
+    impl Fft16 for MixedRadix2560Adapter {
+        fn process(&self, buf: &mut [Complex<i16>]) {
+            self.plan.process(buf);
+        }
+        fn len(&self) -> usize {
+            2560
+        }
+    }
+
     impl FftPlanner16 for TestFftPlanner16 {
         fn plan_forward(&mut self, len: usize) -> Box<dyn Fft16> {
             if len == 3840 {
                 return Box::new(MixedRadix3840Adapter {
                     plan: Plan3840Sc16::new(),
+                });
+            }
+            if len == 2560 {
+                return Box::new(MixedRadix2560Adapter {
+                    plan: Plan2560Sc16::new(),
                 });
             }
             Box::new(GenericAdapter {

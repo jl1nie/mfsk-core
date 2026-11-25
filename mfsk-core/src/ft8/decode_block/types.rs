@@ -176,6 +176,28 @@ impl Ft8Rate {
         }
     }
 
+    /// The input gain of the fixed-point spectrogram as a ratio `num / den`: `12 000 / rate`. A frame of `nsps` samples gives a
+    /// tone `amp x nsps`, so scaling the samples by this makes a cell the same at either rate for the same signal.
+    ///
+    /// **Known limit**: the samples are `i16`, so a slot whose raw peak is above `32767 / 1.5 = 21845` (the auto-gain only ever raises
+    /// a peak to 7680, never lowers it) clips its few strongest samples at 8 kHz: 2 to 254 samples of a slot in the 9 loud recordings
+    /// of the corpus (raw peak 21 886 to 32 351), none in the 13 quiet ones. Scaling the cells by 9/4 after the transform instead
+    /// avoids it and was **worse** (the 22 recordings, mean difference to 12 kHz over 15 candidate counts -1.7 against -0.4:
+    /// an input of 2/3 the size is rounded 1.5x coarser), and the loud recordings lose no more than the quiet ones
+    /// (-0.22 and -0.23 decodes a file at 15 candidates).
+    #[cfg(feature = "fixed-point")]
+    pub(super) const fn input_gain(self) -> (i32, i32) {
+        match self {
+            Ft8Rate::Hz12000 => (1, 1),
+            Ft8Rate::Hz8000 => (3, 2),
+        }
+    }
+
+    /// Input samples per 200 Hz sample (`rate / 200`): 60 at 12 kHz, 40 at 8 kHz.
+    pub(super) const fn bin(self) -> usize {
+        self.hz() as usize / 200
+    }
+
     /// The slot length the spectrogram covers, samples (15 s).
     pub(super) const fn nmax(self) -> usize {
         15 * self.hz() as usize

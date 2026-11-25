@@ -30,7 +30,7 @@ use num_complex::Complex;
 use num_traits::Float;
 
 use super::super::params::{COSTAS, COSTAS_POS, NN, NSPS, NTONES};
-use super::types::{AudioSample, SAMPLE_RATE_HZ, TONE_SPACING_HZ, TX_START_OFFSET_S};
+use super::types::{AudioSample, Ft8Rate, SAMPLE_RATE_HZ, TONE_SPACING_HZ, TX_START_OFFSET_S};
 use crate::engine::scalar::Cmplx;
 
 /// Last sample index that
@@ -41,8 +41,13 @@ use crate::engine::scalar::Cmplx;
 /// a candidate's Goertzel window fits inside the currently-captured
 /// audio prefix without re-implementing the constants.
 pub fn goertzel_window_end_sample(dt_sec: f32) -> usize {
-    let i0 = ((TX_START_OFFSET_S + dt_sec) * SAMPLE_RATE_HZ).round() as i64;
-    (i0 + (NN as i64) * (NSPS as i64)).max(0) as usize
+    goertzel_window_end_sample_at(dt_sec, Ft8Rate::Hz12000)
+}
+
+/// [`goertzel_window_end_sample`] for audio at `rate` ([`Ft8Rate`]): the samples are the rate's, the symbol is `rate x 0.16`.
+pub fn goertzel_window_end_sample_at(dt_sec: f32, rate: Ft8Rate) -> usize {
+    let i0 = ((TX_START_OFFSET_S + dt_sec) * rate.hz() as f32).round() as i64;
+    (i0 + (NN as i64) * (rate.nsps() as i64)).max(0) as usize
 }
 
 // Thread-local scratch for the `S -> i16` conversion in
@@ -504,9 +509,28 @@ pub fn fill_symbol_spectra_goertzel<S: AudioSample>(
     dt_sec: f32,
     mask: SymMask,
 ) {
+    fill_symbol_spectra_goertzel_at(out, audio, Ft8Rate::Hz12000, freq_hz, dt_sec, mask);
+}
+
+/// [`fill_symbol_spectra_goertzel`] on audio at `rate` ([`Ft8Rate`]): a symbol is `rate x 0.16` samples (1280 at 8 kHz, 2/3 of
+/// the work of 1920), the tone frequencies and the symbol grid are the same. The sums are scaled by `12000 / rate` (3/2 at
+/// 8 kHz), so that a cell is the 12 kHz path's for the same signal and what reads it (the LLRs, `sync_quality`, the SNR) does
+/// not know the rate. **A deliberate divergence from WSJT-X** (12 kHz only), as [`Ft8Rate`].
+pub fn fill_symbol_spectra_goertzel_at<S: AudioSample>(
+    out: &mut [[Cmplx<f32>; 8]; 79],
+    audio: &[S],
+    rate: Ft8Rate,
+    freq_hz: f32,
+    dt_sec: f32,
+    mask: SymMask,
+) {
     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::SymbolSpectra);
-    let two_pi_over_fs = core::f32::consts::TAU / SAMPLE_RATE_HZ;
-    let i0 = ((TX_START_OFFSET_S + dt_sec) * SAMPLE_RATE_HZ).round() as i64;
+    let fs = rate.hz() as f32;
+    let nsps = rate.nsps();
+    let two_pi_over_fs = core::f32::consts::TAU / fs;
+    let i0 = ((TX_START_OFFSET_S + dt_sec) * fs).round() as i64;
+    // 1.0 at 12 kHz: not applied, so that path is the one it was
+    let to_12k = SAMPLE_RATE_HZ / fs;
 
     // Per-tone constants — 8 tones × 3 f32 = 96 B on the stack.
     let mut cos_w = [0.0_f32; NTONES];
@@ -524,7 +548,7 @@ pub fn fill_symbol_spectra_goertzel<S: AudioSample>(
         if !sym_in_mask(sym, mask) {
             continue;
         }
-        let sym_start = i0 + (sym as i64) * (NSPS as i64);
+        let sym_start = i0 + (sym as i64) * (nsps as i64);
         // 8 independent recursion states.
         let mut s_prev = [0.0_f32; NTONES];
         let mut s_prev2 = [0.0_f32; NTONES];
@@ -535,9 +559,9 @@ pub fn fill_symbol_spectra_goertzel<S: AudioSample>(
         // sequential load that LLVM's unroll + Xtensa FPU pipeline can
         // run at ~1 cycle/tone/sample. Cold path (first/last ~1 symbol
         // per candidate) keeps the original per-sample check.
-        if sym_start >= 0 && (sym_start as usize) <= audio.len().saturating_sub(NSPS) {
+        if sym_start >= 0 && (sym_start as usize) <= audio.len().saturating_sub(nsps) {
             let base = sym_start as usize;
-            for n in 0..NSPS {
+            for n in 0..nsps {
                 let sample = audio[base + n].to_i16() as f32;
                 for tone in 0..NTONES {
                     let s = sample + coeff[tone] * s_prev[tone] - s_prev2[tone];
@@ -547,7 +571,7 @@ pub fn fill_symbol_spectra_goertzel<S: AudioSample>(
             }
         } else {
             let audio_len = audio.len() as i64;
-            for n in 0..NSPS {
+            for n in 0..nsps {
                 let idx = sym_start + n as i64;
                 let sample = if idx >= 0 && idx < audio_len {
                     audio[idx as usize].to_i16() as f32
@@ -565,7 +589,14 @@ pub fn fill_symbol_spectra_goertzel<S: AudioSample>(
         for tone in 0..NTONES {
             let re = s_prev[tone] - cos_w[tone] * s_prev2[tone];
             let im = sin_w[tone] * s_prev2[tone];
-            out[sym][tone] = Cmplx { re, im };
+            out[sym][tone] = if rate == Ft8Rate::Hz12000 {
+                Cmplx { re, im }
+            } else {
+                Cmplx {
+                    re: re * to_12k,
+                    im: im * to_12k,
+                }
+            };
         }
     }
 }

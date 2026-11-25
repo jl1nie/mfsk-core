@@ -179,3 +179,76 @@ the board runs today. Consequences made in the code:
   no OSD), **V9 (gate + OSD)**; V4 stays as a reference only.
 - The new library item, the gate on the boards' own spectrogram (`coarse_sync_gated_spec`), is in. The pass-2 re-rank is bypassed for the gate's list in the harness (V9 takes the first `max_cand` by hard sync before `fine_sync_12k`); on the boards that is `dual_core.rs`'s step 2 to change.
 - OSD is decided on the board: G1 (V10) against G2 (V9) costs, with the number of candidates that reach OSD.
+
+## The S3's flow at 8 kHz, native (stage A, host; 2026-11-26)
+
+The radio's USB audio is 48 kHz stereo (`uac.rs`; the "48 kHz mono only" of `EMBEDDED.md` is the TX side), so 8 kHz for the S3 is a 6:1 conversion in the
+reader instead of 4:1, not an extra stage. What the library now has for it (the interim `_at` forms; **no board code changed**): `fft_mixed_2560_sc16`
+(`Plan2560Sc16`, 256 x 10: the 3840 plan's inner kernel, table and gain 1/256), the fixed-point spectrogram at a rate (the input scaled by 12000 / rate
+after the shift, so a cell is the 12 kHz one's for the same signal: `FP_SPEC_SHIFT`, `ratio_eps` and `cell_scale` carry over), `fine_sync_at`,
+`fill_symbol_spectra_goertzel_at` (scaled by 12000 / rate), `goertzel_window_end_sample_at`, `refine_candidates_into_at`. Stage 3 needs nothing new: it takes the fill closure.
+`hosttest/icap-app` runs the V9 flow at a rate: `icap-profile --rate 8000 --native --low-mem 1 --s3` (`--reps N` for the decode's instructions alone).
+
+Host, fixed-point, the 22 recordings (of 402) and `qso3_busy` (of 20), V9 (gate, first `max_cand` by hard sync, fine sync, block-0 refine, stage 3 with OSD):
+
+| `max_cand` | 12 kHz as it is | 8 kHz, resampled to 12 kHz and back | **8 kHz native** |
+|---|---:|---:|---:|
+| 15: 22 recordings (extras) | 221 (1) | 221 (1) | **216 (1)** |
+| 30 | 267 (3) | 267 (3) | **268 (4)** |
+| 45 | 267 (3) | 267 (3) | **269 (3)** |
+| 15: `qso3_busy` | 12 | 13 | **12** |
+| 30: `qso3_busy` | 14 | 14 | **14** |
+| 15: the whole decode, ms (22 recordings, one run) | 246 | 242 | **194 (-21 %)** |
+| 30: the same | 451 | 444 | **357 (-21 %)** |
+| 15: instructions, `qso3_busy`, decode alone (20 repetitions) | 279.5 M | | **213.8 M (-23.5 %)** |
+| 30: the same | 549.9 M | | **448.6 M (-18.4 %)** |
+
+- The 12 kHz column is the documented V9 (221 / 267, `qso3_busy` 12): the baseline is right. **The 12 kHz S3 flow is unchanged** (the V9 decodes of the 22
+  recordings before and after: identical, 222 and 270 lines).
+- At 15 candidates native loses 6 decodes and gains 1 (`PC2J IZ1ANK +01`, `SP8NFO PA3EPP +04`, `RK6AH JH1AJT -05`, `DL2MEL MM1AWV -15`, `SA6SKA KN4PHS EM64`,
+  `CQ RA3QUE KO91` lost; `JH1AJT W4FGA EM83` gained): -2.3 %. From about 28 candidates it is level or ahead. **Explained below** (the next bullet): ±1 flips of the sync stage's ordering at the cut,
+  made about four times as frequent by the fixed-point spectrogram's quantisation; not a loss of sensitivity at 8 kHz (the same flow in f32: -1 at 15, mean -0.33 over 15 candidate counts); on the 936-reference busy-band corpus below it is -2 of 483 (-0.4 %) at 15.
+- **Why 15 candidates lose 5: the sync stage, stage by stage (host, 2026-11-26).** The 22 recordings, the 871 candidates of the first 40 of each gate list, every
+  Costas decision (about 17 800) recomputed from the spectrogram cells of four builds: fixed-point and f32, at 12 kHz and at 8 kHz (the f32 rows are 40 ms, the fixed-point ones
+  80 ms; row `j` against row `2j`). The recomputation reproduces the gate's own hard-sync count on 1 736 of 1 741 candidates.
+  1. *The decode is not what is lost.* All 6 lost signals decode when run alone at 8 kHz. Each was the 15th and last candidate of the 12 kHz gate list and is pushed to 15th or 16th by another
+     candidate: the loss is in the list order, which is the sync stage's (hard-sync count, then coarse score).
+  2. *The signals' own sync did not get worse.* The mean hard-sync count of the 247 real signals is 17.89 (f32, 12 kHz), 17.88 (f32, 8 kHz), 17.85 (fixed, 12 kHz), 17.82 (fixed, 8 kHz); of the 6 lost, 5 have the
+     same count under all four cell sources (the 6th, 15 -> 14 in both f32 and fixed).
+  3. *The intruders*, one per lost signal: (a) a ghost 50 Hz from the strongest signal, hard sync 17 / 17 / 17 / **18** (f32 12k, f32 8k, fixed 12k, fixed 8k): a fixed-point flip at 8 kHz only;
+     (b) a ghost 250 Hz away, 15 / 15 / **14** / 15: the fixed-point 12 kHz is the outlier (it dropped the ghost), the 8 kHz agrees with f32; (c) the lost signal itself 15 -> 14 at 8 kHz in **f32 too**
+     (a rate effect); (d) a real signal 15 -> 16 at 8 kHz in **f32 too** (a rate effect, a swap); (e) and (f) a candidate in the 8 kHz list and not in the fixed-point 12 kHz one
+     (coarse-stage membership: for (e) the f32 list has it at both rates with the same score 2.94, the fixed-point 12 kHz list lacks it, so the 12 kHz fixed-point is the one that moved).
+  4. *Where the decision noise comes from.* The strongest of the 8 tone cells of a Costas symbol differs between f32 at 12 kHz and f32 at 8 kHz in **1.00 %** of the decisions (the rate alone: resampling,
+     frame content), but between fixed-point and f32 at the **same** rate in **3.87 % (12 kHz) and 4.11 % (8 kHz)**, and between the two fixed-point builds in 1.77 %. The 16-bit transform's rounding
+     (a relative error of 8.9 % rms at 8 kHz and 11.0 % at 12 kHz on a noise slot: the cells of a weak signal are a few tens of LSB) is about four times the rate's own effect.
+     The hard-sync count of a candidate differs between the two rates for 68 of 871 candidates in f32 (-1: 36, +1: 31) and 102 in fixed-point (-1: 62, +1: 34). The coarse score agrees to 1 % at
+     both (10-90 % of the ratio: -0.7..+0.8 % f32, -1.1..+1.2 % fixed-point), with a deviation above 5 % in 7 candidates (f32) and 29 (fixed-point).
+  5. *The same flow in f32, native against 12 kHz* (the harness code with the fixed-point gates lifted for the run, then restored): candidate count 10 / 12 / 14 / **15** / 16 / 18 / 20 / 22 / 25 / 28 / 30 / 35 / 40 / 45 / 60 =
+     0 / +1 / -2 / **-1** / -1 / -1 / -2 / -1 / 0 / +2 / 0 / -1 / 0 / 0 / +1, mean -0.33; fixed-point: -1 / -2 / -3 / **-5** / -1 / -2 / -1 / -2 / 0 / +1 / +1 / +3 / +2 / +2 / +2, mean -0.4. **The means agree; the spread of the
+     fixed-point is about twice (standard deviation 2.2 against 1.1 decodes) -- on the 22 recordings; see 6., which does not repeat it.**
+  6. *On the larger real corpus, where the numbers are not noise-sized.* `ft8_lib/test/wav/20m_busy`: **38 real busy-band recordings, 936 reference decodes** (WSJT-X format), 2.3 x the 22 recordings'
+     402. The S3 flow (fixed-point), the references hit, 12 kHz / 8 kHz native, at 10 / 15 / 20 / 30 / 45 candidates: 343 / 341, **483 / 481**, 559 / 556, 609 / 607, 611 / 610 of 936 (extras 1 / 1, 4 / 4, 11 / 10, 19 / 18,
+     20 / 19). In **f32** (the same flow, gates lifted for the run): 342 / 342, 486 / 486, 568 / 566, 608 / 606, 611 / 609. At 15 candidates the files where 8 kHz is better / worse / the same are 3 / 5 / 30 (fixed-point)
+     and 2 / 2 / 34 (f32), the per-file difference's standard deviation 0.46 and 0.32. **So the 8 kHz native is about 2 decodes in 600 behind (0.3-0.4 %), in both numerics; the -5 on the 22 recordings is the upper
+     end of that, not its size, and the claim in 5. that the fixed-point's spread is twice the f32's is not repeated here (per-file sd 0.22-0.46 against 0.22-0.39).** The other real recordings (`qso1`, `qso2`, `qso3_busy`
+     (the WSJT-X `samples/FT8/210703_133430.wav` is the same file), `websdr_test14_12k`, `websdr_test15_12k`; no reference lists, decodes compared): fixed-point 43 against 43 at 15 candidates and 45 against 45 at 30, f32 49 against 52 and 57
+     against 60 (8 kHz ahead, none lost). Not used: the generated sweeps (`ft8_busy_sweep`, `ft8_dense_sweep`, `ft8_itu_sweep`, `ft8_sweep`; not on this machine), `webft8/ft8-bench/testdata` (16 simulated slots), the 6.4 kHz
+     recordings of `ft8_lib`.
+  - *So:* the 8 kHz carries a **small** loss of sensitivity, about 0.3-0.4 % of the decodes on 936 reference signals (synthetic signals at matched noise density, 120 trials a level, give the same mean hard-sync count at -12 to -20 dB: 20.80 / 19.77 / 16.66 / 13.48
+    at 12 kHz and 20.69 / 19.76 / 16.83 / 13.72 at 8 kHz; the u16 cells are no less precise at 8 kHz). The loss at 15 candidates on the 22 recordings is **±1 flips of the sync stage's ordering at a cut where many candidates
+    tie (hard sync 14 to 18)**; the fixed-point spectrogram's quantisation makes the Costas decisions that differ from f32 about four times as frequent as the rate alone does (3.9-4.1 % against 1.0 %), and the 6 lost
+    signals are such flips (two are rate effects that the f32 cells show as well, the other four appear in the fixed-point cells only). On the larger corpus the net effect is 2 in 600 in both numerics (6.): the real size of the 8 kHz deficit,
+    of which the 22 recordings' -5 at 15 candidates is the upper end.
+  - *Not shown:* that the 15-candidate cut itself is the right place to stand (it is where the ties are); a gate stable to this noise (a tie-break that does not read the quantised cells), which is a change to the sync stage and
+    would move the 12 kHz decodes too; the 3 % effect noted on real signals (11 at -1 against 3 at +1 on the 247, fixed-point) is within what 4. describes and is not separately explained.
+  - **A defect found on the way, not the cause:** the input is scaled by 3/2 after the gain shift, and the shift only ever raises a peak to 7680, so a slot whose raw peak is above
+    21 845 **clips its strongest samples at 8 kHz** (2 to 254 samples in each of the 9 loud `191111_*` recordings, none in the 13 quiet `websdr_*` ones). The loud ones lose no more than the quiet
+    (-0.22 and -0.23 decodes a file at 15 candidates). Scaling the cells by 9/4 afterwards, which cannot clip, was **worse** (mean difference over the 15 caps -1.7 against -0.4: the
+    smaller input is rounded coarser), so the input scale stays; the limit is documented on `Ft8Rate::input_gain`. A board that locks its gain from the first second (`stage1_inc`) can clip at 12 kHz as well.
+- The time and instruction figures are the **whole-flow** ones (BP, OSD and the coarse search included, which do not depend on the rate); the 12 kHz-rate stages
+  fell by more. They are host (Apple M-series) numbers. **Nothing here was run on an Xtensa core**: the LX7 times, the PSRAM traffic (the slot is 2/3 of the
+  bytes, the two buffers of `stage1_inc` 240 KB less) and the esp-dsp kernel at 2560 are exactly what a flash would say.
+- Not done: the board side (`esp_dsp_fft.rs` 2560 plan, `stage1_inc.rs` with its own copy of the constants, the reader's 8 kHz resampler and its anti-alias filter,
+  the slot geometry in 12 kHz samples in `Ft8ChunkSink` / `time_sync` / `decode_pipeline`), the `rate` argument on the released functions (the `_at` forms are
+  additions, no break), the host/board bit-exactness of the 2560 plan (no test pins it for 3840 either).

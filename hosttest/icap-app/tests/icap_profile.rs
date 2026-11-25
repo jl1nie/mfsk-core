@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 
 use icap_app_hosttest::{fft_shim, profile, resample::resample, wav};
+#[cfg(not(feature = "fixed-point"))]
 use mfsk_core::ft8::decode_block::Ft8Rate;
 
 /// Measured 2026-11-24 (`icap-profile --rate 8000 --max-cand 15`): f32 143 of 402, fixed-point 131 of 402

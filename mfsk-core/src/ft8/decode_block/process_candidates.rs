@@ -1092,8 +1092,19 @@ pub fn refine_candidates_into<S: AudioSample>(
     cands: Vec<SyncCandidate>,
     max_cand: usize,
 ) -> Vec<RefinedCandidate> {
+    refine_candidates_into_at(audio, Ft8Rate::Hz12000, cands, max_cand)
+}
+
+/// [`refine_candidates_into`] on audio at `rate` ([`Ft8Rate`]).
+#[cfg(feature = "fixed-point")]
+pub fn refine_candidates_into_at<S: AudioSample>(
+    audio: &[S],
+    rate: Ft8Rate,
+    cands: Vec<SyncCandidate>,
+    max_cand: usize,
+) -> Vec<RefinedCandidate> {
     use super::super::params::NN;
-    use super::fill_symbol_spectra::fill_symbol_spectra_goertzel;
+    use super::fill_symbol_spectra::fill_symbol_spectra_goertzel_at;
     // NB (Gemini PR #103 MEDIUM): one cs Box per cand-iter = one 5 KB
     // heap alloc per pass1 candidate (up to 30/slot on embedded).
     // Total transient PSRAM use is ~150 KB, not catastrophic, but the
@@ -1107,7 +1118,14 @@ pub fn refine_candidates_into<S: AudioSample>(
             alloc::vec![[Cmplx::<f32>::default(); 8]; NN]
                 .try_into()
                 .unwrap();
-        fill_symbol_spectra_goertzel(&mut cs, audio, c.freq_hz, c.dt_sec, SymMask::SyncBlock0);
+        fill_symbol_spectra_goertzel_at(
+            &mut cs,
+            audio,
+            rate,
+            c.freq_hz,
+            c.dt_sec,
+            SymMask::SyncBlock0,
+        );
         cs
     })
 }

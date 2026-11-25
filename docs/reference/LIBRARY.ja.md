@@ -2789,6 +2789,9 @@ FT8 モジュールは共有パイプラインの上に並列のエントリ群�
   `Hz8000` は非対応 (panic する。2560 点の 16 ビット plan がない)。`fft-extern` では、バイナリの planner が 2560 点の
   実 FFT を提供する必要がある (ESP32 のものにはない)。22 録音、30 候補での測定: ラウンドトリップの 274 に対し
   273 / 402、extras なし、デコード時間は 21 % 短い。
+* `fine_sync_at(audio, Ft8Rate, &cands)`、`fill_symbol_spectra_goertzel_at(out, audio, Ft8Rate, ..)`、`refine_candidates_into_at` (固定小数点)、
+  `goertzel_window_end_sample_at` — 8 kHz の音声でボードの経路の部品を動かす形 (S3 の流れ。12 kHz の関数は、これの `Hz12000`)。固定小数点の
+  スペクトログラムも `Ft8Rate` を取り、8 kHz の FFT は `Plan2560Sc16` (256 x 10)。今のところホストのみで、ボードは使っていない。
 * `coarse_sync_gated(src, Ft8Rate, &GatedSearch, bands)` / `coarse_sync_gated_spec(&Spectrogram, &GatedSearch)` — hard sync ゲート。
   `PcmSource` から、または既に持っているスペクトログラム (ボードのストリーミング用: `GatedSearch::fill(SpecFill)`
   が測定済みの行数を伝える) から。どちらも `GatedSearch::new(freq_min, freq_max, sync_min, keep)` を使い、
