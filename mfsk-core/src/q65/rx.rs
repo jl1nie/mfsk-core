@@ -379,7 +379,7 @@ pub struct Q65Result {
     /// Frame start in seconds from the nominal start (#397) — the
     /// reference decoders' DT column, and the only field that can express
     /// a frame beginning *before* the buffer (issue #283), where
-    /// `start_sample` saturates at 0. A [`super::SniperRequest`], which
+    /// `start_sample` saturates at 0. A [`super::decode_candidate`], which
     /// has no nominal start, reports it from the start of the buffer.
     pub dt_sec: f32,
     /// BP iterations consumed by the QRA decoder.

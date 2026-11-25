@@ -52,8 +52,8 @@ instead (#572): FT8's checkpoint-A rows at ~11.8 s, and a final call equal to `d
 (where it departs from the design: `docs/notes/EARLY_DECODE_DESIGN.md` §12). `AnyDecoder` picks the mode at run time
 (`registry::Mode`); an option the mode lacks is `Unsupported`. `Depth` decides every search setting, mapped per mode from
 v3.2.0-rc1 and cited in the code; defaults follow the WSJT-X GUI. The 0.12 per-family `DecodeRequest`/`SniperRequest`/
-`MultiPeriodRequest` are crate-private (`internal-testing` reopens them for tests; `SniperRequest` stays public for the
-WSPR boards). The raw engine functions (`decode_frame`, `process_candidate_basic`, `GenericPipelineProtocol`) are
+`MultiPeriodRequest` are crate-private (`internal-testing` reopens them for tests; the public `SniperRequest` of WSPR, JT9, JT65 and Q65 is
+deprecated since 0.17.0: `decode_candidate`, which the WSPR boards call). The raw engine functions (`decode_frame`, `process_candidate_basic`, `GenericPipelineProtocol`) are
 `pub(crate)` on purpose. Time is `slotgrid` (`SlotGrid`, `SampleClock`, `SlotCutter`), shared by `IqReceiver` (pull
 model: owned `CompletedSlot`s, one decoder per channel kept by the caller) and the C stream. The design, its
 embedded checks (E1–E11) and the open questions are in the plan `moonlit-mapping-hopcroft.md` and the memory note

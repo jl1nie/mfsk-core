@@ -16,6 +16,7 @@ pub struct Alignment {
 }
 
 impl Alignment {
+    /// A candidate at sample `start_sample` (symbol 0), tone 0 at `freq_hz` Hz.
     pub const fn new(start_sample: usize, freq_hz: f32) -> Self {
         Self {
             start_sample,

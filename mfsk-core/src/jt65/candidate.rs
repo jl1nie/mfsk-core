@@ -42,7 +42,7 @@ impl<'a> Jt65Candidate<'a> {
     }
 
     /// Run RS with erasures: see [`Jt65Strategy::Erasures`].
-    pub fn erasures(mut self, attempts: &'a [usize]) -> Self {
+    pub const fn erasures(mut self, attempts: &'a [usize]) -> Self {
         self.strategy = Jt65Strategy::Erasures(attempts);
         self
     }
@@ -166,5 +166,27 @@ mod tests {
         let b = noisy(&c, 16.0, 1);
         assert!(decode(&b, &base.clone().erasures(&ladder)).is_none());
         assert_eq!(decode(&b, &base.chase(ChaseParams::default())), Some(want));
+    }
+
+    /// The deprecated builder is the function: the strategies set through `SniperRequest` give the results of the test
+    /// above (a shim that dropped the strategy would run every one as hard decisions).
+    #[allow(deprecated)]
+    #[test]
+    fn the_deprecated_builder_is_the_function() {
+        use super::super::SniperRequest;
+        let c = clean(1500.0);
+        let want = decode(&c, &Jt65Candidate::new(at())).expect("clean");
+        let ladder = [0usize, 8, 16, 24, 32];
+        let a = noisy(&c, 16.0, 0);
+        let sn = || SniperRequest::new(&a, 12_000, START, 1500.0);
+        assert!(sn().decode().is_none(), "hard decisions lose seed 0");
+        assert_eq!(sn().erasures(&ladder).decode(), Some(want.clone()));
+        assert!(sn().erasures(&[0]).decode().is_none());
+        assert_eq!(sn().chase(ChaseParams::default()).decode(), Some(want));
+        let no_trials = ChaseParams {
+            max_trials: 0,
+            ..ChaseParams::default()
+        };
+        assert!(sn().chase(no_trials).decode().is_none());
     }
 }

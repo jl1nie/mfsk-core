@@ -21,7 +21,9 @@ pub enum WsprInput<'a> {
         sample_rate: u32,
     },
     /// A 375 Hz baseband, from [`super::baseband::decimate_to_baseband`] or one of the `wspr::ddc` down-converters:
-    /// skips the O(NFFT1) decimation.
+    /// skips the O(NFFT1) decimation. **`sample_rate` is the rate of the audio the baseband was made from (12 000), not the
+    /// baseband's 375 Hz**: it converts the candidate's audio-rate `start_sample` and the decoded lag, so a wrong value
+    /// misplaces both.
     Baseband {
         idat: &'a [f32],
         qdat: &'a [f32],
@@ -30,6 +32,7 @@ pub enum WsprInput<'a> {
 }
 
 impl<'a> WsprInput<'a> {
+    /// 12 kHz-class audio: see [`WsprInput::Audio`].
     pub const fn audio(samples: &'a [f32], sample_rate: u32) -> Self {
         Self::Audio {
             samples,
@@ -37,6 +40,7 @@ impl<'a> WsprInput<'a> {
         }
     }
 
+    /// A baseband made once from audio at `sample_rate`: see [`WsprInput::Baseband`].
     pub const fn baseband(idat: &'a [f32], qdat: &'a [f32], sample_rate: u32) -> Self {
         Self::Baseband {
             idat,
@@ -82,21 +86,25 @@ impl<'a> WsprCandidate<'a> {
         }
     }
 
+    /// Set [`drift_hz`](Self::drift_hz).
     pub const fn drift_hz(mut self, drift_hz: f32) -> Self {
         self.drift_hz = drift_hz;
         self
     }
 
+    /// Set [`nblocks`](Self::nblocks).
     pub const fn nblocks(mut self, nblocks: &'a [usize]) -> Self {
         self.nblocks = nblocks;
         self
     }
 
+    /// Set [`confirmed`](Self::confirmed).
     pub const fn confirmed(mut self, table: &'a WsprCallsignTable) -> Self {
         self.confirmed = Some(table);
         self
     }
 
+    /// Set [`refine_drift`](Self::refine_drift).
     pub const fn refine_drift(mut self, on: bool) -> Self {
         self.refine_drift = on;
         self
@@ -256,6 +264,38 @@ mod tests {
         );
         assert_eq!(
             decodes(&noisy_audio, &osd.confirmed(&known)).map(|r| r.message),
+            Some(msg)
+        );
+    }
+
+    /// The deprecated builder is the function: the same four option cases, set through `SniperRequest`, give the results
+    /// above (a dropped option in the shim would flip one of them).
+    #[allow(deprecated)]
+    #[test]
+    fn the_deprecated_builder_is_the_function() {
+        use super::super::SniperRequest;
+        let audio = slot(1500.0);
+        let sn = |a: &'static [f32]| SniperRequest::new(a, 12_000, START, 1500.0);
+        let audio: &'static [f32] = Box::leak(audio.into_boxed_slice());
+        assert!(sn(audio).drift(3.0).decode().is_some());
+        assert!(sn(audio).drift(3.0).refine_drift(false).decode().is_none());
+        assert!(sn(audio).nblocks(&[]).decode().is_none());
+
+        let noisy_audio: &'static [f32] = Box::leak(noisy(audio, 45.0, 0).into_boxed_slice());
+        let msg = crate::msg::WsprMessage::Type1 {
+            callsign: "K1ABC".into(),
+            grid: "FN42".into(),
+            power_dbm: 37,
+        };
+        let mut known = WsprCallsignTable::new();
+        known.record(&msg);
+        let osd = |r: SniperRequest<'static>| r.nblocks(&[1, 2, 3, 0]).refine_drift(false);
+        assert!(osd(sn(noisy_audio)).decode().is_none());
+        assert_eq!(
+            osd(sn(noisy_audio))
+                .confirmed(&known)
+                .decode()
+                .map(|r| r.message),
             Some(msg)
         );
     }

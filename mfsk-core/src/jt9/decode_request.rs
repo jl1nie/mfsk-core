@@ -201,7 +201,10 @@ impl<'a> SniperRequest<'a> {
         super::decode_candidate(
             self.audio,
             self.sample_rate,
-            crate::engine::alignment::Alignment::new(self.start_sample, self.base_freq_hz),
+            &super::Jt9Candidate::new(crate::engine::alignment::Alignment::new(
+                self.start_sample,
+                self.base_freq_hz,
+            )),
         )
     }
 }

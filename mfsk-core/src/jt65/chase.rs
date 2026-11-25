@@ -1,7 +1,7 @@
 //! Stochastic Chase decoder — faithful port of WSJT-X's `ftrsdap`
 //! (`lib/ftrsd/ftrsdap.c`, called from `lib/extract.f90`), issue #169.
 //!
-//! [`super::SniperRequest::erasures`] tries exactly one deterministic,
+//! [`super::Jt65Strategy::Erasures`] tries exactly one deterministic,
 //! increasing-erasure-count ladder over a single confidence ordering.
 //! Real WSJT-X (`jt9 -6`, no `kvasd`) instead runs a *randomized*
 //! multi-trial search: many trials, each marking a different random
@@ -84,7 +84,7 @@ use super::rx;
 use crate::engine::gray::gray;
 
 /// Tunable parameters for the Chase search, passed to
-/// `super::DecodeRequest::chase` / [`super::SniperRequest::chase`].
+/// `super::DecodeRequest::chase` / [`super::Jt65Strategy::Chase`].
 /// Plain public fields + `Default`, matching
 /// [`super::search::SearchParams`]'s shape. Defaults are WSJT-X's own
 /// literal constants (see module doc) — this is a faithful port, not
@@ -303,7 +303,7 @@ struct Best {
 ///
 /// Returns the decode-side SNR estimate alongside the message, for
 /// [`super::Jt65Result::snr_db`]. Public through
-/// [`super::DecodeRequest::chase`] / [`super::SniperRequest::chase`].
+/// [`super::DecodeRequest::chase`] / [`super::Jt65Strategy::Chase`].
 pub(super) fn decode_at_with_chase(
     audio: &[f32],
     sample_rate: u32,

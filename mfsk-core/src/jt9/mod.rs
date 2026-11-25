@@ -66,8 +66,9 @@ pub mod sync_pattern;
 mod test_util;
 pub mod tx;
 
+pub use crate::engine::alignment::Alignment;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-pub use candidate::decode_candidate;
+pub use candidate::{Jt9Candidate, decode_candidate};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use decode::Jt9Depth;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
@@ -88,7 +89,7 @@ pub use tx::{encode_channel_symbols, synthesize_standard};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// Decode a JT9 signal at a known (start_sample, base_freq) and return
 /// the recovered message if Fano converges. Public through
-/// [`SniperRequest`].
+/// [`decode_candidate`].
 fn decode_at_inner(
     audio: &[f32],
     sample_rate: u32,

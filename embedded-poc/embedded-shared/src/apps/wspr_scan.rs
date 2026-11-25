@@ -29,9 +29,9 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use mfsk_core::engine::alignment::Alignment;
 use mfsk_core::fec::conv::fano::instrument as fano_hist;
 use mfsk_core::msg::WsprMessage;
-use mfsk_core::engine::alignment::Alignment;
 use mfsk_core::wspr::coarse_baseband::{coarse_baseband, BasebandCandidate};
 use mfsk_core::wspr::decode::{rank_pass2_candidates, WsprCallsignTable, WsprResult};
 use mfsk_core::wspr::demod::TONE_SPACING_HZ;

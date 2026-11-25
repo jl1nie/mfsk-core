@@ -98,6 +98,8 @@ pub mod tx;
 pub mod wsprd_fmt;
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub use crate::engine::alignment::Alignment;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use candidate::{WsprCandidate, WsprInput, decode_candidate};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use decode::{WsprCallsignTable, WsprResult};

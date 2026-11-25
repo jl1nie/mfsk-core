@@ -16,9 +16,9 @@ use crate::msg::hash_table::CallsignHashTable;
 
 /// One Q65 candidate and how to decode it.
 ///
-/// **Precedence** (as `SniperRequest`'s was): `ap_list`, then `fading` (with `ap_hint`), then `ap_hint`, then the plain
-/// decode. A candidate that sets more than one of them is decoded by the first in that order; the others are not read
-/// (`ap_list` ignores `fading` and `ap_hint`; `pileup` belongs to `ap_hint`).
+/// **Precedence** (as `SniperRequest`'s was): `ap_list`, then `fading`, then `ap_hint`, then the plain decode. A candidate
+/// that sets several is decoded by the first of these that is set: `ap_list` reads none of the others; `fading` also reads
+/// `ap_hint` (and its `pileup`); `ap_hint` alone reads `pileup`, which is read only with it.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct Q65Candidate<'a> {
@@ -51,26 +51,31 @@ impl<'a> Q65Candidate<'a> {
         }
     }
 
+    /// Set [`ap_hint`](Self::ap_hint).
     pub const fn ap_hint(mut self, hint: &'a ApHint) -> Self {
         self.ap_hint = Some(hint);
         self
     }
 
+    /// Set [`pileup`](Self::pileup).
     pub const fn pileup(mut self, on: bool) -> Self {
         self.pileup = on;
         self
     }
 
+    /// Set [`ap_list`](Self::ap_list).
     pub const fn ap_list(mut self, candidates: &'a [[i32; 63]]) -> Self {
         self.ap_list = Some(candidates);
         self
     }
 
+    /// Set [`fading`](Self::fading).
     pub const fn fading(mut self, model: FadingModel, b90_ts: f32) -> Self {
         self.fading = Some((model, b90_ts));
         self
     }
 
+    /// Set [`hash_table`](Self::hash_table).
     pub fn hash_table(mut self, table: Arc<CallsignHashTable>) -> Self {
         self.hash_table = Some(table);
         self
@@ -180,9 +185,10 @@ mod tests {
         );
     }
 
-    /// A clean signal decodes plain, so the options are set where they decide, in a noisy slot (sigma 6.5, noise from a
-    /// fixed generator): plain BP loses it for every seed; the AP hint finds it; the candidate list finds it without BP
-    /// (`iterations == 0`).
+    /// A clean signal decodes plain, so the options are set where they decide, in a noisy slot (sigma 6.5, seed 0 of a fixed
+    /// generator; plain BP also loses seeds 1-11, found by a sweep): plain BP loses it; the AP hint finds it; the fast-fading
+    /// metric alone loses it but finds it with the hint (the hint reaches the fading branch too); the candidate list finds it
+    /// without BP (`iterations == 0`).
     #[test]
     fn the_ap_options_reach_the_decoder() {
         let clean = clean();
@@ -197,6 +203,22 @@ mod tests {
         );
         let hinted = run(&audio, &Q65Candidate::new(at()).ap_hint(&hint)).expect("AP hint");
         assert_eq!(hinted.message, "K1ABC JA1ABC PM95");
+        assert!(
+            run(
+                &audio,
+                &Q65Candidate::new(at()).fading(FadingModel::Lorentzian, 0.5)
+            )
+            .is_none(),
+            "fading alone loses it too"
+        );
+        let faded_hint = run(
+            &audio,
+            &Q65Candidate::new(at())
+                .fading(FadingModel::Lorentzian, 0.5)
+                .ap_hint(&hint),
+        )
+        .expect("fading and the AP hint");
+        assert_eq!(faded_hint.message, "K1ABC JA1ABC PM95");
         let listed = run(&audio, &Q65Candidate::new(at()).ap_list(&list)).expect("AP list");
         assert_eq!(listed.message, "K1ABC JA1ABC PM95");
         assert_eq!(listed.iterations, 0, "the list decode runs no BP");

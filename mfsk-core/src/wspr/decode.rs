@@ -62,7 +62,7 @@ pub struct WsprResult {
     /// reports next to a spot (`wsprd.c:1093`, see
     /// [`super::coarse_baseband::BasebandCandidate::snr_db`]). Set by
     /// `super::DecodeRequest`, which always goes through the coarse
-    /// search; [`super::SniperRequest`] has no coarse candidate to
+    /// search; [`super::decode_candidate`] has no coarse candidate to
     /// derive it from and leaves this `0.0`.
     pub snr_db: f32,
     /// A Type 3 message's call, when the decoder's [`WsprCallsignTable`]
@@ -79,7 +79,7 @@ pub struct WsprResult {
     /// `wsprd`'s `decodes[].sync` (`wsprd.c:1531`): the candidate's sync after the
     /// refine cascade, the figure `minsync2` is compared with and `ALL_WSPR.TXT` prints
     /// (`%5.2f`) and `wspr_spots.txt` prints as `(int)(10 * sync)`. `0.0` from
-    /// [`super::SniperRequest`], which reports none.
+    /// [`super::decode_candidate`], which reports none.
     pub sync: f32,
     /// The decode pass that found it, `wsprd`'s `ipass`: 0 and 1 are the early passes,
     /// 2 the final one. `ALL_WSPR.TXT` prints it plus one. A skipped pass 1 (`wsprd.c:1065`)
@@ -606,7 +606,7 @@ fn refine_cascade(
 
 /// Point decode at a known alignment on a pre-decimated 375 Hz
 /// baseband: wsprd's refine cascade, the `minsync2` gate, then Fano and
-/// the OSD ladder. Public through [`super::SniperRequest`], which
+/// the OSD ladder. Reached through [`super::decode_candidate`], which
 /// documents each argument as a builder method.
 ///
 /// `confirmed` is the set of callsigns an earlier Fano decode already

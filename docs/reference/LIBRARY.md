@@ -1335,14 +1335,16 @@ config struct (`new(at)` and builder methods), not a builder that ends in `.deco
 |---|---|---|
 | WSPR | `wspr::decode_candidate(WsprInput, &WsprCandidate)`; `WsprInput::audio(samples, rate)` or `::baseband(idat, qdat, rate)` on a baseband already decimated | `drift_hz`, `nblocks`, `confirmed(&WsprCallsignTable)`, `refine_drift`: the knobs the scan's passes set per candidate (the boards' candidate loop is this) |
 | JT65 | `jt65::decode_candidate(audio, rate, &Jt65Candidate)` | `Jt65Strategy::{Hard, Erasures(&[0, 8, 16, 24, 32]), Chase(ChaseParams)}` |
-| JT9 | `jt9::decode_candidate(audio, rate, Alignment)` | none |
+| JT9 | `jt9::decode_candidate(audio, rate, &Jt9Candidate)` | none yet (the candidate is its `Alignment`) |
 | Q65 | `q65::decode_candidate::<P>(audio, rate, &Q65Candidate)` | `ap_hint`, `pileup`, `ap_list`, `fading(model, b90_ts)`, `hash_table`; precedence `ap_list`, then `fading` (with `ap_hint`), then `ap_hint`, then plain |
 
 **The `SniperRequest` of these four modes is deprecated** (since 0.17.0; it calls the function above, so the decode is one):
 `SniperRequest::new(audio, rate, start, freq)` is `Alignment::new(start, freq)` in the candidate; WSPR's `::baseband(..)`
 is `WsprInput::baseband(..)`, its `.drift(d)` is `.drift_hz(d)`; JT65's `.chase(..)` / `.erasures(..)` are the same
-methods of `Jt65Candidate`; Q65's `.on_result(cb)` has no counterpart (it fired once with the return value). Every option is
-pinned by a test where it decides, except Q65's `pileup` and `hash_table`, for which no case that changes a result was found.
+methods of `Jt65Candidate`; Q65's `.on_result(cb)` has no counterpart (it fired once with the return value). Every option
+is pinned by a test where it decides (`docs/notes/DECODE_CANDIDATE.md`); Q65's `pileup` and `hash_table` by `tests/q65_pileup_flag.rs` and
+`q65::rx`'s `sniper_hash_table_resolves_hashed_callsign`, which go through `SniperRequest` and so must move with it. `Alignment` is
+re-exported by each of the four modules.
 
 **Q65** is ten sub-mode ZSTs, one `Decoder<Q65a30>` etc. each, with the
 richest extras (`Q65Extras`):
@@ -2360,7 +2362,8 @@ mfsk_core
 ├── jt9/              JT9 ZST + decode
 ├── jt65/             JT65 ZST + decode (+ erasure-aware RS, chase)
 ├── q65/              Q65 family — 10 sub-mode ZSTs + decode + synth
-│   ├── decode_request.rs wide-band and multi-period requests (crate-private); SniperRequest (public) — §2.5
+│   ├── candidate.rs    Q65Candidate, decode_candidate (decode at a known alignment) — §2.5
+│   ├── decode_request.rs wide-band and multi-period requests (crate-private); SniperRequest (deprecated) — §2.5
 │   ├── search.rs       default_search_params, eme_delay_late_sec
 │   ├── ap_list.rs      full-AP codeword list (`q65_set_list`)
 │   ├── hist.rs         Q65History (`q65_hist`)

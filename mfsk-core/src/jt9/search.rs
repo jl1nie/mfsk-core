@@ -6,7 +6,7 @@
 //! `jt9_decode.f90`'s bin loop), and takes only the band from [`SearchParams`]. [`coarse_search`]
 //! stays a public building block: a symbol-length-FFT spectrogram at quarter-symbol steps, scored
 //! at every `(start_row, base_bin)` by the power at `base_bin` over the 16 sync symbols (tone 0).
-//! The aligned [`super::SniperRequest`] decodes at a known time and frequency.
+//! The aligned [`super::decode_candidate`] decodes at a known time and frequency.
 
 use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]

@@ -90,6 +90,8 @@ pub(crate) mod snr;
 pub mod sync_pattern;
 pub mod tx;
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub use crate::engine::alignment::Alignment;
 pub use ap_list::{MAX_AP_CODEWORDS, standard_qso_codewords};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use candidate::{Q65Candidate, decode_candidate};

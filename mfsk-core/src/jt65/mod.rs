@@ -46,25 +46,24 @@
 //! For very weak signals, JT65 benefits from feeding per-symbol
 //! confidence into Reed-Solomon as *erasures*. Each erasure lets RS
 //! correct one more symbol than the hard-error bound
-//! (`2·errors + erasures ≤ 51`). Use [`SniperRequest::erasures`]:
+//! (`2·errors + erasures ≤ 51`). Use [`Jt65Strategy::Erasures`] on a [`Jt65Candidate`]:
 //!
 //! ```no_run
-//! use mfsk_core::jt65::SniperRequest;
+//! use mfsk_core::jt65::{Alignment, Jt65Candidate, decode_candidate};
 //!
 //! # let audio: Vec<f32> = vec![];
 //! # let (start_sample, freq_hz) = (0, 1270.0);
 //! // Try 0 → 8 → 16 → 24 → 32 erasures in order; return the first
 //! // budget that unpacks into a valid message.
-//! let msg = SniperRequest::new(&audio, 12_000, start_sample, freq_hz)
-//!     .erasures(&[0, 8, 16, 24, 32])
-//!     .decode();
+//! let cand = Jt65Candidate::new(Alignment::new(start_sample, freq_hz)).erasures(&[0, 8, 16, 24, 32]);
+//! let msg = decode_candidate(&audio, 12_000, &cand);
 //! ```
 //!
 //! ## Stochastic Chase decode
 //!
-//! For signals still too weak for [`SniperRequest::erasures`]'s single
+//! For signals still too weak for [`Jt65Strategy::Erasures`]'s single
 //! deterministic ordering, `DecodeRequest::chase` /
-//! [`SniperRequest::chase`] is a
+//! [`Jt65Strategy::Chase`] is a
 //! faithful port of WSJT-X's `ftrsdap` stochastic Chase decoder
 //! ([issue #169](https://github.com/jl1nie/mfsk-core/issues/169)) —
 //! magic numbers included, not just the algorithmic shape: WSJT-X's
@@ -134,6 +133,8 @@ pub mod sync_pattern;
 pub mod tx;
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub use crate::engine::alignment::Alignment;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use candidate::{Jt65Candidate, Jt65Strategy, decode_candidate};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use chase::ChaseParams;
@@ -155,7 +156,7 @@ pub use tx::{encode_channel_symbols, synthesize_standard};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// Hard-decision RS decode at a known (start_sample, base_freq), with
 /// the decode-side SNR estimate ([`Jt65Demod::snr_db`]) alongside the
-/// message. Public through [`SniperRequest`].
+/// message. Reached through [`decode_candidate`].
 fn decode_at_with_snr(
     audio: &[f32],
     sample_rate: u32,
@@ -191,8 +192,8 @@ fn decode_at_with_snr(
 /// reasonable default is `&[0, 8, 16, 24, 32]`: zero-erasure first
 /// (fastest when the channel is clean) and then growing erasure
 /// budgets for lower-SNR signals. Returns the first decode that
-/// unpacks into a valid [`crate::msg::jt72::Jt72Message`]. Public
-/// through [`SniperRequest::erasures`].
+/// unpacks into a valid [`crate::msg::jt72::Jt72Message`]. Reached
+/// through [`Jt65Strategy::Erasures`] of [`decode_candidate`].
 fn decode_at_with_erasures(
     audio: &[f32],
     sample_rate: u32,
