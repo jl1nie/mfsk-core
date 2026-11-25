@@ -190,12 +190,13 @@ impl<'a> SniperRequest<'a> {
     }
 
     /// `None` when Fano does not converge or the payload does not unpack.
+    ///
+    /// The one decode lives in [`super::decode_candidate`].
     pub fn decode(&self) -> Option<Jt72Message> {
-        super::decode_at_inner(
+        super::decode_candidate(
             self.audio,
             self.sample_rate,
-            self.start_sample,
-            self.base_freq_hz,
+            crate::engine::alignment::Alignment::new(self.start_sample, self.base_freq_hz),
         )
     }
 }
