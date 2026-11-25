@@ -169,7 +169,7 @@ fn gated_coarse_sync_from_a_spectrogram_is_the_audio_version() {
         for (sync_min, keep) in [(1.3f32, 15usize), (1.0, 30), (0.8, 300)] {
             let from_audio = coarse_sync_gated(&slot, 200.0, 3000.0, sync_min, keep, 4);
             let from_spec =
-                coarse_sync_gated_spec(&spec, 200.0, 3000.0, sync_min, keep, None, false);
+                coarse_sync_gated_spec(&spec, 200.0, 3000.0, sync_min, keep, None, None);
             assert!(
                 from_audio.len() >= 10,
                 "{wav}: only {} candidates",

@@ -604,9 +604,9 @@ pub fn run_slot_variant(slot: &[i16], v: Variant, max_cand: usize) -> Run {
             #[cfg(feature = "fixed-point")]
             {
                 use mfsk_core::ft8::decode_block::{
-                    DEFAULT_Q_THRESH, coarse_sync, coarse_sync_gated, coarse_sync_gated_spec,
-                    compute_spectrogram, fine_sync_12k, process_candidates_into,
-                    refine_candidates_into,
+                    DEFAULT_Q_THRESH, SpecFill, coarse_sync, coarse_sync_gated,
+                    coarse_sync_gated_spec, compute_spectrogram, fine_sync_12k,
+                    process_candidates_into, refine_candidates_into,
                 };
                 let keep = GATE_KEEP.max(max_cand);
                 let mut cands: Vec<_> = if v == Variant::V8 {
@@ -614,7 +614,7 @@ pub fn run_slot_variant(slot: &[i16], v: Variant, max_cand: usize) -> Run {
                     coarse_sync(&spec, 200.0, 3000.0, SYNC_MIN, keep)
                 } else if matches!(v, Variant::V11 | Variant::V12 | Variant::V13) {
                     let mut spec = compute_spectrogram(slot, 3000.0);
-                    let valid = if matches!(v, Variant::V11 | Variant::V13) {
+                    let fill = if matches!(v, Variant::V11 | Variant::V13) {
                         let valid = spec.n_time - UNMEASURED_ROWS;
                         for row in valid..spec.n_time {
                             let (lo, hi) = (row * spec.n_freq, (row + 1) * spec.n_freq);
@@ -630,8 +630,11 @@ pub fn run_slot_variant(slot: &[i16], v: Variant, max_cand: usize) -> Run {
                         3000.0,
                         SYNC_MIN,
                         keep,
-                        valid,
-                        v == Variant::V13,
+                        None,
+                        fill.map(|valid_rows| SpecFill {
+                            valid_rows,
+                            gate_block2: v == Variant::V13,
+                        }),
                     )
                     .into_iter()
                     .map(|c| c.0)

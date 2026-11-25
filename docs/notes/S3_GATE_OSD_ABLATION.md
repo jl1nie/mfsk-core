@@ -66,6 +66,30 @@ test pins that. The hard-sync count skips rows past the fill point (an unmeasure
 `hard_sync_skips_the_rows_a_streaming_spectrogram_has_not_measured_yet`). The harness here searches the whole slot's lag window (±1.0 s, the
 boards' too: `EMBEDDED_SYNC_LAG_S`) on a spectrogram with the tail zeroed; the boards' own search runs on `stage1_inc`'s buffers and was not run.
 
+## On the board's own pipeline (the mirror, `mirror_gate_and_osd`)
+
+The ablation above is one pass over a whole slot. `ft8_embedded_pipeline_mirror.rs` is `run_speculative_slot`'s flow call for
+call on the host (the spectrogram with its last rows zero, `coarse_sync` 100-3000 Hz split in two with the board's lag window and `sync_min` 1.0,
+the early half on the 168 000-sample prefix and the late half on the slot, 15 candidates between them, the dedupe by message); no deadline, no clock.
+`mirror_gate_and_osd` adds the pieces to it one at a time and sweeps the recording's phase (-0.40..+0.40 s, 0.01 s: 81 phases; a weak station's
+decode is a 5 ms-scale comb in dt, so a coarser grid aliases it). Decodes of the **known** signals per phase, mean (min-max); fixed-point, `max_cand` 15:
+
+| arm | `qso3_busy` (20 known) | distinct known over the phases | `qso1` (6) | `qso2` (5) |
+|---|---:|---:|---:|---:|
+| ship (the board's pipeline) | 6.56 (5-8) | 9 | 1.98 | 2.11 |
+| + `fine_sync_12k` | 8.20 (7-10) | 10 | 1.88 | 2.00 |
+| + `fine_sync_12k` + OSD | 10.35 (8-12) | 13 | 1.94 | 2.62 |
+| gate | 6.98 (5-8) | 10 | 2.05 | 2.11 |
+| gate + `fine_sync_12k` | 9.26 (8-11) | 11 | 1.99 | 2.31 |
+| gate + OSD | 8.81 (7-12) | 13 | 2.21 | 2.83 |
+| **gate + `fine_sync_12k` + OSD** | **11.35 (10-13)** | **13** | 2.05 | 2.73 |
+
+- The ship arm's 6.56 is the board's own figure (it runs at 7-8 on `qso3_busy`), so the mirror is on the board's scale.
+- On the busy slot the three pieces add up: `fine_sync_12k` +1.6, OSD +2.2 on top, the gate +1.0 on top of both; **+4.8 decodes of 20 in all**, and the worst phase of the full arm (10) is above the best phase of the ship arm (8).
+- On `qso1` and `qso2` there is little to gain here (the board decodes 2 of 5-6 at any phase and the full arm 2.1 / 2.7): their signals are mostly not in reach of the 15 candidates, as `CORES3_FT8_SLOT_BUDGET.md` found.
+- **No unexplained decode in any arm, recording or phase** (a decode that is not one of the known signals: a phantom, a signal the reference lacks, or a copy). 7 arms x 3 recordings x 81 phases.
+- What the mirror cannot say: the time. The deadline (`cut`), the stage-3 time with OSD and the 292 ms `fine_sync_split` are the board's; a candidate that OSD makes slower can be one that the deadline then drops.
+
 ## Caveats (read before relying on this)
 
 - **Host only.** LX7 times, PSRAM effects and the dual-core split are not in any of it. In particular `fine_sync_12k`

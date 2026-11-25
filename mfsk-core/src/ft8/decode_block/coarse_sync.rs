@@ -1311,18 +1311,28 @@ fn banded_peaks<A: AudioSource>(
     })
 }
 
+/// The fill state of a **streaming** spectrogram, for [`coarse_sync_gated_spec`]: rows from `valid_rows` on are
+/// zero, not measured yet (the boards' `stage1_inc` emits at `SPEC_EMIT_PAIR` 87, rows `0..174` of 184).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpecFill {
+    /// Rows `0..valid_rows` hold a measurement.
+    pub valid_rows: usize,
+    /// `true`: a lag whose block 2 reaches an unmeasured row is not scored at all (`PartialBlock2::Gate`, the
+    /// boards' `FT8_BLOCK2_GATE`, an experiment left open). `false`: it is scored on the rows there are, as the
+    /// boards do (they keep the lag window inside the coverage, so no lag reaches them).
+    pub gate_block2: bool,
+}
+
 /// [`coarse_sync_gated`] from a spectrogram the caller already has: the boards' `stage1_inc` builds the `u16`
 /// spectrogram while the slot is captured, and the gate only reads it (the score, the lazy per-carrier `allsum`
 /// and the hard-sync count), so nothing is read from the audio and nothing is rebuilt. On a whole slot
-/// (`valid_rows == None`) the candidates are [`coarse_sync_gated`]'s, bit for bit.
+/// (`fill == None`, default lag window) the candidates are [`coarse_sync_gated`]'s, bit for bit.
 ///
-/// `valid_rows` is the fill point of a **streaming** spectrogram: rows from it on are zero, not measured yet.
-/// The hard-sync count skips them (an unmeasured row reads as tone 0, a false hit wherever the Costas array has
-/// a 0). What the score does with a lag whose block 2 reaches them is `gate_block2`'s: `false` scores it on the
-/// rows there are, as the boards do (they keep the lag window inside the coverage, so no lag reaches them);
-/// `true` does not score it at all (`PartialBlock2::Gate`, the boards' `FT8_BLOCK2_GATE`, an experiment left
-/// open): it needs `valid_rows`, and drops every candidate whose block 2 is not covered, which on a slot
-/// whose signals are late is most of them.
+/// `sync_lag_s` is the lag window (`None`: the crate's default, as the audio versions use; the boards pass
+/// theirs, `coarse_sync_with_lag`'s). `fill` describes a streaming spectrogram: the hard-sync count skips rows
+/// past its fill point (an unmeasured row reads as tone 0, a false hit wherever the Costas array has a 0);
+/// `fill.gate_block2` is [`SpecFill`]'s, and costs recall on a slot whose signals are late (116 / 168 against
+/// 216 / 269 of `jt9`'s 402 at 15 / 30 candidates, `docs/notes/S3_GATE_OSD_ABLATION.md`).
 ///
 /// A deliberate divergence from WSJT-X, as [`coarse_sync_gated`]'s: the order is by hard sync, not by score.
 pub fn coarse_sync_gated_spec(
@@ -1331,16 +1341,19 @@ pub fn coarse_sync_gated_spec(
     freq_max: f32,
     sync_min: f32,
     keep: usize,
-    valid_rows: Option<usize>,
-    gate_block2: bool,
+    sync_lag_s: Option<f32>,
+    fill: Option<SpecFill>,
 ) -> Vec<(SyncCandidate, u8)> {
     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::CoarseSync);
-    let Some(g) = sync_grid(spec.n_time, spec.n_freq, freq_min, freq_max, None) else {
+    let Some(g) = sync_grid(spec.n_time, spec.n_freq, freq_min, freq_max, sync_lag_s) else {
         return Vec::new();
     };
-    let rows = valid_rows.map_or(spec.n_time, |r| r.min(spec.n_time));
-    let partial = match valid_rows {
-        Some(valid_rows) if gate_block2 => PartialBlock2::Gate { valid_rows },
+    let rows = fill.map_or(spec.n_time, |f| f.valid_rows.min(spec.n_time));
+    let partial = match fill {
+        Some(SpecFill {
+            valid_rows,
+            gate_block2: true,
+        }) => PartialBlock2::Gate { valid_rows },
         _ => PartialBlock2::Score,
     };
     let peaks = score_carriers(spec, g.ia, g.ib, &g, None, partial, true, rows);

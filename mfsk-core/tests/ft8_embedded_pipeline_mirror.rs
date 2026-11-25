@@ -52,13 +52,20 @@ use mfsk_core::engine::scalar::Cmplx;
 use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::ft8::decode::{DecodeDepth, DecodeResult};
 use mfsk_core::ft8::decode_block::{
-    DEFAULT_Q_THRESH, PartialBlock2, RefinedCandidate, SpecCell, coarse_sync_with_lag,
-    coarse_sync_with_lag_and_partial, compute_spectrogram, goertzel_window_end_sample,
-    process_candidates_into_with_cs_scratch_tuned, refine_candidates_into,
+    DEFAULT_Q_THRESH, PartialBlock2, RefinedCandidate, SpecCell, SpecFill, coarse_sync_gated_spec,
+    coarse_sync_with_lag, coarse_sync_with_lag_and_partial, compute_spectrogram,
+    goertzel_window_end_sample, process_candidates_into_with_cs_scratch_tuned,
+    refine_candidates_into,
 };
 use mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER;
 use mfsk_core::msg::wsjt77::unpack77;
 
+#[path = "common/ft8_qso3.rs"]
+#[allow(dead_code)]
+mod ft8_qso3;
+#[path = "common/golden.rs"]
+#[allow(dead_code)]
+mod golden;
 #[path = "common/embedded_driver_harness.rs"]
 mod harness;
 
@@ -128,6 +135,39 @@ const NSTEP_SAMPLES: usize = 960;
 thread_local! {
     static EMIT_PAIR_OVERRIDE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     static SYNC_LAG_OVERRIDE: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+    static ARM: std::cell::Cell<Arm> = const { std::cell::Cell::new(Arm::SHIP) };
+}
+
+/// Which of the S3 plan's pieces this run adds to the shipped pipeline, set in process by
+/// `mirror_gate_and_osd` (the env vars `MFSK_MIRROR_GATE=1`, `MFSK_MIRROR_OSD=1` set the same for the other tests).
+///
+/// - `gate`: pass 1 is `coarse_sync_gated_spec` on the board's own spectrogram (hard-sync order, the first
+///   `max_cand` of each half go to pass 2 without the re-rank by block-0 quality), not `coarse_sync_with_lag` by score.
+/// - `fine`: the board's `fine_sync_12k` on the prefix between the coarse search and the partition (the same as
+///   `MFSK_MIRROR_FINE_REFINE=lib`), and the board's dedupe by message.
+/// - `osd`: stage 3 at `DecodeDepth { osd: true, ..EMBEDDED }`. Needs the `osd` feature.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+struct Arm {
+    gate: bool,
+    fine: bool,
+    osd: bool,
+}
+
+impl Arm {
+    const SHIP: Arm = Arm {
+        gate: false,
+        fine: false,
+        osd: false,
+    };
+}
+
+fn arm() -> Arm {
+    let a = ARM.with(|a| a.get());
+    Arm {
+        gate: a.gate || std::env::var("MFSK_MIRROR_GATE").is_ok(),
+        fine: a.fine || std::env::var("MFSK_MIRROR_FINE_REFINE").as_deref() == Ok("lib"),
+        osd: a.osd || std::env::var("MFSK_MIRROR_OSD").is_ok(),
+    }
 }
 
 /// Which pair stage1_inc emits the SpecBundle at. `MFSK_MIRROR_EMIT_PAIR`,
@@ -446,7 +486,12 @@ fn stage_abc_12k_binned(audio: &[i16], cands: Vec<SyncCandidate>) -> Vec<SyncCan
 /// pass 1 the way `run_slot` and the loss breakdown both need it.
 /// `false` when neither is selected.
 fn apply_12k_refine(prefix: &[i16], pass1: &mut Vec<SyncCandidate>) -> bool {
-    match std::env::var("MFSK_MIRROR_FINE_REFINE").as_deref() {
+    let mode = if arm().fine {
+        Ok("lib".to_string())
+    } else {
+        std::env::var("MFSK_MIRROR_FINE_REFINE")
+    };
+    match mode.as_deref() {
         Ok("stagea12k") => *pass1 = stage_12k(prefix, core::mem::take(pass1), false),
         Ok("stageabc12k") => *pass1 = stage_12k(prefix, core::mem::take(pass1), true),
         Ok("stageabc12kbin") => *pass1 = stage_abc_12k_binned(prefix, core::mem::take(pass1)),
@@ -559,6 +604,29 @@ fn coarse_split_with(
     });
     all.truncate(pass1_limit());
     all
+}
+
+/// The gate on the board's own spectrogram (`coarse_sync_gated_spec`): one call over the whole band, the board's lag window,
+/// the spectrogram's fill point given, block 2 scored on the rows there are (or gated with `MFSK_MIRROR_PARTIAL=gate`).
+fn coarse_gated(
+    spec: &mfsk_core::ft8::decode_block::Spectrogram,
+    partial: PartialBlock2,
+) -> Vec<SyncCandidate> {
+    coarse_sync_gated_spec(
+        spec,
+        FREQ_MIN,
+        FREQ_MAX,
+        SYNC_MIN,
+        pass1_limit(),
+        Some(sync_lag_s()),
+        Some(SpecFill {
+            valid_rows: spec_valid_rows(),
+            gate_block2: matches!(partial, PartialBlock2::Gate { .. }),
+        }),
+    )
+    .into_iter()
+    .map(|c| c.0)
+    .collect()
 }
 
 fn coarse_split_score(spec: &mfsk_core::ft8::decode_block::Spectrogram) -> Vec<SyncCandidate> {
@@ -740,7 +808,14 @@ fn stage3(audio: &[i16], cands: Vec<RefinedCandidate>) -> Vec<DecodeResult> {
         process_candidates_into_with_cs_scratch_tuned(
             audio,
             vec![c],
-            DecodeDepth::EMBEDDED,
+            if arm().osd {
+                DecodeDepth {
+                    osd: true,
+                    ..DecodeDepth::EMBEDDED
+                }
+            } else {
+                DecodeDepth::EMBEDDED
+            },
             DEFAULT_Q_THRESH,
             DEFAULT_BP_MAX_ITER,
             cs,
@@ -831,7 +906,11 @@ fn run_slot_with(slot: &[i16], partial: PartialBlock2) -> SlotOut {
         }
     }
 
-    let mut pass1 = coarse_split_with(&spec, partial);
+    let mut pass1 = if arm().gate {
+        coarse_gated(&spec, partial)
+    } else {
+        coarse_split_with(&spec, partial)
+    };
     if apply_12k_refine(&slot[..prefix_samples()], &mut pass1) {
     } else if fine_refine_enabled() {
         pass1 = fine_refine(fine_refine_audio(slot), pass1);
@@ -869,6 +948,11 @@ fn run_slot_with(slot: &[i16], partial: PartialBlock2) -> SlotOut {
 
     let prefix = &slot[..prefix_samples()];
     let mut n_early_refined = 0;
+    let (mut ready, mut deferred) = (ready, deferred);
+    // the gate's order is the ranking: take the first of it, not the best by block-0 quality
+    if arm().gate {
+        ready.truncate(early_budget);
+    }
     let mut results = if ready.is_empty() || early_budget == 0 {
         Vec::new()
     } else {
@@ -884,6 +968,9 @@ fn run_slot_with(slot: &[i16], partial: PartialBlock2) -> SlotOut {
     } else {
         max_cand().saturating_sub(n_early_refined)
     };
+    if arm().gate {
+        deferred.truncate(max_cand_late);
+    }
     if max_cand_late > 0 && !deferred.is_empty() {
         let p2 = pass2_split(slot, deferred, max_cand_late);
         results.extend(stage3(slot, p2));
@@ -891,7 +978,8 @@ fn run_slot_with(slot: &[i16], partial: PartialBlock2) -> SlotOut {
     results.extend(coarse_retry_round(slot));
     // The board dedups by message once fine sync can pull two coarse
     // bins onto one carrier; mirror it in the mode that models the board.
-    if std::env::var("MFSK_MIRROR_FINE_REFINE").as_deref() == Ok("lib") {
+    if arm().fine || arm().gate || std::env::var("MFSK_MIRROR_FINE_REFINE").as_deref() == Ok("lib")
+    {
         let mut seen: Vec<Vec<u8>> = Vec::new();
         results.retain(|r| {
             let m = r.message77().to_vec();
@@ -2906,4 +2994,175 @@ fn mirror_partial_block2_policies() {
         );
     }
     SYNC_LAG_OVERRIDE.with(|c| c.set(None));
+}
+
+/// `jt9` beta6's decodes of ft8_lib's 22 recordings (the tier-B reference): `qso1` and `qso2` are
+/// `191111_110130` and `191111_110200` of them.
+const JT9_REF: &str = include_str!("fixtures/ft8_lib_jt9_beta6.tsv");
+
+fn norm_msg(m: &str) -> String {
+    m.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_uppercase()
+}
+
+fn jt9_messages(stem: &str) -> Vec<String> {
+    JT9_REF
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (f[0] == stem).then(|| norm_msg(f[4]))
+        })
+        .collect()
+}
+
+/// **The S3 plan's stage 0 on the board's own pipeline** (`docs/notes/S3_GATE_OSD_ABLATION.md`): the gate, the board's
+/// `fine_sync_12k` and OSD, added to `run_speculative_slot`'s flow one at a time, over the recording's phases. The
+/// ablation in `hosttest/icap-app` runs one pass over the whole slot; this runs the board's: the spectrogram with its last
+/// rows zero, `coarse_sync` split at 100-3000 Hz with the board's lag window and `sync_min` 1.0, the early half on the
+/// 168 000-sample prefix and the late half on the slot, 15 candidates between them, the dedupe by message.
+///
+/// Per arm and recording: the distinct decodes of the known signals per phase (mean / min / max), the distinct known
+/// signals over all phases, and **every decode that is not one** (the unexplained: a phantom, a signal the reference
+/// lacks, or a copy of a strong signal at another frequency). Known = `QSO3_KNOWN_REAL_SIGNALS` (WSJT-X + JTDX) for
+/// `qso3_busy`, `jt9`'s lines for `qso1` / `qso2`.
+///
+/// Needs the `osd` feature (without it OSD is a silent no-op and the OSD arms would repeat the arms before them):
+/// ```sh
+/// cargo test -p mfsk-core --release --no-default-features \
+///     --features alloc,ft8,fft-extern,fixed-point,osd,internal-testing \
+///     --test ft8_embedded_pipeline_mirror mirror_gate_and_osd -- --ignored --nocapture
+/// ```
+/// `MFSK_MIRROR_STEP=0.01` refines the phase grid (default 0.02 over -0.40..+0.40).
+#[test]
+#[ignore = "diagnostic - a phase sweep of the gate and OSD arms against the shipped pipeline"]
+fn mirror_gate_and_osd() {
+    assert!(
+        cfg!(feature = "osd"),
+        "run with the `osd` feature, or the OSD arms silently equal the arms without it"
+    );
+    let step: f32 = std::env::var("MFSK_MIRROR_STEP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.02);
+    let n = (0.80 / step).round() as i32;
+    let phases: Vec<f32> = (0..=n).map(|i| -0.40 + i as f32 * step).collect();
+    let arms: [(&str, Arm); 7] = [
+        ("ship", Arm::SHIP),
+        (
+            "ship+fine",
+            Arm {
+                fine: true,
+                ..Arm::SHIP
+            },
+        ),
+        (
+            "ship+fine+osd",
+            Arm {
+                fine: true,
+                osd: true,
+                ..Arm::SHIP
+            },
+        ),
+        (
+            "gate",
+            Arm {
+                gate: true,
+                ..Arm::SHIP
+            },
+        ),
+        (
+            "gate+fine",
+            Arm {
+                gate: true,
+                fine: true,
+                osd: false,
+            },
+        ),
+        (
+            "gate+osd",
+            Arm {
+                gate: true,
+                osd: true,
+                fine: false,
+            },
+        ),
+        (
+            "gate+fine+osd",
+            Arm {
+                gate: true,
+                fine: true,
+                osd: true,
+            },
+        ),
+    ];
+    let qso3_known: Vec<String> = ft8_qso3::QSO3_KNOWN_REAL_SIGNALS
+        .iter()
+        .map(|g| norm_msg(g.msg))
+        .collect();
+    let recordings: [(&str, Vec<String>); 3] = [
+        ("qso3_busy.wav", qso3_known),
+        ("qso1.wav", jt9_messages("191111_110130")),
+        ("qso2.wav", jt9_messages("191111_110200")),
+    ];
+    for (wav, known) in recordings {
+        let path = format!(
+            "{}/../embedded-poc/assets/{wav}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut slot = load_wav_i16(std::path::Path::new(&path));
+        slot.truncate(SLOT);
+        println!(
+            "\n== {wav}: {} known, {} phases, max_cand {}",
+            known.len(),
+            phases.len(),
+            max_cand()
+        );
+        println!(
+            "{:<15} {:>6} {:>4} {:>4} {:>9}  unexplained decodes (distinct, phases they appear in)",
+            "arm", "mean", "min", "max", "distinct"
+        );
+        for (name, a) in arms {
+            ARM.with(|c| c.set(a));
+            let t = std::time::Instant::now();
+            let mut per_phase = Vec::new();
+            let mut distinct = std::collections::BTreeSet::new();
+            let mut extra: std::collections::BTreeMap<String, usize> = Default::default();
+            for &phi in &phases {
+                let out = at_phase(&slot, phi);
+                let mut seen = std::collections::BTreeSet::new();
+                for r in &out.results {
+                    if let Some(m) = unpack77(r.message77()) {
+                        seen.insert(norm_msg(&m));
+                    }
+                }
+                let hits = seen.iter().filter(|m| known.contains(m)).count();
+                for m in seen {
+                    if known.contains(&m) {
+                        distinct.insert(m);
+                    } else {
+                        *extra.entry(m).or_default() += 1;
+                    }
+                }
+                per_phase.push(hits);
+            }
+            let mean = per_phase.iter().sum::<usize>() as f32 / per_phase.len() as f32;
+            let extras: Vec<String> = extra.iter().map(|(m, n)| format!("{m} x{n}")).collect();
+            println!(
+                "{name:<15} {mean:>6.2} {:>4} {:>4} {:>9}  {}   [{:.0} s]",
+                per_phase.iter().min().unwrap(),
+                per_phase.iter().max().unwrap(),
+                distinct.len(),
+                if extras.is_empty() {
+                    "-".to_string()
+                } else {
+                    extras.join("; ")
+                },
+                t.elapsed().as_secs_f32()
+            );
+        }
+        ARM.with(|c| c.set(Arm::SHIP));
+    }
 }
