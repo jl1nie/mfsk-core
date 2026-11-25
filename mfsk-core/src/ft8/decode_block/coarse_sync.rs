@@ -1284,7 +1284,8 @@ pub const HARD_SYNC_POOL: usize = 300;
 /// `spec_hard_sync` below; the decodes still pass `ft8b`'s own gates (the 21-symbol `nsync`, BP/CRC).
 ///
 /// The audio comes from a [`PcmSource`] (a slot in memory is `SliceSource`), the form the radio needs: the slot is
-/// never held. It is read forward `bands` times (the spectrogram is built a band of carriers at a time), plus once more in the fixed-point build for the slot's
+/// never held. Only `search`'s band, `sync_min` and `keep` are read (`lag_s` and `fill` are [`coarse_sync_gated_spec`]'s;
+/// set here they are ignored). It is read forward `bands` times (the spectrogram is built a band of carriers at a time), plus once more in the fixed-point build for the slot's
 /// peak (a value the capture could hand over instead).
 pub fn coarse_sync_gated<A: PcmSource>(
     src: &mut A,

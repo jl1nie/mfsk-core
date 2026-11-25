@@ -1,7 +1,7 @@
 # ICAP and the embedded line: why `ft8dec` and mfsk-core differ, and what to carry to the next mode
 
 2026-11-25. Written after the first measured comparison of the ICAP app's own FT8 decoder (`ft8dec.c`,
-icap-sdk `apps/ft8`) with mfsk-core's low-memory profile (`decode_block_low_mem` / `_src`, `hosttest/icap-app`).
+icap-sdk `apps/ft8`) with mfsk-core's low-memory profile (`decode_block_low_mem`, `hosttest/icap-app`; it had a `_src` twin then, merged since).
 **Follow-up (same day): `MIDRANGE_EMBEDDED_EVAL.md`** carries out §6's "cheap subtraction" and "fewer reads" on one complex baseband of the whole band: the audio is read once, subtraction costs 18 ms a slot, and 345 of `jt9`'s 402 are decoded (`ft8dec`: 333). **Its code-size figures replace §3.5's**: built the same way as that note's crate was, A comes to 103.6 KB, not 74 KB, and the 74 KB below could not be reproduced.
 
 Everything below is **host** data (Apple silicon, one thread) unless it says otherwise: nothing here was run on a
@@ -190,7 +190,8 @@ response test at the aliasing frequencies (`cd0_fir.rs`), and a weak-signal coun
   deadline-bound and holds its audio, and stays the regression baseline (not rewritten). `CandidateDdc` and `cd0_fir` are the same cascade
   with other decimations (18 and 60): to be unified then, against the S3's numbers. Open: the ICAP's FT4 deadline and SD speed.
 - **Q65 on the ICAP** uses mfsk-core 0.10.1 with `apps/q65/decoder/mfsk-core-0.10.1-icap.patch` (icap-sdk). Of its five parts, the no_std build
-  (`q65 = []`, gating, `alloc` / `Float` imports) is in the library since; the per-row fast-fading API (`FastFadingRowCtx`,
-  `fast_fading_row[_ctx]`, `lorentz_taps`: stream the wide-energy spectrogram from the SD) is not.
+  (`q65 = []`, gating, `alloc` / `Float` imports) is in the library since; the per-row fast-fading API is now too, in the library's own shape: `fec::qra::FastFadingStream` (`push_row` per symbol,
+  `finish`; one pass, the mean energy not needed in advance; probabilities to float rounding, the state to the bit). Rows come from
+  `q65::rx`'s `for_each_data_row` (the data symbols one at a time); feeding them from a `PcmSource` is the open part (2b).
 - **FT4, WSPR, Q65 on the same footing.** The pieces that carry: `PcmSource`/`CountingSource`, the heap meter and
   `--diag`, `cd0_fir` (parameterised by the protocol's decimation), the hard-sync gate (by `SyncMode`), the OSD gate.

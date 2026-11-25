@@ -1526,7 +1526,8 @@ impl Default for LowMem {
 ///
 /// `search` is what is looked for (`GatedSearch::new(freq_min, freq_max, sync_min, max_cand)`: `keep` is the number of
 /// candidates decoded), `mem` how it is held (`LowMem`): the first changes what is found, the second only memory, SD reads
-/// and time.
+/// and time. **Only `search`'s band, `sync_min` and `keep` are read**: `lag_s` and `fill` are for a spectrogram you
+/// already hold ([`coarse_sync_gated_spec`](super::coarse_sync_gated_spec)); set here they are ignored.
 ///
 /// `LowMem::coarse_bands` changes memory and time only: the decodes are the same for any number of bands.
 ///

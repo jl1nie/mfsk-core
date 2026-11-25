@@ -375,7 +375,9 @@ impl FastFadingStream {
         let hlen = self.raw_weights.len();
         let hhsz = hlen - 1; // off-centre taps on each side
         let hlast = 2 * hhsz; // the full window's last index
-        let first_bin = big_m - hlen + 1; // the window of tone 0, centred on bin `big_m`
+        // the window of tone 0, centred on bin `big_m`; `big_m + 1 - hlen` and not `big_m - hlen + 1`: the longest table
+        // window is 65 taps, and `64 - 65` overflows (a panic with overflow checks on, the dev profile)
+        let first_bin = big_m + 1 - hlen;
         let out = &mut self.logits[self.rows * big_m..(self.rows + 1) * big_m];
         for (k, o) in out.iter_mut().enumerate() {
             let centre = first_bin + k * bpt;
