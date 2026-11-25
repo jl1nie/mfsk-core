@@ -138,9 +138,9 @@ mod tests {
     use crate::engine::{MessageCodec, MessageFields};
     use crate::msg::Wsjt77Message;
 
-    /// `osd_available` says what the build has: with `fft-rustfft` the OSD fallback is there, and a `DecodeDepth` with
-    /// `osd` set finds a message that the same depth without it does not (a build that reported `true` and ignored
-    /// the request, or the reverse, is the silent no-op this function exists to rule out).
+    /// A build with the host engine (`fft-rustfft`) has the OSD fallback, and `osd_available` says so. (What it does
+    /// not check is that OSD then decodes more: `ft8_embedded_driver_recall.rs` runs the no-`fft-rustfft` build with
+    /// and without the `osd` feature.)
     #[cfg(feature = "fft-rustfft")]
     #[test]
     fn osd_available_in_a_build_with_the_host_engine() {

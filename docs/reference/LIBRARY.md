@@ -2900,7 +2900,7 @@ and differ only in which inner steps they enable:
   slot that cannot be held (an SD card read forward): candidates by hard sync, each one's 200 Hz baseband by a FIR
   cascade, and the same decode in every build. **Not `decode_block`'s decodes** (a deliberate divergence from
   `sync8.f90`'s score order, measured in
-  [`MIDRANGE_EMBEDDED_EVAL.md`](../notes/MIDRANGE_EMBEDDED_EVAL.md)). The audio is a `source::PcmSource` (`SliceSource` for
+  [`ICAP_EMBEDDED_ANALYSIS.md`](../notes/ICAP_EMBEDDED_ANALYSIS.md)). The audio is a `source::PcmSource` (`SliceSource` for
   a slot in memory, `CountingSource` to charge what a forward-only card would); `LowMem { coarse_bands, group }` is
   memory against SD reads and time (`LowMem::new`, `Default` = 4 and 4).
 * `coarse_sync_gated(src, &GatedSearch)` / `coarse_sync_gated_spec(&Spectrogram, &GatedSearch)` — the hard-sync gate,

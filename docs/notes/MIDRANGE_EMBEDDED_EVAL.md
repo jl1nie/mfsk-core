@@ -26,7 +26,7 @@ the same bytes. Re-reading (`PcmSource`, `CountingSource`) is kept only to measu
 |---|---|---|
 | **A** (`decode_block_low_mem`, the ICAP profile of the last note) | a band of the spectrogram at a time; 4 candidates' 200 Hz basebands | 13 sweeps |
 | **B** (ICAP's `ft8dec`) | a u8 log waterfall of the whole band, 166 KiB | 3 (one per pass) |
-| **C** (`ft8::decode_block::band_bb`, new) | **the whole band as one complex baseband**, 3 kHz, `i16` pairs, 180 KB (any input rate) | **1** |
+| **C** (`__internal::ft8_band_bb`, new) | **the whole band as one complex baseband**, 3 kHz, `i16` pairs, 180 KB (any input rate) | **1** |
 
 B was **not re-implemented**: ICAP's `ft8dec` is B, and was measured as it is (it is the reference in the tables). C
 is the FST4 monitor's idea (`embedded-shared/src/fst4_monitor.rs`: one coarse baseband during capture, then a recentre

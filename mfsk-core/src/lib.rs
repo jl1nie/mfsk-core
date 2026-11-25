@@ -443,7 +443,7 @@ pub mod __internal {
     /// FT8's band baseband (`ft8::decode_block::band_bb`): the whole band as one 3 kHz baseband, one read of the
     /// audio, the subtraction on it. Experimental, measured in `hosttest/icap-app` and
     /// `docs/notes/MIDRANGE_EMBEDDED_EVAL.md`; no semver.
-    #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+    #[cfg(all(feature = "ft8", any(feature = "fft-rustfft", feature = "fft-extern")))]
     pub mod ft8_band_bb {
         pub use crate::ft8::decode_block::band_bb::*;
     }

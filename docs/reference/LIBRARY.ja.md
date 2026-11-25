@@ -2733,7 +2733,7 @@ FT8 モジュールは共有パイプラインの上に並列のエントリ群�
   (前方にだけ読める SD カード) の低メモリプロファイル。候補は hard sync 順、各候補の 200 Hz ベースバンドは FIR
   カスケードで作り、どのビルドでも同じデコードをする。**`decode_block` と同じデコードではない**
   (`sync8.f90` のスコア順からの意図的な逸脱。
-  [`MIDRANGE_EMBEDDED_EVAL.md`](../notes/MIDRANGE_EMBEDDED_EVAL.md) に測定)。音声は `source::PcmSource`
+  [`ICAP_EMBEDDED_ANALYSIS.md`](../notes/ICAP_EMBEDDED_ANALYSIS.md) に測定)。音声は `source::PcmSource`
   (メモリ上のスロットは `SliceSource`、前方読みのカードが課す費用を数えるには `CountingSource`)。
   `LowMem { coarse_bands, group }` はメモリと SD 読み出しと時間のトレードオフ (`LowMem::new`、`Default` は 4 と 4)。
 * `coarse_sync_gated(src, &GatedSearch)` / `coarse_sync_gated_spec(&Spectrogram, &GatedSearch)` — hard sync ゲート。

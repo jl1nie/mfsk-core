@@ -128,12 +128,12 @@ fn gated_coarse_sync_is_the_same_for_any_number_of_bands_and_is_a_reordering() {
     }
 }
 
-/// The coarse search from an `PcmSource`, as the radio runs it: the same candidates as from the slice,
-/// to the bit, and the reads are the ones it can afford: forward only (a restart per band, no more) and a
+/// The coarse search through a counting source, as the radio runs it: the same candidates as through a plain
+/// `SliceSource`, to the bit (the counter changes nothing it reads), and the reads are the ones it can afford: forward only (a restart per band, no more) and a
 /// few passes' worth of bytes. Counted with the radio's cost model (`CountingSource`): an 8 kHz slot is 233 KB,
 /// and the number printed is that times the passes (one per band, plus one for the fixed-point build's gain).
 #[test]
-fn gated_coarse_sync_from_a_source_is_the_slice_version_and_reads_forward() {
+fn gated_coarse_sync_through_a_counting_source_is_unchanged_and_reads_forward() {
     let slot = load_wav_i16(asset_path!("qso3_busy.wav"));
     for bands in [1usize, 4] {
         let want = gated(&slot, 200.0, 3000.0, 1.3, 30, bands);
@@ -237,7 +237,43 @@ fn the_low_memory_decode_does_not_depend_on_the_band_split() {
     };
     let a = run(4);
     assert!(!a.is_empty(), "the busy slot decodes something");
+    // and it is the low-memory decode, not `decode_block`'s: a different candidate list and path, a different set
+    assert_ne!(
+        key(&a),
+        key(&mfsk_core::ft8::decode_block::decode_block(
+            &slot,
+            200.0,
+            3000.0,
+            1.3,
+            DecodeDepth::EMBEDDED,
+            15
+        )),
+        "the low-memory decode gave `decode_block`'s list"
+    );
     for bands in [1usize, 7] {
         assert_eq!(key(&a), key(&run(bands)), "{bands} bands");
     }
+}
+
+/// `GatedSearch::lag_s` narrows the lag window `coarse_sync_gated_spec` searches (the boards pass theirs): a candidate list
+/// made with a window of 0.3 s spans less of the slot in time than the default's, and has no candidate the default window
+/// would not place. A `coarse_sync_gated_spec` that dropped `lag_s` would give the default's list for both.
+#[test]
+fn the_lag_window_of_a_gated_search_is_read() {
+    let slot = load_wav_i16(asset_path!("qso3_busy.wav"));
+    let spec = compute_spectrogram(&slot, 3000.0);
+    let span = |v: &[(mfsk_core::engine::sync::SyncCandidate, u8)]| {
+        let dts = v.iter().map(|c| c.0.dt_sec);
+        dts.clone().fold(f32::MIN, f32::max) - dts.fold(f32::MAX, f32::min)
+    };
+    let base = GatedSearch::new(200.0, 3000.0, 1.3, 300);
+    let wide = coarse_sync_gated_spec(&spec, &base);
+    let narrow = coarse_sync_gated_spec(&spec, &base.lag_s(Some(0.3)));
+    assert!(!narrow.is_empty() && !wide.is_empty());
+    assert!(
+        span(&narrow) < span(&wide),
+        "narrow window spans {} s, default {} s",
+        span(&narrow),
+        span(&wide)
+    );
 }

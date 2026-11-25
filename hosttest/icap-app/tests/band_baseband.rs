@@ -27,7 +27,7 @@ use ft8_qso3::QSO3_KNOWN_REAL_SIGNALS;
 
 /// One pass (the coarse search and the candidates on the unsubtracted baseband), 30 candidates. Measured
 /// 2026-11-25: f32 272, fixed-point 279 of 402; the decode of the audio that re-reads it per group
-/// (`decode_block_low_mem_src`) has 274 and 279.
+/// (`decode_block_low_mem`) has 274 and 279.
 #[cfg(not(feature = "fixed-point"))]
 const ONE_PASS_30: usize = 272;
 #[cfg(feature = "fixed-point")]

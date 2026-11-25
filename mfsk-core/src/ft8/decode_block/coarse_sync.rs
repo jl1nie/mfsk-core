@@ -1419,8 +1419,8 @@ impl GatedSearch {
 /// and the hard-sync count), so nothing is read from the audio and nothing is rebuilt. On a whole slot
 /// (`fill == None`, default lag window) the candidates are [`coarse_sync_gated`]'s, bit for bit.
 ///
-/// `sync_lag_s` is the lag window (`None`: the crate's default, as the audio versions use; the boards pass
-/// theirs, `coarse_sync_with_lag`'s). `fill` describes a streaming spectrogram: the hard-sync count skips rows
+/// `search.lag_s` is the lag window (`None`: the crate's default, as the audio version uses; the boards pass
+/// theirs, `coarse_sync_with_lag`'s). `search.fill` describes a streaming spectrogram: the hard-sync count skips rows
 /// past its fill point (an unmeasured row reads as tone 0, a false hit wherever the Costas array has a 0);
 /// `fill.gate_block2` is [`SpecFill`]'s, and costs recall on a slot whose signals are late (116 / 168 against
 /// 216 / 269 of `jt9`'s 402 at 15 / 30 candidates, `docs/notes/S3_GATE_OSD_ABLATION.md`).
