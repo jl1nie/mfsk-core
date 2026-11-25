@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### FT8 low-memory decode: the slot is read forward from a source, never held
+
+- **`decode_block_low_mem` / `decode_block_low_mem_src`** (`ft8::decode_block`, new, building-block tier): candidates picked by hard sync read from the spectrogram (`coarse_sync_gated[_src]`, a **divergence from `sync8.f90`'s score order**: the first 30 by score hold 9 real signals of `qso3_busy`, by hard sync 21), the spectrogram built a band at a time, each candidate's 200 Hz baseband by a FIR cascade (`cd0_fir`, a divergence from `ft8_downsample.f90`'s FFT) from `AudioSource` (`SliceSource`, `CountingSource`: what a forward-only SD card costs). New cargo feature `osd` (off): the OSD fallback in builds without `fft-rustfft`.
+- Measured (host, `hosttest/icap-app`, ft8_lib's 22 recordings against `jt9`'s 402): 227 / 279 decoded at 15 / 30 candidates (fixed-point), against `decode_block`'s 131; peak heap 0.22 MB, independent of the candidate count. `decode_block` and the ESP32 path are unchanged (bit-identical). Not run on any radio or board. Detail: `docs/notes/ICAP_EMBEDDED_ANALYSIS.md`.
+
 ### The ESP32 boards build again
 
 - **`ft8::stage_timing` no longer stops the Xtensa boards compiling.** 0.16.2's `MFSK_TRACE_STAGE_FT8` counters are `AtomicU64`, which Xtensa lacks, so `m5stack-cores3-app`, `-s3-app`, `-core2-app` and `m5stack-s3` failed with E0432 from `2ad660fe` (2026-11-23) on; host CI does not build `embedded-poc`, so nothing noticed. The tracing is now compiled only where 64-bit atomics exist (`target_has_atomic = "64"`) and is the no-op elsewhere; host behaviour is unchanged. `cargo check --release` passes for the four boards again. Not flashed: no runtime path changed.

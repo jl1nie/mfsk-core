@@ -22,6 +22,7 @@ use num_complex::Complex;
 use num_traits::Float;
 
 use super::super::params::{NMAX, NSPS, NTONES};
+use super::source::{AudioSource, SliceSource, Window};
 use super::types::{AudioSample, NFFT_SPEC, NSTEP, SAMPLE_RATE_HZ, TONE_SPACING_HZ};
 
 // Needed by the f32 builder below, which exists in a `fixed-point`
@@ -55,7 +56,7 @@ pub type SpecCell = u16;
 /// virtually never align both freq and dt-grid bin), but watch for
 /// truncation if the busy-band recall regresses.
 #[cfg(feature = "fixed-point")]
-const FP_SPEC_SHIFT: u32 = 12;
+pub(super) const FP_SPEC_SHIFT: u32 = 12;
 
 /// Power spectrogram emitted by [`compute_spectrogram`] and consumed
 /// by [`super::coarse_sync`] / [`super::coarse_sync_with_allsum`].
@@ -113,6 +114,15 @@ impl Spectrogram {
             data,
         }
     }
+}
+
+/// Rows of bins a spectrogram needs for carriers up to `max_freq_hz`: the carrier band plus the room the
+/// top tone of a carrier at its upper edge reads (`max_freq_hz + NTONES * tone spacing`).
+pub(super) fn spectrogram_n_freq(max_freq_hz: f32) -> usize {
+    let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
+    let band_top_hz = max_freq_hz + (NTONES as f32) * TONE_SPACING_HZ;
+    let n_freq_full = NFFT_SPEC / 2;
+    ((band_top_hz / df).ceil() as usize + 1).min(n_freq_full)
 }
 
 /// coarse_sync inner-loop accumulator. f32 — overlaps on the FPU with
@@ -218,10 +228,43 @@ pub fn compute_spectrogram_f32_timed<S: AudioSample>(
 #[cfg(not(feature = "fixed-point"))]
 pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spectrogram {
     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Spectrogram);
-    let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
-    let band_top_hz = max_freq_hz + (NTONES as f32) * TONE_SPACING_HZ;
-    let n_freq_full = NFFT_SPEC / 2;
-    let n_freq = ((band_top_hz / df).ceil() as usize + 1).min(n_freq_full);
+    compute_spectrogram_bins(audio, 0, spectrogram_n_freq(max_freq_hz))
+}
+
+/// [`compute_spectrogram`] for the bins `bin_lo..bin_hi` only (`n_freq = bin_hi - bin_lo`; bin `j` of
+/// the result is bin `bin_lo + j` of the full one). Every cell is the one the full spectrogram holds: the
+/// frame's FFT is the same, only the rows kept differ. This is what lets coarse sync run a band at a
+/// time (`coarse_sync_banded`) with the spectrogram's memory cut to the band.
+#[cfg(not(feature = "fixed-point"))]
+pub(super) fn compute_spectrogram_bins<S: AudioSample>(
+    audio: &[S],
+    bin_lo: usize,
+    bin_hi: usize,
+) -> Spectrogram {
+    compute_spectrogram_bins_src(&mut SliceSource(audio), bin_lo, bin_hi, ())
+}
+
+/// What a band's spectrogram needs from the whole slot before it can be built: nothing in the f32 build.
+#[cfg(not(feature = "fixed-point"))]
+pub(super) type Gain = ();
+
+/// The slot-wide gain of the spectrogram (the fixed-point build scans the slot for its peak).
+#[cfg(not(feature = "fixed-point"))]
+pub(super) fn spectrogram_gain<A: AudioSource>(_src: &mut A) -> Gain {}
+
+/// [`compute_spectrogram_bins`] from an [`AudioSource`]: the frames are read forward, one window at a time.
+#[cfg(not(feature = "fixed-point"))]
+pub(super) fn compute_spectrogram_bins_src<A: AudioSource>(
+    src: &mut A,
+    bin_lo: usize,
+    bin_hi: usize,
+    _gain: Gain,
+) -> Spectrogram {
+    assert!(
+        bin_lo <= bin_hi && bin_hi <= NFFT_SPEC / 2 + 1,
+        "spectrogram bins out of range"
+    );
+    let n_freq = bin_hi - bin_lo;
     let n_time = NMAX / NSTEP - 3;
     let scale = 1.0f32 / 300.0;
 
@@ -239,12 +282,15 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
     let mut input = vec![0.0f32; NFFT_SPEC];
     let mut buf = vec![Complex::new(0.0f32, 0.0); NFFT_SPEC / 2 + 1];
 
+    let mut win = Window::new(src);
+    let mut frame = vec![0i16; NSPS];
     for j in 0..n_time {
         let ia = j * NSTEP;
+        win.read_into(ia as i64, &mut frame);
         // `process` may use `input` as scratch, so it is rewritten whole for every row.
         for (k, c) in input.iter_mut().enumerate() {
-            *c = if k < NSPS && ia + k < audio.len() {
-                audio[ia + k].to_f32() * scale
+            *c = if k < NSPS {
+                frame[k] as f32 * scale
             } else {
                 0.0
             };
@@ -254,8 +300,8 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
         // time slice contiguous in memory (good PSRAM locality
         // for downstream coarse_sync).
         let row_base = j * n_freq;
-        for i in 0..n_freq {
-            data[row_base + i] = buf[i].norm_sqr();
+        for i in bin_lo..bin_hi {
+            data[row_base + (i - bin_lo)] = buf[i].norm_sqr();
         }
     }
 
@@ -282,54 +328,83 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
 #[cfg(feature = "fixed-point")]
 pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spectrogram {
     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Spectrogram);
-    use crate::engine::fft::default_planner_16;
+    compute_spectrogram_bins(audio, 0, spectrogram_n_freq(max_freq_hz))
+}
 
-    let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
-    let band_top_hz = max_freq_hz + (NTONES as f32) * TONE_SPACING_HZ;
-    let n_freq_full = NFFT_SPEC / 2;
-    let n_freq = ((band_top_hz / df).ceil() as usize + 1).min(n_freq_full);
-    let n_time = NMAX / NSTEP - 3;
+/// [`compute_spectrogram`] for the bins `lo..hi` only (`n_freq = hi - lo`; bin `j` of the result is bin
+/// `lo + j` of the full one). Every cell is the one the full spectrogram holds: the auto-gain `shift` is
+/// taken from the whole slot as before, the frame's FFT is the same, only the rows kept differ. This is
+/// what lets coarse sync run a band at a time (`coarse_sync_banded`).
+#[cfg(feature = "fixed-point")]
+pub(super) fn compute_spectrogram_bins<S: AudioSample>(
+    audio: &[S],
+    lo: usize,
+    hi: usize,
+) -> Spectrogram {
+    let mut src = SliceSource(audio);
+    let gain = spectrogram_gain(&mut src);
+    compute_spectrogram_bins_src(&mut src, lo, hi, gain)
+}
 
-    // Pre-scale gain: shift left so the audio peak lands at
-    // `2 × NFFT` (so after `log2(NFFT)` stages of /2 the post-FFT
-    // peak still has a usable mantissa of ~2).
-    //
-    // **Scan window**: full slot (`audio.len().min(NMAX)`). The
-    // embedded `stage1_inc` peaks only the first 1 s of audio because
-    // it locks `shift` once at the streaming consumer's earliest
-    // legal moment (incremental FFT can't wait for the slot tail).
-    // That's a streaming **implementation constraint**, not a
-    // separately-correct algorithm; host has the full slot in hand
-    // and uses it. For typical WSJT-X reference WAVs the peak lives
-    // in the first second anyway (FT8 signals start at +0.5 s), so
-    // the two converge on the same `shift` in practice — verified
-    // on qso3_busy.wav (peak 1540 in first 12 k = full-slot peak).
-    let target_peak: i32 = (NFFT_SPEC * 2) as i32;
+/// The slot-wide gain of the fixed-point spectrogram: the left shift that brings the slot's peak to
+/// `2 x NFFT` (see [`compute_spectrogram_bins_src`]).
+#[cfg(feature = "fixed-point")]
+pub(super) type Gain = u32;
+
+/// Scan the slot (the first `NMAX` samples) for its peak and return the shift. One pass over the source.
+#[cfg(feature = "fixed-point")]
+pub(super) fn spectrogram_gain<A: AudioSource>(src: &mut A) -> Gain {
     let mut peak_abs: i32 = 1;
-    let n_scan = audio.len().min(NMAX);
-    for k in 0..n_scan {
-        let v = audio[k].to_i16() as i32;
-        let a = v.unsigned_abs() as i32;
-        if a > peak_abs {
-            peak_abs = a;
+    let n_scan = src.len().min(NMAX);
+    let mut block = vec![0i16; 1024];
+    let mut at = 0;
+    while at < n_scan {
+        let n = (n_scan - at).min(block.len());
+        src.read(at as i64, &mut block[..n]);
+        for &v in &block[..n] {
+            peak_abs = peak_abs.max((v as i32).abs());
         }
+        at += n;
     }
+    gain_for_peak(peak_abs)
+}
+
+/// The left shift that brings a slot peak of `peak_abs` to `2 x NFFT` (at most 8). The peak is the one thing
+/// the gain needs from the slot, so a capture that tracks it can hand it over instead of a read.
+#[cfg(feature = "fixed-point")]
+pub(super) fn gain_for_peak(peak_abs: i32) -> Gain {
+    let target_peak: i32 = (NFFT_SPEC * 2) as i32;
     let mut shift: u32 = 0;
-    while peak_abs << shift < target_peak && shift < 8 {
+    while peak_abs.max(1) << shift < target_peak && shift < 8 {
         shift += 1;
     }
-    // +1 extra shift: the Hann window's coherent gain is 0.5
-    // (single-bin signal amplitude halved → bin power ÷ 4). Pre-
-    // shifting input by +1 bit doubles amplitude so the post-FFT bin
-    // amplitude lands back where the rectangular-window auto-gain
-    // plan expected. Peak input samples near the window centre
-    // (where Hann ≈ 1) may saturate to i16_MAX after this shift,
-    // but the centre is also where CG is highest — clamping a few
-    // (Hann window and the +1 pre-shift that compensated its 0.5
-    // coherent gain were both removed when the spectrogram switched
-    // to NFFT=3840 — at integer tone alignment the rectangular-window
-    // sidelobes don't leak onto adjacent FT8 tones, so the window
-    // costs more than it saves.)
+    shift
+}
+
+/// [`compute_spectrogram_bins`] from an [`AudioSource`], with the slot's gain given: the frames are read
+/// forward, one window at a time.
+#[cfg(feature = "fixed-point")]
+pub(super) fn compute_spectrogram_bins_src<A: AudioSource>(
+    src: &mut A,
+    lo: usize,
+    hi: usize,
+    shift: Gain,
+) -> Spectrogram {
+    use crate::engine::fft::default_planner_16;
+
+    assert!(
+        lo <= hi && hi <= NFFT_SPEC / 2 + 1,
+        "spectrogram bins out of range"
+    );
+    let n_freq = hi - lo;
+    let n_time = NMAX / NSTEP - 3;
+
+    // The pre-scale gain (`shift`, from `spectrogram_gain`): the slot's peak lands at `2 x NFFT`, so that after
+    // `log2(NFFT)` stages of /2 the post-FFT peak still has a usable mantissa of ~2. The scan covers the full
+    // slot (the ESP32's `stage1_inc` peaks only the first second, since it cannot wait for the tail; the two
+    // agree on real recordings: `qso3_busy.wav`'s peak is in its first 12 k samples). The Hann window and its
+    // +1 pre-shift were removed when the spectrogram went to NFFT=3840: at integer tone alignment the
+    // rectangular window's sidelobes do not leak onto adjacent FT8 tones.
 
     let mut planner = default_planner_16();
     let fft = planner.plan_forward(NFFT_SPEC);
@@ -365,19 +440,19 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
     // rectangular sidelobes don't leak onto adjacent tones; Hann's
     // coherent gain 0.5 (≈ -6 dB SNR penalty) + 2-bin mainlobe spread
     // would be pure cost.
-    let pack = |buf: &mut [Complex<i16>], ia_a: usize, ia_b: Option<usize>| {
+    let mut win = Window::new(src);
+    let (mut fa, mut fb) = (vec![0i16; NSPS], vec![0i16; NSPS]);
+    let mut pack = |buf: &mut [Complex<i16>], ia_a: usize, ia_b: Option<usize>| {
+        win.read_into(ia_a as i64, &mut fa);
+        if let Some(ia_b) = ia_b {
+            win.read_into(ia_b as i64, &mut fb);
+        }
+        let scale =
+            |raw: i16| (((raw as i32) << shift).clamp(i16::MIN as i32, i16::MAX as i32)) as i16;
         for (k, c) in buf.iter_mut().enumerate() {
-            let re = if k < NSPS && ia_a + k < audio.len() {
-                let raw = audio[ia_a + k].to_i16() as i32;
-                (raw << shift).clamp(i16::MIN as i32, i16::MAX as i32) as i16
-            } else {
-                0
-            };
+            let re = if k < NSPS { scale(fa[k]) } else { 0 };
             let im = match ia_b {
-                Some(ia_b) if k < NSPS && ia_b + k < audio.len() => {
-                    let raw = audio[ia_b + k].to_i16() as i32;
-                    (raw << shift).clamp(i16::MIN as i32, i16::MAX as i32) as i16
-                }
+                Some(_) if k < NSPS => scale(fb[k]),
                 _ => 0,
             };
             *c = Complex::new(re, im);
@@ -403,15 +478,15 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
         // for the ±32768 edge case that `unsigned_abs` was guarding).
 
         // k=0: DC bin (kn=0 → yn=yk)
-        if n_freq > 0 {
+        if lo == 0 && hi > 0 {
             let r0 = buf[0].re as i32;
             let i0 = buf[0].im as i32;
             data[row_a] = ((r0 * r0) as u32 >> FP_SPEC_SHIFT).min(u16::MAX as u32) as u16;
             data[row_b] = ((i0 * i0) as u32 >> FP_SPEC_SHIFT).min(u16::MAX as u32) as u16;
         }
 
-        let mut k = 1usize;
-        while k + 4 <= n_freq {
+        let mut k = lo.max(1);
+        while k + 4 <= hi {
             let yk0 = buf[k];
             let yk1 = buf[k + 1];
             let yk2 = buf[k + 2];
@@ -454,26 +529,32 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
                 (yn3.re as i32 - yk3.re as i32) >> 1,
             );
 
-            data[row_a + k] = (((a0r * a0r) as u32 + (a0i * a0i) as u32) >> FP_SPEC_SHIFT)
+            data[row_a + (k - lo)] = (((a0r * a0r) as u32 + (a0i * a0i) as u32) >> FP_SPEC_SHIFT)
                 .min(u16::MAX as u32) as u16;
-            data[row_b + k] = (((b0r * b0r) as u32 + (b0i * b0i) as u32) >> FP_SPEC_SHIFT)
+            data[row_b + (k - lo)] = (((b0r * b0r) as u32 + (b0i * b0i) as u32) >> FP_SPEC_SHIFT)
                 .min(u16::MAX as u32) as u16;
-            data[row_a + k + 1] = (((a1r * a1r) as u32 + (a1i * a1i) as u32) >> FP_SPEC_SHIFT)
+            data[row_a + (k - lo) + 1] = (((a1r * a1r) as u32 + (a1i * a1i) as u32)
+                >> FP_SPEC_SHIFT)
                 .min(u16::MAX as u32) as u16;
-            data[row_b + k + 1] = (((b1r * b1r) as u32 + (b1i * b1i) as u32) >> FP_SPEC_SHIFT)
+            data[row_b + (k - lo) + 1] = (((b1r * b1r) as u32 + (b1i * b1i) as u32)
+                >> FP_SPEC_SHIFT)
                 .min(u16::MAX as u32) as u16;
-            data[row_a + k + 2] = (((a2r * a2r) as u32 + (a2i * a2i) as u32) >> FP_SPEC_SHIFT)
+            data[row_a + (k - lo) + 2] = (((a2r * a2r) as u32 + (a2i * a2i) as u32)
+                >> FP_SPEC_SHIFT)
                 .min(u16::MAX as u32) as u16;
-            data[row_b + k + 2] = (((b2r * b2r) as u32 + (b2i * b2i) as u32) >> FP_SPEC_SHIFT)
+            data[row_b + (k - lo) + 2] = (((b2r * b2r) as u32 + (b2i * b2i) as u32)
+                >> FP_SPEC_SHIFT)
                 .min(u16::MAX as u32) as u16;
-            data[row_a + k + 3] = (((a3r * a3r) as u32 + (a3i * a3i) as u32) >> FP_SPEC_SHIFT)
+            data[row_a + (k - lo) + 3] = (((a3r * a3r) as u32 + (a3i * a3i) as u32)
+                >> FP_SPEC_SHIFT)
                 .min(u16::MAX as u32) as u16;
-            data[row_b + k + 3] = (((b3r * b3r) as u32 + (b3i * b3i) as u32) >> FP_SPEC_SHIFT)
+            data[row_b + (k - lo) + 3] = (((b3r * b3r) as u32 + (b3i * b3i) as u32)
+                >> FP_SPEC_SHIFT)
                 .min(u16::MAX as u32) as u16;
 
             k += 4;
         }
-        while k < n_freq {
+        while k < hi {
             let yn = buf[NFFT_SPEC - k];
             let yk = buf[k];
             let (ar, ai) = (
@@ -484,9 +565,9 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
                 (yk.im as i32 + yn.im as i32) >> 1,
                 (yn.re as i32 - yk.re as i32) >> 1,
             );
-            data[row_a + k] = (((ar * ar) as u32 + (ai * ai) as u32) >> FP_SPEC_SHIFT)
+            data[row_a + (k - lo)] = (((ar * ar) as u32 + (ai * ai) as u32) >> FP_SPEC_SHIFT)
                 .min(u16::MAX as u32) as u16;
-            data[row_b + k] = (((br * br) as u32 + (bi * bi) as u32) >> FP_SPEC_SHIFT)
+            data[row_b + (k - lo)] = (((br * br) as u32 + (bi * bi) as u32) >> FP_SPEC_SHIFT)
                 .min(u16::MAX as u32) as u16;
             k += 1;
         }
@@ -500,12 +581,12 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
         pack(&mut buf, j * NSTEP, None);
         fft.process(&mut buf);
         let row_base = j * n_freq;
-        for i in 0..n_freq {
+        for i in lo..hi {
             let re = buf[i].re as i32;
             let im = buf[i].im as i32;
             let mag2 =
                 (((re * re) as u32 + (im * im) as u32) >> FP_SPEC_SHIFT).min(u16::MAX as u32);
-            data[row_base + i] = mag2 as u16;
+            data[row_base + (i - lo)] = mag2 as u16;
         }
     }
 

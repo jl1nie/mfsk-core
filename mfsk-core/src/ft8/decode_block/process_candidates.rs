@@ -27,6 +27,7 @@ use super::super::decode::{ApHint, DecodeDepth, DecodeResult, DecodeStrictness, 
 use super::super::llr::sync_quality;
 use super::super::params::{COSTAS, DEFAULT_BP_MAX_ITER, LDPC_N, NSPS, NTONES};
 use super::coarse_sync::coarse_sync;
+use super::coarse_sync::coarse_sync_gated_src;
 #[cfg(all(feature = "fixed-point", not(feature = "fft-rustfft")))]
 use super::fill_symbol_spectra::fill_symbol_spectra_goertzel;
 use super::fill_symbol_spectra::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
@@ -128,6 +129,64 @@ pub fn decode_block<S: AudioSample>(
         None,
         DecodeStrictness::Normal,
         None,
+        None,
+    )
+}
+
+/// The embedded FT8 decode for a small heap and a real QSO: [`decode_block`]'s stages with the candidate
+/// path rebuilt around what a short list of candidates needs. **Not the same decodes as [`decode_block`]**,
+/// and in the embedded build (no `fft-rustfft`) only; the host driver ignores `coarse_bands` and runs as
+/// `decode_block`.
+///
+/// - **Candidates by hard sync** ([`super::coarse_sync_gated_src`]): the coarse list of [`super::HARD_SYNC_POOL`]
+///   is reordered by how many of the 21 Costas symbols read right in the spectrogram, and `max_cand` of
+///   them go on. The coarse score alone ranks the ghosts of a strong signal above weaker real ones, so a
+///   short list by score misses real signals (`qso3_busy.wav`: first 30 by score, 9 real; by hard sync, 21).
+///   A deliberate divergence from WSJT-X (`spec_hard_sync` in `coarse_sync.rs`).
+/// - **Each candidate's 200 Hz baseband** (`cd0_fir`): the candidate is mixed to DC and decimated by a 3:1,
+///   4:1, 5:1 FIR cascade (the slot's `ft8_downsample.f90` baseband, without its 192 000-point FFT), built
+///   sample by sample from the audio as it is read. Everything after runs on it, and not on the audio:
+///   - **frequency and DT refined**, `ft8b.f90`'s stages A-C ([`crate::ft8::refine_fine::fine_refine_3stage`]),
+///     and the baseband moved to the refined frequency, before the BP stage reads the symbols
+///     (`decode_block` decodes from the coarse 3.125 Hz / 80 ms grid);
+///   - **the tone spectra**, one 32-point DFT per symbol, in place of `decode_block`'s 632 Goertzel DFTs of
+///     1920 samples per candidate (2.3x faster at better recall: 30 candidates, with OSD, host, `qso3_busy`
+///     92 ms against 211 ms; the 22 recordings 282 of 402 against 270), band-limited as `ft8b`'s `cd0` is.
+/// - **The spectrogram a band at a time** (`coarse_bands` bands, [`super::coarse_sync_banded`]'s scheme):
+///   built for one band and dropped before the next, so its memory is `1 / coarse_bands` of the carrier
+///   range's (plus 14 bins) at the price of the frame FFTs running once per band.
+/// - **No spectrum kept per candidate**, and the basebands held a group at a time (`LowMem::group`): the
+///   heap of stage 3 is the group's basebands, whatever `max_cand` is (`decode_block` holds
+///   `5 056 B x max_cand` from Pass 2 to stage 3).
+///
+/// This is the slice form; `decode_block_low_mem_src` is the same decode from an `AudioSource`, which is what
+/// the radio uses: the audio is then never held, and is read forward, one sweep per coarse band, one for the
+/// fixed-point build's gain and one per group of candidates (`hosttest/icap-app/tests/icap_budget.rs` pins
+/// the count and the bytes).
+///
+/// `coarse_bands` changes memory and time only: the decodes are the same for any number of bands (and
+/// `LowMem::group`'s default is used here).
+pub fn decode_block_low_mem<S: AudioSample>(
+    audio: &[S],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    depth: DecodeDepth,
+    max_cand: usize,
+    coarse_bands: usize,
+) -> Vec<DecodeResult> {
+    decode_block_multipass(
+        audio,
+        freq_min,
+        freq_max,
+        sync_min,
+        depth,
+        max_cand,
+        DEFAULT_BP_MAX_ITER,
+        None,
+        DecodeStrictness::Normal,
+        None,
+        Some(coarse_bands),
     )
 }
 
@@ -222,6 +281,7 @@ pub fn decode_block_streaming<S: AudioSample>(
         None,
         DecodeStrictness::Normal,
         Some(on_result),
+        None,
     )
 }
 
@@ -248,6 +308,7 @@ pub fn decode_block_tuned<S: AudioSample>(
         bp_max_iter,
         None,
         DecodeStrictness::Normal,
+        None,
         None,
     )
 }
@@ -283,6 +344,7 @@ pub fn decode_block_with_ap<S: AudioSample>(
         ap_hint,
         DecodeStrictness::Normal,
         None,
+        None,
     )
 }
 
@@ -311,6 +373,7 @@ pub fn decode_block_with_ap_tuned<S: AudioSample>(
         bp_max_iter,
         ap_hint,
         strictness,
+        None,
         None,
     )
 }
@@ -346,6 +409,7 @@ fn decode_block_multipass<S: AudioSample>(
     ap_hint: Option<&ApHint>,
     strictness: DecodeStrictness,
     mut on_result: Option<&mut dyn FnMut(&DecodeResult)>,
+    _low_mem: Option<usize>,
 ) -> Vec<DecodeResult> {
     use alloc::vec::Vec as AllocVec;
     #[cfg(feature = "std")]
@@ -871,16 +935,35 @@ fn decode_block_multipass<S: AudioSample>(
     _ap_hint: Option<&ApHint>,
     _strictness: DecodeStrictness,
     _on_result: Option<&mut dyn FnMut(&DecodeResult)>,
+    low_mem: Option<usize>,
 ) -> Vec<DecodeResult> {
-    let spec = compute_spectrogram(audio, freq_max);
-    let pass1 = coarse_sync(
-        &spec,
-        freq_min,
-        freq_max,
-        sync_min,
-        pass1_limit_for(max_cand),
-    );
-    drop(spec);
+    // The low-memory profile (`decode_block_low_mem`) is a different candidate path, not the same one with
+    // less memory: see its doc comment.
+    if let Some(coarse_bands) = low_mem {
+        return decode_low_mem_src(
+            &mut super::source::SliceSource(audio),
+            freq_min,
+            freq_max,
+            sync_min,
+            depth,
+            max_cand,
+            LowMem {
+                coarse_bands,
+                ..LowMem::default()
+            },
+            bp_max_iter,
+        );
+    }
+    let pass1 = {
+        let spec = compute_spectrogram(audio, freq_max);
+        coarse_sync(
+            &spec,
+            freq_min,
+            freq_max,
+            sync_min,
+            pass1_limit_for(max_cand),
+        )
+    };
     let pass1 = fine_refine_pass1(audio, pass1);
     let pass2 = refine_candidates(audio, pass1, max_cand, None);
     process_candidates_tuned(audio, pass2, depth, DEFAULT_Q_THRESH, bp_max_iter)
@@ -1110,10 +1193,6 @@ pub fn refine_candidates_into<S: AudioSample>(
     })
 }
 
-/// Common min-heap selection logic used by both `refine_candidates`
-/// (heap-allocated basis per call) and `refine_candidates_into`
-/// (caller-provided basis scratch). The closure abstracts how each
-/// candidate's cs Box is produced.
 fn refine_candidates_with<F>(
     cands: Vec<SyncCandidate>,
     max_cand: usize,
@@ -1122,52 +1201,68 @@ fn refine_candidates_with<F>(
 where
     F: FnMut(&SyncCandidate) -> Box<[[Cmplx<f32>; 8]; 79]>,
 {
+    select_top_by_q(cands, max_cand, |c| {
+        let cs = cs_for(c);
+        let q = sync_quality_block0(&cs);
+        (cs, q)
+    })
+}
+
+/// The `max_cand` candidates of highest block-0 `q`, each with the payload `payload_for` made for it, best
+/// first. Common body of [`refine_candidates_with`] (payload: the spectrum) and `refine_candidates_lean`
+/// (payload: nothing).
+fn select_top_by_q<T, F>(
+    cands: Vec<SyncCandidate>,
+    max_cand: usize,
+    mut payload_for: F,
+) -> Vec<(SyncCandidate, T, u32)>
+where
+    F: FnMut(&SyncCandidate) -> (T, u32),
+{
     use alloc::collections::BinaryHeap;
     use core::cmp::{Ordering, Reverse};
 
     // Min-heap on q so the smallest survivor is at the top — replace
     // it whenever a stronger candidate arrives. Bounds the live heap
-    // footprint at `max_cand × cs Box` regardless of PASS1_LIMIT,
+    // footprint at `max_cand` payloads regardless of PASS1_LIMIT,
     // which is the heap-fragmentation fix Task #2 was opened for.
-    // Old code collected all PASS1=30 cs Boxes (240 KB) before the
-    // truncate; new code never holds more than max_cand=15 Boxes
-    // (120 KB peak).
     //
-    // The heap stores (q, cand_idx, RefinedCandidate); cand_idx
-    // breaks ties deterministically (insertion order) so the
-    // truncation result is reproducible across runs.
-    struct Slot {
+    // The heap stores (q, cand_idx, payload); cand_idx breaks ties
+    // deterministically (insertion order) so the truncation result is
+    // reproducible across runs. The heap's layout, and so the order in
+    // which equal-`q` survivors come out, depends on `Slot`'s `Ord`
+    // (q, idx) and on the push/pop sequence only: not on the payload.
+    struct Slot<T> {
         q: u32,
         idx: u32,
         cand: SyncCandidate,
-        cs: Box<[[Cmplx<f32>; 8]; 79]>,
+        payload: T,
     }
-    impl PartialEq for Slot {
+    impl<T> PartialEq for Slot<T> {
         fn eq(&self, other: &Self) -> bool {
             self.q == other.q && self.idx == other.idx
         }
     }
-    impl Eq for Slot {}
-    impl Ord for Slot {
+    impl<T> Eq for Slot<T> {}
+    impl<T> Ord for Slot<T> {
         fn cmp(&self, other: &Self) -> Ordering {
             self.q.cmp(&other.q).then_with(|| self.idx.cmp(&other.idx))
         }
     }
-    impl PartialOrd for Slot {
+    impl<T> PartialOrd for Slot<T> {
         fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
             Some(self.cmp(other))
         }
     }
 
-    let mut heap: BinaryHeap<Reverse<Slot>> = BinaryHeap::with_capacity(max_cand + 1);
+    let mut heap: BinaryHeap<Reverse<Slot<T>>> = BinaryHeap::with_capacity(max_cand + 1);
     for (idx, c) in cands.into_iter().enumerate() {
-        let cs = cs_for(&c);
-        let q = sync_quality_block0(&cs);
+        let (payload, q) = payload_for(&c);
         let slot = Slot {
             q,
             idx: idx as u32,
             cand: c,
-            cs,
+            payload,
         };
         if heap.len() < max_cand {
             heap.push(Reverse(slot));
@@ -1176,14 +1271,14 @@ where
         {
             heap.pop();
             heap.push(Reverse(slot));
-            // else branch: drop slot.cs immediately when it leaves scope
+            // else branch: drop the payload immediately when the slot leaves scope
         }
     }
-    let mut out: Vec<RefinedCandidate> = heap
+    let mut out: Vec<(SyncCandidate, T, u32)> = heap
         .into_iter()
         .map(|r| {
             let s = r.0;
-            (s.cand, s.cs, s.q)
+            (s.cand, s.payload, s.q)
         })
         .collect();
     out.sort_by_key(|r| core::cmp::Reverse(r.2));
@@ -1431,7 +1526,7 @@ pub(super) fn process_candidates_tuned_with_ap_scratch<S: AudioSample>(
             .unwrap();
     process_candidates_with_ap(
         audio,
-        &cands,
+        cands.iter().map(|(c, cs, _)| (c, Some(&**cs))),
         depth,
         q_thresh,
         bp_max_iter,
@@ -1445,6 +1540,155 @@ pub(super) fn process_candidates_tuned_with_ap_scratch<S: AudioSample>(
         on_result,
         pass,
     )
+}
+
+/// How the low-memory profile trades memory, SD reads and time (see [`decode_block_low_mem_src`]).
+#[derive(Clone, Copy, Debug)]
+pub struct LowMem {
+    /// Bands the coarse search's spectrogram is built in: one read of the audio each.
+    pub coarse_bands: usize,
+    /// Candidates whose 200 Hz basebands (25.6 KB each) are built from one read of the audio and held
+    /// together: the heap of stage 3 is this many times 25.6 KB, and the audio is read
+    /// `ceil(max_cand / group)` times.
+    pub group: usize,
+}
+
+impl Default for LowMem {
+    fn default() -> Self {
+        Self {
+            coarse_bands: 4,
+            group: 4,
+        }
+    }
+}
+
+/// [`decode_block_low_mem`] from an [`AudioSource`](super::source::AudioSource): the form the radio needs, where the slot is on the SD
+/// card and is never held. The reads are all forward sweeps of the source: one for the fixed-point build's
+/// gain, one per coarse band, one per group of candidates (`LowMem::group`); nothing else touches the audio,
+/// because the candidates are refined (`ft8b.f90`'s stages A-C, [`fine_refine_3stage`]) and decoded from
+/// their 200 Hz basebands.
+///
+/// [`fine_refine_3stage`]: crate::ft8::refine_fine::fine_refine_3stage
+#[allow(clippy::too_many_arguments)]
+pub fn decode_block_low_mem_src<A: super::source::AudioSource>(
+    src: &mut A,
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    depth: DecodeDepth,
+    max_cand: usize,
+    cfg: LowMem,
+) -> Vec<DecodeResult> {
+    decode_low_mem_src(
+        src,
+        freq_min,
+        freq_max,
+        sync_min,
+        depth,
+        max_cand,
+        cfg,
+        DEFAULT_BP_MAX_ITER,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_low_mem_src<A: super::source::AudioSource>(
+    src: &mut A,
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    depth: DecodeDepth,
+    max_cand: usize,
+    cfg: LowMem,
+    bp_max_iter: u32,
+) -> Vec<DecodeResult> {
+    use super::cd0_fir::{Cd0Filters, build_group};
+
+    let gated = coarse_sync_gated_src(
+        src,
+        freq_min,
+        freq_max,
+        sync_min,
+        max_cand,
+        cfg.coarse_bands,
+    );
+    let filters = Cd0Filters::new();
+    decode_from_basebands(&gated, &filters, cfg.group, depth, bp_max_iter, |freqs| {
+        build_group(&filters, src, freqs)
+    })
+}
+
+/// The candidate loop of the low-memory decoders: `gated`'s candidates in groups of `group`, each group's
+/// 200 Hz basebands from `build` (given the tone-0 frequencies), refined (`ft8b.f90`'s stages A-C), then
+/// decoded from the basebands. Where the basebands come from is the only thing that differs between the
+/// audio-reading decoder ([`decode_block_low_mem_src`]) and the one that keeps the whole band as a baseband
+/// (`band_bb`), so both are this loop.
+pub(super) fn decode_from_basebands<B>(
+    gated: &[(SyncCandidate, u8)],
+    filters: &super::cd0_fir::Cd0Filters,
+    group: usize,
+    depth: DecodeDepth,
+    bp_max_iter: u32,
+    mut build: B,
+) -> Vec<DecodeResult>
+where
+    B: FnMut(&[f32]) -> Vec<super::cd0_fir::Cd0>,
+{
+    use super::cd0_fir::fill_from_cd0;
+    use crate::ft8::refine_fine::fine_refine_3stage;
+
+    let mut bp_scratch =
+        crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
+    let mut cs_scratch: alloc::boxed::Box<[[Cmplx<f32>; 8]; 79]> =
+        alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
+            .try_into()
+            .unwrap();
+    let mut out: Vec<DecodeResult> = Vec::new();
+    for group in gated.chunks(group.max(1)) {
+        let freqs: Vec<f32> = group.iter().map(|c| c.0.freq_hz).collect();
+        let mut basebands = build(&freqs);
+        // ft8b's stages A-C on each baseband: dt to the 200 Hz sample, frequency to 0.5 Hz; the baseband is
+        // then moved to the refined frequency, as a mixer there would have made it
+        let mut refined: Vec<SyncCandidate> = Vec::with_capacity(group.len());
+        for ((cand, _), cd0) in group.iter().zip(basebands.iter_mut()) {
+            let r = fine_refine_3stage(&cd0.cd0, cand.dt_sec);
+            cd0.shift_freq(r.delf_hz);
+            refined.push(SyncCandidate {
+                freq_hz: cand.freq_hz + r.delf_hz,
+                dt_sec: r.dt_sec,
+                score: cand.score,
+            });
+        }
+        let found = process_candidates_with_ap(
+            &[0i16; 0][..],
+            refined.iter().map(|c| (c, None)),
+            depth,
+            DEFAULT_Q_THRESH,
+            bp_max_iter,
+            &mut cs_scratch,
+            &mut bp_scratch,
+            |cs, cand, mask| {
+                // the baseband of this candidate: the group is small, so look it up
+                if let Some(i) = refined
+                    .iter()
+                    .position(|c| c.freq_hz == cand.freq_hz && c.dt_sec == cand.dt_sec)
+                {
+                    fill_from_cd0(filters, cs, &basebands[i], cand.dt_sec, mask);
+                }
+            },
+            None,
+            DecodeStrictness::Normal,
+            None,
+            PassCtx::FIRST,
+        );
+        // one row per message across the groups, the first found
+        for r in found {
+            if !out.iter().any(|o| o.message77() == r.message77()) {
+                out.push(r);
+            }
+        }
+    }
+    out
 }
 
 /// Variant of [`process_candidates`] used by embedded fixed-point
@@ -1547,7 +1791,7 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
         crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
     process_candidates_with_ap(
         audio,
-        &cands,
+        cands.iter().map(|(c, cs, _)| (c, Some(&**cs))),
         depth,
         q_thresh,
         bp_max_iter,
@@ -1610,7 +1854,7 @@ where
         crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
     process_candidates_with_ap(
         audio,
-        &cands,
+        cands.iter().map(|(c, cs, _)| (c, Some(&**cs))),
         depth,
         q_thresh,
         bp_max_iter,
@@ -1635,9 +1879,9 @@ where
 /// coarse_sync. AP-aware: pass `ap_hint = None` for the legacy
 /// non-AP behaviour (bit-identical to the pre-0.6.1 shape).
 #[allow(clippy::too_many_arguments)]
-fn process_candidates_with_ap<S: AudioSample, F>(
+fn process_candidates_with_ap<'a, S: AudioSample, F>(
     _audio: &[S],
-    cands: &[RefinedCandidate],
+    cands: impl IntoIterator<Item = (&'a SyncCandidate, Option<&'a [[Cmplx<f32>; 8]; 79]>)>,
     depth: DecodeDepth,
     q_thresh: u32,
     bp_max_iter: u32,
@@ -1667,7 +1911,7 @@ where
     // scratch's actual lifetime). Eliminates the ~12 KB-per-BP-call
     // `tlsf_malloc` traffic that dominated stage-3 non-DFT cost on
     // Core2 (~50–100 ms / qso). See `mfsk_core::fec::ldpc::bp::BpScratch`.
-    for (cand, cs_box, _q_block0) in cands.iter() {
+    for (cand, block0) in cands {
         // Stage cs into the caller's scratch (typically internal DRAM
         // on Xtensa) so the LLR / BP / sync_quality hot loops below
         // read from fast memory. Cost: ~60 µs (5 KB at ~80 MB/s OCT
@@ -1676,7 +1920,14 @@ where
         // of `cs_box`, enabling auto-AP to reuse the same refined
         // candidates across multiple callsigns without per-candidate
         // Box reallocation.
-        *cs_scratch = **cs_box;
+        match block0 {
+            Some(cs) => *cs_scratch = *cs,
+            // Pass 2 kept only the candidate (the low-memory profile): block 0 is computed again, by
+            // the same fill it was computed with, so the spectrum below is the same to the bit. The
+            // other 72 symbols are filled by the two calls that follow, so nothing of the previous
+            // candidate survives in the scratch.
+            None => fill(cs_scratch, cand, SymMask::SyncBlock0),
+        }
         // Two-step fill: sync blocks first, gate by full sync_quality,
         // then fill data symbols only for survivors. Saves the 58 ×
         // 8 = 464 data-symbol DFTs on every candidate that fails the
@@ -1960,7 +2211,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // largest magnitude. Same gate as variant c — it is only worth its
     // cost when the deeper variants are. Pass id 4 (BP variants are 0..3,
     // the AP passes start at 5).
-    #[cfg(feature = "fft-rustfft")]
+    #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
     let mut llre_f32: Option<[f32; LDPC_N]> = None;
     if accepted.is_none() && run_c {
         let arr: [LlrT; LDPC_N] =
@@ -1971,7 +2222,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
         {
             accepted = Some((bp, 4));
         }
-        #[cfg(feature = "fft-rustfft")]
+        #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
         {
             let mut e = [0f32; LDPC_N];
             for (o, v) in e.iter_mut().zip(arr.iter()) {
@@ -2004,7 +2255,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // that a synthetic-LLR microbenchmark (which calls `osd_setup`/
     // `osd_npre1_pass` directly, bypassing this recompute entirely)
     // couldn't see.
-    #[cfg(feature = "fft-rustfft")]
+    #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
     let prefetched_llr: Option<super::super::llr::LlrSet<f32>> =
         if accepted.is_none() && depth.osd && q > 6 {
             #[cfg(not(feature = "fixed-point"))]
@@ -2038,7 +2289,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
         } else {
             None
         };
-    #[cfg(not(feature = "fft-rustfft"))]
+    #[cfg(not(any(feature = "fft-rustfft", feature = "osd")))]
     let prefetched_llr: Option<super::super::llr::LlrSet<f32>> = None;
 
     // Step 3: OSD fallback (sync_quality gated; only when `depth.osd`).
@@ -2050,7 +2301,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // embedded — see its doc comment in `ft8::decode`), so the call
     // is gated the same way here rather than relying on `depth.osd`
     // alone to keep it unreachable.
-    #[cfg(feature = "fft-rustfft")]
+    #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
     if accepted.is_none() {
         #[cfg(feature = "std")]
         if depth.osd && q > 6 {
@@ -2292,7 +2543,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
         freq_hz: cand.freq_hz,
         // ft8b.f90 `xdt=(ibest-1)*dt2`: what is reported, and where the signal is subtracted from.
         // `refined_dt` is in `ibest` convention where a fine sync ran (the host path:
-        // `fine_refine_3stage` / `fine_sync_12k`). Without one (the embedded driver, whose
+        // `fine_refine_3stage`). Without one (the embedded driver, whose
         // `fine_refine_pass1` is a no-op) it is the coarse grid DT, and the -5 ms is applied to it
         // as well: a deliberate simplification, 5 ms against a 40 ms grid, kept so that every
         // reader of `dt_sec` (`xsnr2_db_simple`, `compute_xsig_wsjtx`) compensates the same way.

@@ -44,7 +44,7 @@
 //! split from #192). FT8's `q >= 18` split, which that gate's fallback
 //! branch used to be checked against, is gone (#452).
 
-#![cfg(feature = "fft-rustfft")]
+#![cfg(any(feature = "fft-rustfft", feature = "osd"))]
 
 use super::super::decode::{DecodeDepth, DecodeStrictness};
 use crate::engine::scalar::Cmplx;

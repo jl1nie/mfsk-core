@@ -17,8 +17,12 @@ use alloc::vec::Vec;
 // needed with no std in the graph; a dep linking std (the dev-only rustfft) makes f32's own methods shadow it
 use num_traits::Float;
 
-use super::super::params::{COSTAS, COSTAS_POS, NTONES};
-use super::spectrogram::{CoarseAcc, Spectrogram};
+use super::super::params::{COSTAS, COSTAS_POS, NSPS, NTONES};
+use super::source::{AudioSource, SliceSource};
+use super::spectrogram::{
+    CoarseAcc, Spectrogram, compute_spectrogram_bins_src, spectrogram_gain, spectrogram_n_freq,
+};
+use super::types::AudioSample;
 use super::types::{
     NFFT_SPEC, NSSY, NSTEP, SAMPLE_RATE_HZ, TONE_SPACING_HZ, TX_START_OFFSET_S, ratio_eps,
     sync_lag_s,
@@ -477,6 +481,25 @@ fn fill_allsum_row(spec: &Spectrogram, ia: usize, n_freq: usize, m: usize, dst: 
     }
 }
 
+/// One carrier's allsum row for the score loop: `dst[m] = Σ_{k=0..NTONES-2} spec[i_carrier + 2k, m]` for
+/// each `m` in `needed_m` (the other cells are not read, and keep whatever they held), bins clamped to the
+/// top row as [`fill_allsum_row`] clamps them.
+fn fill_allsum_carrier(
+    spec: &Spectrogram,
+    i_carrier: usize,
+    needed_m: &[usize],
+    dst: &mut [CoarseAcc],
+) {
+    let upper = spec.n_freq - 1;
+    for &m in needed_m {
+        let mut s = CoarseAcc::default();
+        for k in 0..(NTONES - 1) {
+            s += spec.power_acc((i_carrier + 2 * k).min(upper), m);
+        }
+        dst[m] = s;
+    }
+}
+
 /// Build the 7-tone-stride-2 allsum for the carrier range `[ia..=ib]`
 /// into `dst` (`n_freq * spec.n_time`, layout `dst[fi * n_time + m]`).
 ///
@@ -499,16 +522,27 @@ fn fill_coarse_allsum(
     }
 }
 
-fn coarse_sync_inner(
-    spec: &Spectrogram,
+/// The slot-wide constants of one coarse search: the time grid (`jstrt`, `jz`) and the carrier-bin range
+/// `ia..=ib` it covers, in full-spectrogram bins. `None` when the lag window or the band is empty.
+struct SyncGrid {
+    df: f32,
+    tstep: f32,
+    jstrt: i32,
+    jz: i32,
+    tone_step_bins: f32,
+    ia: usize,
+    ib: usize,
+    /// Bins above a carrier that its top tone reads (a carrier `i` reads up to `i + max_tone_off - 1`).
+    max_tone_off: usize,
+}
+
+fn sync_grid(
+    n_time: usize,
+    spec_n_freq: usize,
     freq_min: f32,
     freq_max: f32,
-    sync_min: f32,
-    max_cand: usize,
-    external_allsum: Option<&[CoarseAcc]>,
     sync_lag_override_s: Option<f32>,
-    partial: PartialBlock2,
-) -> Vec<SyncCandidate> {
+) -> Option<SyncGrid> {
     let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
     let tstep = NSTEP as f32 / SAMPLE_RATE_HZ;
     // `sync8.f90`: `jstrt=0.5/tstep` assigns a real to an integer, which
@@ -538,31 +572,177 @@ fn coarse_sync_inner(
         (TX_START_OFFSET_S / tstep).round() as i32,
         (sync_lag_override_s.unwrap_or_else(sync_lag_s) / tstep).round() as i32,
     );
-    let Some(jz) = bounded_sync_lag_steps(spec.n_time, jstrt, requested_jz) else {
-        return Vec::new();
-    };
+    let jz = bounded_sync_lag_steps(n_time, jstrt, requested_jz)?;
     let tone_step_bins = TONE_SPACING_HZ / df;
 
     // Carrier-bin search range. Reserve room above the carrier for the
     // top tone (round(7 * tone_step_bins)).
     let ia = (freq_min / df).round() as usize;
     let max_tone_off = ((NTONES - 1) as f32 * tone_step_bins).ceil() as usize + 1;
-    let nh1 = spec.n_freq;
+    let nh1 = spec_n_freq;
     let ib_unbounded = (freq_max / df).round() as usize;
     let ib = ib_unbounded.min(nh1.saturating_sub(max_tone_off));
     if ib < ia {
-        return Vec::new();
+        return None;
     }
+    Some(SyncGrid {
+        df,
+        tstep,
+        jstrt,
+        jz,
+        tone_step_bins,
+        ia,
+        ib,
+        max_tone_off,
+    })
+}
+
+/// What the score loop keeps of each carrier: its best lag in the fixed `±MLAG` window (primary) and in
+/// the whole window (secondary), the score there and the parabola's offset. Everything the candidate
+/// selection needs, a few floats per carrier instead of the carrier's whole lag row.
+#[derive(Default)]
+struct CarrierPeaks {
+    red_primary: Vec<f32>,
+    jpeak_primary: Vec<i32>,
+    quanta_primary: Vec<f32>,
+    red_secondary: Vec<f32>,
+    jpeak_secondary: Vec<i32>,
+    quanta_secondary: Vec<f32>,
+    /// [`spec_hard_sync`] at each carrier's primary / secondary peak; empty unless asked for
+    /// (`score_carriers`' `hard_sync`).
+    nsync_primary: Vec<u8>,
+    nsync_secondary: Vec<u8>,
+}
+
+impl CarrierPeaks {
+    fn append(&mut self, mut o: CarrierPeaks) {
+        self.red_primary.append(&mut o.red_primary);
+        self.jpeak_primary.append(&mut o.jpeak_primary);
+        self.quanta_primary.append(&mut o.quanta_primary);
+        self.red_secondary.append(&mut o.red_secondary);
+        self.jpeak_secondary.append(&mut o.jpeak_secondary);
+        self.quanta_secondary.append(&mut o.quanta_secondary);
+        self.nsync_primary.append(&mut o.nsync_primary);
+        self.nsync_secondary.append(&mut o.nsync_secondary);
+    }
+}
+
+/// How many of the 21 Costas symbols of a candidate at tone-0 bin `bin0` (of `spec`) and start `dt_sec` have
+/// their strongest of the 8 tone bins on the expected tone: a hard-decision sync count read from the
+/// spectrogram alone, with no DFT and no audio. A real signal scores far above anything else on the list
+/// (the ghosts of a strong signal, whose tones only partly line up, score low): on `qso3_busy.wav`'s 300
+/// best coarse candidates 10 or more of 21 is 20 real signals and 4 others.
+///
+/// **A deliberate divergence from WSJT-X**, which has no such gate before `ft8b`'s downsample and its own
+/// `nsync` (which is the same count on the complex symbol spectra, past `ft8b.f90`'s `nsync <= 6` bail-out).
+/// This is the cheap stand-in for ranking a long list without running the per-candidate DFTs on all of it, as
+/// `ft8_lib`'s `ft8_find_sync` does with its hard-sync count. Used only by [`coarse_sync_gated`].
+fn spec_hard_sync(spec: &Spectrogram, bin0: usize, dt_sec: f32, tstep: f32) -> u8 {
+    let mut ok = 0u8;
+    for &start in COSTAS_POS.iter() {
+        for (n, &expect) in COSTAS.iter().enumerate() {
+            let sym = (start + n) as f32;
+            let t = TX_START_OFFSET_S + dt_sec + sym * (NSPS as f32 / SAMPLE_RATE_HZ);
+            let j = (t / tstep).round();
+            if j < 0.0 || j as usize >= spec.n_time {
+                continue;
+            }
+            let j = j as usize;
+            let mut best = 0usize;
+            let mut best_p = f32::NEG_INFINITY;
+            for tone in 0..NTONES {
+                // i32 under `fixed-point` (`CoarseAcc`), f32 otherwise
+                #[allow(clippy::unnecessary_cast)]
+                let v = spec.power_acc(bin0 + 2 * tone, j) as f32;
+                if v > best_p {
+                    best_p = v;
+                    best = tone;
+                }
+            }
+            if best == expect {
+                ok += 1;
+            }
+        }
+    }
+    ok
+}
+
+/// Score the carriers `ia..=ib` (bins **of `spec`**) at every lag. A carrier's score reads only its own
+/// bins, `i..=i + 14`, so `spec` may be a band of the full spectrogram (`compute_spectrogram_bins`) that
+/// holds those and nothing else: the result is the same as from the full one.
+fn score_carriers(
+    spec: &Spectrogram,
+    ia: usize,
+    ib: usize,
+    g: &SyncGrid,
+    external_allsum: Option<&[CoarseAcc]>,
+    partial: PartialBlock2,
+    hard_sync: bool,
+) -> CarrierPeaks {
+    let (jstrt, jz, tone_step_bins) = (g.jstrt, g.jz, g.tone_step_bins);
     let n_freq = ib - ia + 1;
     let n_lag = (2 * jz + 1) as usize;
-    let mut sync2d = vec![0.0f32; n_freq * n_lag];
-    let idx = |fi: usize, lag: i32| fi * n_lag + (lag + jz) as usize;
+    // One carrier's scores over every lag, reused. The whole `n_freq x n_lag` grid used to be kept (226 KB
+    // fixed-point, 449 KB f32) for two readers only: the per-carrier peak search and the parabola on the
+    // peak's two neighbours. Both are done per carrier right after its row is scored, with the same
+    // arithmetic in the same order, so what leaves the loop is bit-identical and the grid is gone.
+    let mut sync_row = vec![0.0f32; n_lag];
+    let idx = |lag: i32| (lag + jz) as usize;
+    // `sync8.f90`'s `mlag`: the fixed half-window of the primary channel,
+    // in coarse-sync steps (NSTEP = NSPS/4 = 0.04 s). 10 (±0.40 s) through
+    // WSJT-X 2.7, 13 (±0.52 s) from 3.0 (read at the `v2.7.0` / `v3.0.0`
+    // tags).
+    //
+    // **13 since #439**, as upstream. It was left at 10 in #438: 13 was a
+    // no-op on the f32 tier-C sweep (800 trials, byte-identical) and cost one
+    // hit on the fixed-point ship config (`ft8_qso3_apoff_recall` 12/20 →
+    // 11/20, because a wider primary window reorders the 15 candidates that
+    // config keeps).
+    //
+    // Re-measured with the rest of the 3.x port in, `qso3_busy`, fixed-point
+    // ship shape (`decode_block`, `EMBEDDED`, sync_min 1.3), hits of the 20
+    // known signals by `max_cand`:
+    //
+    // | max_cand | 10-12 | 15-20 | 25-30 | 40 and up |
+    // |---|---|---|---|---|
+    // | `MLAG` 10 | 11 | 12 | 15 | 16 |
+    // | `MLAG` 13 | 11 | 11 | 14 | 16 |
+    //
+    // One signal fewer at every cap from 15 to 30, the range the ship config
+    // can use; equal from 40 up, where upstream's `MAXCAND` of 1000 lives. On
+    // the busy-band corpus (DT -0.5..+1.5 s) 13 is neutral to slightly better
+    // (.sic_early() unexpected decodes 12 -> 9, recall +0.1 pt) and the ft8
+    // sweeps are unchanged. Adopted because this crate follows the reference
+    // and nothing measured says the wider window is worse; the ship floor in
+    // `ft8_qso3_apoff_recall` is 11 for it.
+    const MLAG: i32 = 13;
+
+    // Two independent noise-floor channels, matching WSJT-X `sync8.f90`
+    // exactly (issue #280). Collapsing these into a single
+    // `±jz`-dependent channel — the pre-#280 shape of this function —
+    // let the noise floor `base` scale with the requested lag window:
+    // widening `MFSK_SYNC_LAG_S` toward WSJT-X's own `±2.5s` inflated
+    // the *only* floor available here (per-bin max over a wider window
+    // has a higher expected value under basic extreme-value
+    // statistics), silently pushing weak real decodes below `sync_min`
+    // even though WSJT-X's actual primary channel — anchored to a
+    // fixed `mlag` (10 through 2.7, 13 from 3.0; see `MLAG`) regardless of
+    // `JZ` — would still have caught
+    // them. `red_primary`/`base_primary` restores that JZ-independent
+    // anchor; `red_secondary`/`base_secondary` (the old sole channel)
+    // now plays its correct WSJT-X role: a supplementary second
+    // candidate per bin, contributed only when its peak lag disagrees
+    // with the primary's.
+    let primary_half = MLAG.min(jz);
+    let mut red_primary = vec![0.0f32; n_freq];
+    let mut jpeak_primary = vec![0i32; n_freq];
+    let mut quanta_primary = vec![0.0f32; n_freq];
+    let mut red_secondary = vec![0.0f32; n_freq];
+    let mut jpeak_secondary = vec![0i32; n_freq];
+    let mut quanta_secondary = vec![0.0f32; n_freq];
+    let mut nsync_primary: Vec<u8> = Vec::new();
+    let mut nsync_secondary: Vec<u8> = Vec::new();
     let ratio_eps = ratio_eps();
-    #[cfg(all(
-        feature = "profile-coarse",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
-    ))]
-    let t_setup = std::time::Instant::now();
 
     // **Single-bin tone gather**. NFFT=3840 → tone_step_bins = 2.0
     // exactly, so the 8 FT8 tones sit on integer bins {0, 2, 4, …, 14}
@@ -625,46 +805,28 @@ fn coarse_sync_inner(
         (0..spec.n_time).filter(|&m| mark[m]).collect()
     };
 
-    // Pre-compute `Σ_{k=0..NTONES-1} spec[i_carrier + 2*k, m]` for every
-    // (fi, m ∈ needed_m). NFFT=3840 → tone_step_bins=2.0 exactly →
-    // 8-bin every-other gather per carrier (matches WSJT-X `sync8.f90`'s
-    // single-bin `t0a` accumulator). No sliding-window reuse since
-    // adjacent fi share zero bins under this pattern.
+    // `Σ_{k=0..NTONES-2} spec[i_carrier + 2*k, m]` (the seven Costas tones; tone 7 is data-only, as
+    // `sync8.f90:66`) for every `m` the score loop will read, **one carrier at a time**.
     //
-    // Phase-E2: caller can pass a pre-built allsum (built incrementally
-    // during slot capture by stage1_inc). When provided, skip the
-    // precompute entirely. Otherwise build it inline.
-    let owned_allsum: Vec<CoarseAcc>;
-    let allsum: &[CoarseAcc] = if let Some(ext) = external_allsum {
+    // This used to be built for all carriers first (`n_freq * n_time` cells, 660 KB fixed-point, 1.33 MB
+    // f32, a fifth of the slot's working set) although the score loop below is carrier-outer and reads
+    // one carrier's row at a time. The row is now filled just before it is read, into a buffer of
+    // `n_time` cells. The values are the ones the full table held: f32 was already a direct per-cell
+    // sum in this order, and the fixed-point sliding window it used is an integer identity of the direct
+    // sum (same clamp at both edges), so the scores are bit-identical.
+    //
+    // Phase-E2: a caller can still pass a pre-built table (built incrementally during slot capture by
+    // `stage1_inc`); it is then read as before and nothing is computed here.
+    let mut own_row: Vec<CoarseAcc> = Vec::new();
+    if let Some(ext) = external_allsum {
         debug_assert_eq!(
             ext.len(),
             n_freq * spec.n_time,
             "external allsum length mismatch (expected n_freq * spec.n_time)"
         );
-        ext
     } else {
-        owned_allsum = {
-            // Sum 7 Costas-tone bins (k=0..NTONES-1; tone 7 is data-only,
-            // never a Costas position). Matches WSJT-X `sync8.f90:66` and
-            // the public `fill_coarse_allsum` helper. Only populates
-            // `needed_m` cells — ~60 % of spec.n_time — to save ~40 % of
-            // allsum work; the remaining cells stay at default (0/0.0) and
-            // are never read by the score loop.
-            // Uses the stride-2 sliding window: allsum[fi] = allsum[fi-2]
-            // + row[add] - row[drop], 7× fewer ops per fi after init.
-            let mut buf = vec![CoarseAcc::default(); n_freq * spec.n_time];
-            for &m in &needed_m {
-                fill_allsum_row(spec, ia, n_freq, m, &mut buf);
-            }
-            buf
-        };
-        &owned_allsum
-    };
-    #[cfg(all(
-        feature = "profile-coarse",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
-    ))]
-    let t_allsum = std::time::Instant::now();
+        own_row = vec![CoarseAcc::default(); spec.n_time];
+    }
 
     // Three identical Costas arrays at symbol positions 0, 36, 72.
     //
@@ -689,7 +851,13 @@ fn coarse_sync_inner(
         for n in 0..COSTAS.len() {
             tbin_lo_arr[n] = i_carrier + costas_off[n];
         }
-        let allsum_row = &allsum[fi * n_time..(fi + 1) * n_time];
+        let allsum_row: &[CoarseAcc] = match external_allsum {
+            Some(ext) => &ext[fi * n_time..(fi + 1) * n_time],
+            None => {
+                fill_allsum_carrier(spec, ia + fi, &needed_m, &mut own_row);
+                &own_row
+            }
+        };
         for lag in -jz..=jz {
             let mut t_blocks: [CoarseAcc; 3] = [CoarseAcc::default(); 3];
             let mut t0_blocks: [CoarseAcc; 3] = [CoarseAcc::default(); 3];
@@ -767,7 +935,7 @@ fn coarse_sync_inner(
                 }
             };
             if matches!(partial, PartialBlock2::Gate { .. }) && n_cov2 < COSTAS.len() {
-                sync2d[idx(fi, lag)] = f32::NEG_INFINITY;
+                sync_row[idx(lag)] = f32::NEG_INFINITY;
                 continue;
             }
             for n in 0..bk2_n_end {
@@ -805,72 +973,17 @@ fn coarse_sync_inner(
             let t0_tail_ref = (t0_tail_f - t_tail_f) / (NTONES as f32 - 2.0);
             let sync_tail = t_tail_f / (t0_tail_ref + ratio_eps);
 
-            sync2d[idx(fi, lag)] = sync_all.max(sync_tail);
+            sync_row[idx(lag)] = sync_all.max(sync_tail);
         }
-    }
-    #[cfg(all(
-        feature = "profile-coarse",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
-    ))]
-    let t_score = std::time::Instant::now();
 
-    // `sync8.f90`'s `mlag`: the fixed half-window of the primary channel,
-    // in coarse-sync steps (NSTEP = NSPS/4 = 0.04 s). 10 (±0.40 s) through
-    // WSJT-X 2.7, 13 (±0.52 s) from 3.0 (read at the `v2.7.0` / `v3.0.0`
-    // tags).
-    //
-    // **13 since #439**, as upstream. It was left at 10 in #438: 13 was a
-    // no-op on the f32 tier-C sweep (800 trials, byte-identical) and cost one
-    // hit on the fixed-point ship config (`ft8_qso3_apoff_recall` 12/20 →
-    // 11/20, because a wider primary window reorders the 15 candidates that
-    // config keeps).
-    //
-    // Re-measured with the rest of the 3.x port in, `qso3_busy`, fixed-point
-    // ship shape (`decode_block`, `EMBEDDED`, sync_min 1.3), hits of the 20
-    // known signals by `max_cand`:
-    //
-    // | max_cand | 10-12 | 15-20 | 25-30 | 40 and up |
-    // |---|---|---|---|---|
-    // | `MLAG` 10 | 11 | 12 | 15 | 16 |
-    // | `MLAG` 13 | 11 | 11 | 14 | 16 |
-    //
-    // One signal fewer at every cap from 15 to 30, the range the ship config
-    // can use; equal from 40 up, where upstream's `MAXCAND` of 1000 lives. On
-    // the busy-band corpus (DT -0.5..+1.5 s) 13 is neutral to slightly better
-    // (.sic_early() unexpected decodes 12 -> 9, recall +0.1 pt) and the ft8
-    // sweeps are unchanged. Adopted because this crate follows the reference
-    // and nothing measured says the wider window is worse; the ship floor in
-    // `ft8_qso3_apoff_recall` is 11 for it.
-    const MLAG: i32 = 13;
-
-    // Two independent noise-floor channels, matching WSJT-X `sync8.f90`
-    // exactly (issue #280). Collapsing these into a single
-    // `±jz`-dependent channel — the pre-#280 shape of this function —
-    // let the noise floor `base` scale with the requested lag window:
-    // widening `MFSK_SYNC_LAG_S` toward WSJT-X's own `±2.5s` inflated
-    // the *only* floor available here (per-bin max over a wider window
-    // has a higher expected value under basic extreme-value
-    // statistics), silently pushing weak real decodes below `sync_min`
-    // even though WSJT-X's actual primary channel — anchored to a
-    // fixed `mlag` (10 through 2.7, 13 from 3.0; see `MLAG`) regardless of
-    // `JZ` — would still have caught
-    // them. `red_primary`/`base_primary` restores that JZ-independent
-    // anchor; `red_secondary`/`base_secondary` (the old sole channel)
-    // now plays its correct WSJT-X role: a supplementary second
-    // candidate per bin, contributed only when its peak lag disagrees
-    // with the primary's.
-    let primary_half = MLAG.min(jz);
-    let mut red_primary = vec![0.0f32; n_freq];
-    let mut jpeak_primary = vec![0i32; n_freq];
-    let mut red_secondary = vec![0.0f32; n_freq];
-    let mut jpeak_secondary = vec![0i32; n_freq];
-    for fi in 0..n_freq {
+        // This carrier's peaks: `-MLAG..=MLAG` (primary) and the whole window (secondary), first maximum
+        // wins; then the parabola on each peak's neighbours (`sync8.f90`'s `peakup`).
         let mut best_p = f32::NEG_INFINITY;
         let mut lag_p = -primary_half;
         let mut best_s = f32::NEG_INFINITY;
         let mut lag_s = -jz;
         for lag in -jz..=jz {
-            let v = sync2d[idx(fi, lag)];
+            let v = sync_row[idx(lag)];
             if v > best_s {
                 best_s = v;
                 lag_s = lag;
@@ -880,19 +993,88 @@ fn coarse_sync_inner(
                 lag_p = lag;
             }
         }
+        let quanta_at = |lag: i32| -> f32 {
+            if lag > -jz && lag < jz {
+                let y_lo = sync_row[idx(lag - 1)];
+                let y_mi = sync_row[idx(lag)];
+                let y_hi = sync_row[idx(lag + 1)];
+                let denom = y_lo - 2.0 * y_mi + y_hi;
+                if denom.abs() > f32::EPSILON {
+                    (0.5 * (y_lo - y_hi) / denom).clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            }
+        };
         red_primary[fi] = best_p;
         jpeak_primary[fi] = lag_p;
+        quanta_primary[fi] = quanta_at(lag_p);
         red_secondary[fi] = best_s;
         jpeak_secondary[fi] = lag_s;
+        quanta_secondary[fi] = quanta_at(lag_s);
+        if hard_sync {
+            // the candidate's start as `select_candidates` reports it: `(lag + parabola - 0.5) * tstep`
+            let at = |lag: i32, q: f32| {
+                spec_hard_sync(spec, ia + fi, (lag as f32 + q - 0.5) * g.tstep, g.tstep)
+            };
+            let ns_p = at(lag_p, quanta_primary[fi]);
+            nsync_primary.push(ns_p);
+            nsync_secondary.push(if lag_s == lag_p {
+                ns_p
+            } else {
+                at(lag_s, quanta_secondary[fi])
+            });
+        }
     }
+    CarrierPeaks {
+        red_primary,
+        jpeak_primary,
+        quanta_primary,
+        red_secondary,
+        jpeak_secondary,
+        quanta_secondary,
+        nsync_primary,
+        nsync_secondary,
+    }
+}
 
-    // 40th-percentile noise floor: `select_nth_unstable_by` is O(N)
-    // average vs a full sort's O(N log N). Pivot ordering inside the
-    // percentile isn't load-bearing (downstream only uses the selected
-    // element as a normaliser), so unstable selection is fine.
-    // `unwrap_or(Ordering::Equal)` for NaN safety — matches the same
-    // pattern at `process_candidates.rs` xsnr2_db_simple median.
-    // Gemini PR #79 + #101 review.
+/// Rank the carriers' peaks: the 40th-percentile noise floor over **all** carriers, both channels, the
+/// 4 Hz / 40 ms dedupe, the `max_cand` cut.
+fn select_candidates(
+    p: &CarrierPeaks,
+    g: &SyncGrid,
+    sync_min: f32,
+    max_cand: usize,
+) -> Vec<SyncCandidate> {
+    select_candidates_with_sync(p, g, sync_min, max_cand)
+        .into_iter()
+        .map(|c| c.0)
+        .collect()
+}
+
+/// [`select_candidates`] with each candidate's [`spec_hard_sync`] count (0 where `p` holds none).
+fn select_candidates_with_sync(
+    p: &CarrierPeaks,
+    g: &SyncGrid,
+    sync_min: f32,
+    max_cand: usize,
+) -> Vec<(SyncCandidate, u8)> {
+    let n_freq = p.red_primary.len();
+    let nsync_at = |fi: usize, primary: bool| -> u8 {
+        let v = if primary {
+            &p.nsync_primary
+        } else {
+            &p.nsync_secondary
+        };
+        v.get(fi).copied().unwrap_or(0)
+    };
+    let (df, tstep, ia) = (g.df, g.tstep, g.ia);
+    let (red_primary, jpeak_primary, quanta_primary) =
+        (&p.red_primary, &p.jpeak_primary, &p.quanta_primary);
+    let (red_secondary, jpeak_secondary, quanta_secondary) =
+        (&p.red_secondary, &p.jpeak_secondary, &p.quanta_secondary);
     let percentile_floor = |red: &[f32]| -> f32 {
         let mut sorted = red.to_vec();
         let pct_idx = ((0.40 * n_freq as f32) as usize).min(n_freq - 1);
@@ -901,38 +1083,13 @@ fn coarse_sync_inner(
         });
         sorted[pct_idx].max(f32::EPSILON)
     };
-    let base_primary = percentile_floor(&red_primary);
-    let base_secondary = percentile_floor(&red_secondary);
+    let base_primary = percentile_floor(red_primary);
+    let base_secondary = percentile_floor(red_secondary);
 
     // Parabolic sub-quantum interpolation around a chosen peak lag —
     // shared by both channels. Only valid strictly inside the searched
     // window (needs both neighbours); falls back to 0 at the edge.
-    let dt_quanta_at = |fi: usize, lag: i32| -> f32 {
-        if lag > -jz && lag < jz {
-            let y_lo = sync2d[idx(fi, lag - 1)];
-            let y_mi = sync2d[idx(fi, lag)];
-            let y_hi = sync2d[idx(fi, lag + 1)];
-            let denom = y_lo - 2.0 * y_mi + y_hi;
-            if denom.abs() > f32::EPSILON {
-                (0.5 * (y_lo - y_hi) / denom).clamp(-1.0, 1.0)
-            } else {
-                0.0
-            }
-        } else {
-            0.0
-        }
-    };
-
-    // Each candidate carries the DT of its integer lag, `(lag-0.5)*tstep`
-    // as `sync8.f90:123` reports it, next to the interpolated `dt_sec`.
-    // With a list of `FAITHFUL_DEDUPE_MIN_CAND` or more the dedupe below
-    // compares the integer-lag DT, as `sync8.f90:143` does (a lean list
-    // keeps comparing the interpolated one, see the const): with the interpolated one a weak candidate 3 Hz from a strong
-    // signal at a 0.04 s lag step (`dt` 0.94 vs 0.90 in `jt9`, 0.931 here)
-    // fell inside the 0.04 s window and was dropped, and with it the
-    // second and third decode (and subtraction) of that signal
-    // (`191111_110615`, 903.125 / 909.375 Hz beside 906.25 Hz; #721).
-    let mut cands: Vec<(SyncCandidate, f32)> = Vec::new();
+    let mut cands: Vec<(SyncCandidate, f32, u8)> = Vec::new();
     for fi in 0..n_freq {
         let i_carrier = ia + fi;
         let freq_hz = i_carrier as f32 * df;
@@ -940,7 +1097,7 @@ fn coarse_sync_inner(
         let lag_p = jpeak_primary[fi];
         let norm_p = red_primary[fi] / base_primary;
         if norm_p.is_finite() && norm_p >= sync_min {
-            let dt_lag = lag_p as f32 + dt_quanta_at(fi, lag_p);
+            let dt_lag = lag_p as f32 + quanta_primary[fi];
             cands.push((
                 SyncCandidate {
                     freq_hz,
@@ -948,6 +1105,7 @@ fn coarse_sync_inner(
                     score: norm_p,
                 },
                 (lag_p as f32 - 0.5) * tstep,
+                nsync_at(fi, true),
             ));
         }
 
@@ -958,7 +1116,7 @@ fn coarse_sync_inner(
         if lag_s != lag_p {
             let norm_s = red_secondary[fi] / base_secondary;
             if norm_s.is_finite() && norm_s >= sync_min {
-                let dt_lag = lag_s as f32 + dt_quanta_at(fi, lag_s);
+                let dt_lag = lag_s as f32 + quanta_secondary[fi];
                 cands.push((
                     SyncCandidate {
                         freq_hz,
@@ -966,6 +1124,7 @@ fn coarse_sync_inner(
                         score: norm_s,
                     },
                     (lag_s as f32 - 0.5) * tstep,
+                    nsync_at(fi, false),
                 ));
             }
         }
@@ -986,9 +1145,9 @@ fn coarse_sync_inner(
     // delta for the ~150 us host (~150 ms Core2) saving.
     cands.sort_by(|a, b| b.0.score.partial_cmp(&a.0.score).unwrap());
     let lag_dedupe = max_cand >= FAITHFUL_DEDUPE_MIN_CAND;
-    let mut out: Vec<SyncCandidate> = Vec::with_capacity(max_cand);
+    let mut out: Vec<(SyncCandidate, u8)> = Vec::with_capacity(max_cand);
     let mut out_raw: Vec<(f32, f32)> = Vec::with_capacity(max_cand);
-    for (c, raw_dt) in cands {
+    for (c, raw_dt, ns) in cands {
         if c.score < sync_min {
             break;
         }
@@ -1000,27 +1159,169 @@ fn coarse_sync_inner(
             continue;
         }
         out_raw.push((c.freq_hz, key_dt));
-        out.push(c);
+        out.push((c, ns));
         if out.len() >= max_cand {
             break;
         }
     }
-    let cands = out;
-    #[cfg(all(
-        feature = "profile-coarse",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
-    ))]
-    {
-        let t_end = std::time::Instant::now();
-        let allsum_us = (t_allsum - t_setup).as_micros();
-        let score_us = (t_score - t_allsum).as_micros();
-        let post_us = (t_end - t_score).as_micros();
-        let total_us = (t_end - t_setup).as_micros();
-        eprintln!(
-            "[coarse_sync prof] n_freq={n_freq} n_lag={n_lag}  allsum={allsum_us} score={score_us} dedupe+sort={post_us}  total={total_us} us"
-        );
+    out
+}
+
+fn coarse_sync_inner(
+    spec: &Spectrogram,
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    max_cand: usize,
+    external_allsum: Option<&[CoarseAcc]>,
+    sync_lag_override_s: Option<f32>,
+    partial: PartialBlock2,
+) -> Vec<SyncCandidate> {
+    let Some(g) = sync_grid(
+        spec.n_time,
+        spec.n_freq,
+        freq_min,
+        freq_max,
+        sync_lag_override_s,
+    ) else {
+        return Vec::new();
+    };
+    let peaks = score_carriers(spec, g.ia, g.ib, &g, external_allsum, partial, false);
+    select_candidates(&peaks, &g, sync_min, max_cand)
+}
+
+/// [`coarse_sync`] from the audio, **one band of carriers at a time**: each band's spectrogram
+/// (`compute_spectrogram_bins`) holds the band's carriers and the bins their tones read, and is dropped
+/// before the next is built, so the spectrogram's memory is that of one band (`1 / n_bands`, plus 14 bins)
+/// instead of the whole carrier range. The cost is the frame FFTs, which run once per band.
+///
+/// Returns exactly what `coarse_sync(&compute_spectrogram(audio, freq_max), ..)` returns, bit for bit: a
+/// cell of a band is the cell of the full spectrogram, a carrier's score reads only its own bins, and the
+/// per-carrier peaks of all bands are ranked together (the noise floor is a percentile over every
+/// carrier). `n_bands` is clamped to `1..=carriers`.
+pub fn coarse_sync_banded<S: AudioSample>(
+    audio: &[S],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    max_cand: usize,
+    n_bands: usize,
+) -> Vec<SyncCandidate> {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::CoarseSync);
+    banded_peaks(&mut SliceSource(audio), freq_min, freq_max, n_bands, false)
+        .map_or_else(Vec::new, |(peaks, g)| {
+            select_candidates(&peaks, &g, sync_min, max_cand)
+        })
+}
+
+/// Pool the hard-sync gate ranks: the coarse list is cut to this many by score before [`coarse_sync_gated`]
+/// reorders it by hard sync. 300 holds 18 of the 20 known signals of `qso3_busy.wav` and costs a count of
+/// 21 x 8 spectrogram cells each; going to 600 adds nothing there.
+pub const HARD_SYNC_POOL: usize = 300;
+
+/// The coarse search of the low-memory profile: [`coarse_sync_banded`]'s list of [`HARD_SYNC_POOL`]
+/// candidates, **reordered by their hard-sync count** (read from the spectrogram band
+/// while it exists) and cut to the `keep` best; ties keep the coarse-score order. Returns each with its
+/// count (of 21).
+///
+/// Why: the coarse score ranks the ghosts of a strong signal above weaker real ones (on `qso3_busy.wav` the
+/// first 30 by score hold 9 real signals and 20 ghosts of strong ones; the first 30 by hard sync, 21 real),
+/// so a short list by score misses real signals that a short list by hard sync keeps. The per-candidate
+/// DFT stages then see 15-30 candidates that are mostly real. **A deliberate divergence from WSJT-X**, see
+/// `spec_hard_sync` below; the decodes still pass `ft8b`'s own gates (the 21-symbol `nsync`, BP/CRC).
+pub fn coarse_sync_gated<S: AudioSample>(
+    audio: &[S],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    keep: usize,
+    n_bands: usize,
+) -> Vec<(SyncCandidate, u8)> {
+    coarse_sync_gated_src(
+        &mut SliceSource(audio),
+        freq_min,
+        freq_max,
+        sync_min,
+        keep,
+        n_bands,
+    )
+}
+
+/// [`coarse_sync_gated`] from an [`AudioSource`], the form the radio needs: the slot is never held. It reads
+/// the source forward `n_bands` times, plus once more in the fixed-point build for the slot's peak (a value
+/// the capture could hand over instead). The candidates are the slice version's, bit for bit.
+pub fn coarse_sync_gated_src<A: AudioSource>(
+    src: &mut A,
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    keep: usize,
+    n_bands: usize,
+) -> Vec<(SyncCandidate, u8)> {
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::CoarseSync);
+    let Some((peaks, g)) = banded_peaks(src, freq_min, freq_max, n_bands, true) else {
+        return Vec::new();
+    };
+    let mut pool = select_candidates_with_sync(&peaks, &g, sync_min, HARD_SYNC_POOL);
+    // stable: equal counts stay in coarse-score order
+    pool.sort_by_key(|c| core::cmp::Reverse(c.1));
+    pool.truncate(keep);
+    pool
+}
+
+/// Score every carrier of the band `freq_min..freq_max` a band at a time (the spectrogram of each is built,
+/// scored and dropped before the next), with the hard-sync count when `hard_sync`. Reads `src` once for the
+/// slot's gain (fixed-point build) and once for each band, forward.
+fn banded_peaks<A: AudioSource>(
+    src: &mut A,
+    freq_min: f32,
+    freq_max: f32,
+    n_bands: usize,
+    hard_sync: bool,
+) -> Option<(CarrierPeaks, SyncGrid)> {
+    // `()` in the f32 build, which needs nothing from the whole slot; the fixed-point shift otherwise
+    #[allow(clippy::let_unit_value)]
+    let gain = spectrogram_gain(src);
+    banded_peaks_with(freq_min, freq_max, n_bands, hard_sync, |lo, hi| {
+        compute_spectrogram_bins_src(src, lo, hi, gain)
+    })
+}
+
+/// [`banded_peaks`] with the spectrogram of a band of bins from `build(lo, hi)`: from the audio, or from the
+/// band baseband (`band_bb`).
+fn banded_peaks_with<B: FnMut(usize, usize) -> Spectrogram>(
+    freq_min: f32,
+    freq_max: f32,
+    n_bands: usize,
+    hard_sync: bool,
+    mut build: B,
+) -> Option<(CarrierPeaks, SyncGrid)> {
+    let n_time = crate::ft8::params::NMAX / NSTEP - 3;
+    let g = sync_grid(
+        n_time,
+        spectrogram_n_freq(freq_max),
+        freq_min,
+        freq_max,
+        None,
+    )?;
+    let n_car = g.ib - g.ia + 1;
+    let n_bands = n_bands.clamp(1, n_car);
+    let mut peaks = CarrierPeaks::default();
+    for b in 0..n_bands {
+        let a = g.ia + b * n_car / n_bands;
+        let z = g.ia + (b + 1) * n_car / n_bands - 1; // last carrier of the band
+        let band = build(a, z + g.max_tone_off);
+        peaks.append(score_carriers(
+            &band,
+            0,
+            z - a,
+            &g,
+            None,
+            PartialBlock2::Score,
+            hard_sync,
+        ));
     }
-    cands
+    Some((peaks, g))
 }
 
 /// Keep the requested symmetric lag window when the always-read middle Costas
@@ -1088,6 +1389,55 @@ mod tests {
         );
 
         assert!(candidates.is_empty());
+    }
+
+    /// The score loop builds each carrier's allsum row itself when the caller passes none, and reads a
+    /// caller's full table when it does (`stage1_inc`, `precompute_coarse_allsum`). The two must give the
+    /// same candidates to the bit: the lazy row replaced a full `n_freq x n_time` table in the one path
+    /// (fixed-point: its sliding window is an integer identity of the direct sum, f32: it always was one).
+    #[test]
+    fn lazy_allsum_equals_the_full_table() {
+        use super::super::spectrogram::SpecCell;
+        use super::super::types::NSTEP;
+        use super::{coarse_sync_with_allsum, precompute_coarse_allsum};
+
+        let n_time = crate::ft8::params::NMAX / NSTEP - 3;
+        let n_freq = 977; // 0..3000 Hz + the top tone's room, as `compute_spectrogram(_, 3000)`
+        let mut x: u32 = 0x1234_5678;
+        let mut next = || {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 16) as u16
+        };
+        let data: Vec<SpecCell> = (0..n_freq * n_time)
+            .map(|i| {
+                // noise, plus a ridge at 1500 Hz so there are real peaks to rank
+                let ridge = if (480..482).contains(&(i % n_freq)) {
+                    4000
+                } else {
+                    0
+                };
+                #[allow(clippy::unnecessary_cast)]
+                {
+                    ((next() >> 4) + ridge) as SpecCell
+                }
+            })
+            .collect();
+        let spec = Spectrogram::from_parts(n_freq, n_time, data);
+
+        let lazy = super::coarse_sync(&spec, 200.0, 3000.0, 0.0, 300);
+        let full = precompute_coarse_allsum(&spec, 200.0, 3000.0);
+        let table = coarse_sync_with_allsum(&spec, 200.0, 3000.0, 0.0, 300, &full);
+        assert!(
+            lazy.len() > 50,
+            "only {} candidates: the test would prove little",
+            lazy.len()
+        );
+        assert_eq!(lazy.len(), table.len());
+        for (a, b) in lazy.iter().zip(&table) {
+            assert_eq!(a.freq_hz.to_bits(), b.freq_hz.to_bits());
+            assert_eq!(a.dt_sec.to_bits(), b.dt_sec.to_bits());
+            assert_eq!(a.score.to_bits(), b.score.to_bits());
+        }
     }
 
     #[test]

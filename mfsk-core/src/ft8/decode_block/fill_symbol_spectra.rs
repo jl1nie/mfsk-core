@@ -144,7 +144,7 @@ pub enum SymMask {
 }
 
 #[inline]
-fn sym_in_mask(sym: usize, mask: SymMask) -> bool {
+pub(super) fn sym_in_mask(sym: usize, mask: SymMask) -> bool {
     let (in_block_a, in_block_b, in_block_c) = (
         sym < COSTAS.len(),                                         // 0..7
         sym >= COSTAS_POS[1] && sym < COSTAS_POS[1] + COSTAS.len(), // 36..43

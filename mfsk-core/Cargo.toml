@@ -52,6 +52,12 @@ serde        = ["dep:serde"]
 fft-rustfft  = ["std", "dep:rustfft", "dep:realfft"]
 fft-extern   = ["alloc"]
 
+# FT8's OSD fallback (`ft8b.f90`'s `decode174_91` OSD, `ndeep=2`) in the build without `fft-rustfft`. Off by
+# default: the ESP32 driver leaves it out for its time and flash budget (`DecodeDepth::osd` is a no-op there).
+# The ICAP profile (`decode_block_low_mem`) has the time and turns it on. Needs no FFT and no memory beyond
+# BP's own: the OSD works on the LLRs.
+osd          = ["alloc"]
+
 # Caller-provided real f32 dot-product backend for the DSP hot loops
 # (`engine::dsp::dotprod`). Same extern-hook shape as `fft-extern`: the
 # binary defines `mfsk_core_dotprod_f32`. Exists for embedded builds

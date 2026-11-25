@@ -58,11 +58,13 @@
 // the tree is stage-shaped (spectrogram → coarse_sync →
 // fill_symbol_spectra → per-candidate processing). The parent file
 // owns only module declarations + re-exports + tests.
+mod cd0_fir;
 mod coarse_sync;
 mod fill_symbol_spectra;
 mod fine_sync_12k;
 mod osd_strategy;
 mod process_candidates;
+pub mod source;
 pub(crate) mod spectrogram;
 mod types;
 
@@ -71,7 +73,8 @@ mod types;
 // sibling modules under `ft8/`) see the same
 // `mfsk_core::ft8::decode_block::*` paths.
 pub use coarse_sync::{
-    PartialBlock2, coarse_allsum_len, coarse_sync, coarse_sync_with_allsum,
+    HARD_SYNC_POOL, PartialBlock2, coarse_allsum_len, coarse_sync, coarse_sync_banded,
+    coarse_sync_gated, coarse_sync_gated_src, coarse_sync_with_allsum,
     coarse_sync_with_allsum_and_lag, coarse_sync_with_allsum_lag_and_partial,
     coarse_sync_with_allsum_lag_and_rows, coarse_sync_with_lag, coarse_sync_with_lag_and_partial,
     precompute_coarse_allsum, precompute_coarse_allsum_into,
@@ -85,7 +88,10 @@ pub use process_candidates::decode_block_streaming;
 /// Phase 1.7.7-Stick: fill-closure variant for host research /
 /// regression tests (spec-lookup vs BASIS dot product comparison).
 pub use process_candidates::process_candidates_into_with_cs_scratch_tuned_with_fill;
-pub use process_candidates::{RefinedCandidate, decode_block, decode_block_tuned, xsnr2_db_simple};
+pub use process_candidates::{LowMem, decode_block_low_mem_src};
+pub use process_candidates::{
+    RefinedCandidate, decode_block, decode_block_low_mem, decode_block_tuned, xsnr2_db_simple,
+};
 #[cfg(feature = "fixed-point")]
 pub use process_candidates::{
     decode_block_into, decode_block_into_tuned, process_candidates_into,
