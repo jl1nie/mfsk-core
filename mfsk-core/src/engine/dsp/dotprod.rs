@@ -186,9 +186,46 @@ pub fn dot_f32_portable(a: &[f32], b: &[f32]) -> f32 {
     s
 }
 
+/// [`dot_f32_portable`] of `h` with `a` and with `b` in one pass: the taps are loaded once for both. Each
+/// result has the same four partial sums in the same order as `dot_f32_portable(h, a)` / `(h, b)`, so it is
+/// bit-identical to them (the FIR's I and Q channels share their taps).
+#[cfg(not(feature = "dotprod-extern"))]
+pub(crate) fn dot2_f32_portable(h: &[f32], a: &[f32], b: &[f32]) -> (f32, f32) {
+    let n = h.len().min(a.len()).min(b.len());
+    let (h, a, b) = (&h[..n], &a[..n], &b[..n]);
+    let (mut pa, mut pb) = ([0.0f32; 4], [0.0f32; 4]);
+    let ((hc, hr), (ac, ar), (bc, br)) =
+        (h.as_chunks::<4>(), a.as_chunks::<4>(), b.as_chunks::<4>());
+    for ((hh, aa), bb) in hc.iter().zip(ac).zip(bc) {
+        for l in 0..4 {
+            pa[l] += hh[l] * aa[l];
+            pb[l] += hh[l] * bb[l];
+        }
+    }
+    let (mut sa, mut sb) = (pa[0] + pa[1] + pa[2] + pa[3], pb[0] + pb[1] + pb[2] + pb[3]);
+    for k in 0..hr.len() {
+        sa += hr[k] * ar[k];
+        sb += hr[k] * br[k];
+    }
+    (sa, sb)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(feature = "dotprod-extern"))]
+    #[test]
+    fn dot2_is_bit_identical_to_two_dots() {
+        for n in [0usize, 1, 3, 4, 7, 107, 288, 422] {
+            let h: Vec<f32> = (0..n).map(|i| (i as f32 * 0.13).sin()).collect();
+            let a: Vec<f32> = (0..n).map(|i| (i as f32 * 0.37).sin()).collect();
+            let b: Vec<f32> = (0..n).map(|i| (i as f32 * 0.71).cos()).collect();
+            let (x, y) = dot2_f32_portable(&h, &a, &b);
+            assert_eq!(x.to_bits(), dot_f32_portable(&h, &a).to_bits(), "n={n}");
+            assert_eq!(y.to_bits(), dot_f32_portable(&h, &b).to_bits(), "n={n}");
+        }
+    }
 
     #[test]
     fn portable_matches_naive_within_tolerance() {

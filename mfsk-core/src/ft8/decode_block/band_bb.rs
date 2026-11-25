@@ -477,19 +477,26 @@ impl BandBaseband {
         let mut sc = Scratch::new();
         let mut k = 0i64;
         while out.len() < CD0_LEN {
-            // a block of the baseband mixed to this candidate's frequency, then through the two stages
-            sc.mixed.0.clear();
-            sc.mixed.1.clear();
-            for _ in 0..BLOCK {
-                let (pr, pi) = rot.next();
-                let (xr, xi) = self.get(k);
-                sc.mixed.0.push(xr * pr - xi * pi);
-                sc.mixed.1.push(xr * pi + xi * pr);
-                k += 1;
-            }
+            // a block of the baseband mixed to this candidate's frequency, written into the first stage's history
             sc.s1.0.clear();
             sc.s1.1.clear();
-            c.push_block(&sc.mixed.0, &sc.mixed.1, &mut sc.s1.0, &mut sc.s1.1);
+            let k0 = k;
+            let ph = &mut sc.ph;
+            c.push_block_with(
+                BLOCK,
+                |di, dq, j0| {
+                    let n = di.len();
+                    rot.fill(&mut ph.0[..n], &mut ph.1[..n]);
+                    for j in 0..n {
+                        let (xr, xi) = self.get(k0 + (j0 + j) as i64);
+                        di[j] = xr * ph.0[j] - xi * ph.1[j];
+                        dq[j] = xr * ph.1[j] + xi * ph.0[j];
+                    }
+                },
+                &mut sc.s1.0,
+                &mut sc.s1.1,
+            );
+            k += BLOCK as i64;
             sc.s2.0.clear();
             sc.s2.1.clear();
             d.push_block(&sc.s1.0, &sc.s1.1, &mut sc.s2.0, &mut sc.s2.1);
@@ -535,24 +542,32 @@ impl BandStream {
     /// Feed the next samples of the slot, in order.
     pub fn feed(&mut self, samples: &[i16]) {
         for chunk in samples.chunks(BLOCK) {
-            let sc = &mut self.sc;
-            sc.mixed.0.clear();
-            sc.mixed.1.clear();
             for &x in chunk {
                 if (self.n as usize) < crate::ft8::params::NMAX {
                     self.peak = self.peak.max((x as i32).abs());
                 }
-                let (pr, pi) = self.rot.next();
-                let x = x as f32;
-                sc.mixed.0.push(x * pr);
-                sc.mixed.1.push(x * pi);
                 self.n += 1;
             }
-            // the two stages a block at a time (`FirStage::push_block` is `push_one`'s sequence, bit for bit)
+            let sc = &mut self.sc;
+            // the mixer writes straight into the first stage's history (`FirStage::push_block_with`)
             sc.s1.0.clear();
             sc.s1.1.clear();
-            self.a
-                .push_block(&sc.mixed.0, &sc.mixed.1, &mut sc.s1.0, &mut sc.s1.1);
+            let rot = &mut self.rot;
+            let ph = &mut sc.ph;
+            self.a.push_block_with(
+                chunk.len(),
+                |di, dq, k| {
+                    let n = di.len();
+                    rot.fill(&mut ph.0[..n], &mut ph.1[..n]);
+                    for j in 0..n {
+                        let x = chunk[k + j] as f32;
+                        di[j] = x * ph.0[j];
+                        dq[j] = x * ph.1[j];
+                    }
+                },
+                &mut sc.s1.0,
+                &mut sc.s1.1,
+            );
             sc.s2.0.clear();
             sc.s2.1.clear();
             self.b

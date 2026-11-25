@@ -99,7 +99,8 @@ pub(super) const BLOCK: usize = 256;
 /// Block scratch for [`Cd0Stream::feed`] (planar I / Q of the mixed block and of each stage's output), made once for a group
 /// of candidates: about 3 KB, instead of that much per candidate.
 pub(super) struct Scratch {
-    pub(super) mixed: (Vec<f32>, Vec<f32>),
+    /// The mixer's phasors for one block.
+    pub(super) ph: ([f32; BLOCK], [f32; BLOCK]),
     pub(super) s1: (Vec<f32>, Vec<f32>),
     pub(super) s2: (Vec<f32>, Vec<f32>),
     pub(super) s3: (Vec<f32>, Vec<f32>),
@@ -109,7 +110,7 @@ impl Scratch {
     pub(super) fn new() -> Self {
         let v = |n: usize| (Vec::with_capacity(n), Vec::with_capacity(n));
         Self {
-            mixed: v(BLOCK),
+            ph: ([0.0; BLOCK], [0.0; BLOCK]),
             s1: v(BLOCK / M1 + 2),
             s2: v(BLOCK / (M1 * M2) + 2),
             s3: v(BLOCK / DECIM + 2),
@@ -169,20 +170,27 @@ impl Cd0Stream {
         }
         assert!(start <= self.at, "cd0 stream: a gap in the audio fed to it");
         for chunk in samples[(self.at - start) as usize..].chunks(BLOCK) {
-            sc.mixed.0.clear();
-            sc.mixed.1.clear();
-            for &x in chunk {
-                let (pr, pi) = self.rot.next();
-                let x = x as f32;
-                sc.mixed.0.push(x * pr);
-                sc.mixed.1.push(x * pi);
-            }
-            self.at += chunk.len() as i64;
-            // the three stages a block at a time (`FirStage::push_block` is `push_one`'s sequence, bit for bit)
+            // the mixer writes straight into the first stage's history; the three stages a block at a time
+            // (`FirStage::push_block_with` gives `push_one`'s outputs, bit for bit)
             sc.s1.0.clear();
             sc.s1.1.clear();
-            self.s1
-                .push_block(&sc.mixed.0, &sc.mixed.1, &mut sc.s1.0, &mut sc.s1.1);
+            let rot = &mut self.rot;
+            let ph = &mut sc.ph;
+            self.s1.push_block_with(
+                chunk.len(),
+                |di, dq, k| {
+                    let n = di.len();
+                    rot.fill(&mut ph.0[..n], &mut ph.1[..n]);
+                    for j in 0..n {
+                        let x = chunk[k + j] as f32;
+                        di[j] = x * ph.0[j];
+                        dq[j] = x * ph.1[j];
+                    }
+                },
+                &mut sc.s1.0,
+                &mut sc.s1.1,
+            );
+            self.at += chunk.len() as i64;
             sc.s2.0.clear();
             sc.s2.1.clear();
             self.s2

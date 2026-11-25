@@ -364,20 +364,46 @@ impl FirStage {
         out_q: &mut Vec<f32>,
     ) {
         assert_eq!(xi.len(), xq.len(), "I/Q blocks must be the same length");
+        self.push_block_with(
+            xi.len(),
+            |di, dq, k| {
+                di.copy_from_slice(&xi[k..k + di.len()]);
+                dq.copy_from_slice(&xq[k..k + dq.len()]);
+            },
+            out_i,
+            out_q,
+        );
+    }
+
+    /// [`push_block`](Self::push_block) for `n` input samples that the caller makes **in place**:
+    /// `fill(di, dq, k)` writes input samples `k..k + di.len()` straight into the history (the
+    /// two slices are the same length), so a mixer in front of the stage needs no staging buffer and no
+    /// copy. `fill` is called one or more times, in order, covering `0..n` once. The outputs are
+    /// those `push_block` would give for the same samples, bit for bit (`push_block` is this with a copy).
+    pub fn push_block_with(
+        &mut self,
+        n: usize,
+        mut fill: impl FnMut(&mut [f32], &mut [f32], usize),
+        out_i: &mut Vec<f32>,
+        out_q: &mut Vec<f32>,
+    ) {
         let ntaps = self.ntaps();
         let mut k = 0usize;
-        while k < xi.len() {
+        while k < n {
             // Never write past `hist_cap`; that is where `compact`
             // triggers, and the allocation's slack past it belongs to
             // the padded dot window, not to input.
-            let take = (self.hist_cap - self.hist_len).min(xi.len() - k);
+            let take = (self.hist_cap - self.hist_len).min(n - k);
             debug_assert!(take > 0);
 
             // The point of the whole function: one bulk append instead
             // of `take` separate stores with their own bounds checks.
             let hl = self.hist_len;
-            self.hist_i.as_mut_slice()[hl..hl + take].copy_from_slice(&xi[k..k + take]);
-            self.hist_q.as_mut_slice()[hl..hl + take].copy_from_slice(&xq[k..k + take]);
+            fill(
+                &mut self.hist_i.as_mut_slice()[hl..hl + take],
+                &mut self.hist_q.as_mut_slice()[hl..hl + take],
+                k,
+            );
 
             // Emit every output whose window closes inside this run.
             // `hist_len`/`win_start` are advanced by addition only,
@@ -517,10 +543,7 @@ impl FirStage {
         // back to when no backend is configured — same arithmetic, and
         // an embedded build can now route it to esp-dsp instead
         // (issue #307).
-        (
-            super::dotprod::dot_f32(h, hi),
-            super::dotprod::dot_f32(h, hq),
-        )
+        super::dotprod::dot2_f32_portable(h, hi, hq)
     }
 
     /// Backend build: stage both windows into 16-byte-aligned,

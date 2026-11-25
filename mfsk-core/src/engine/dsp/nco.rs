@@ -135,6 +135,15 @@ impl Rotor {
         }
     }
 
+    /// The next `re.len()` phasors, as planar arrays: the same values `next` gives, one by one (bit for bit), made
+    /// apart from whatever is done with them, so the dependent chain of rotations runs on its own and the work after
+    /// it is a plain loop over arrays.
+    pub(crate) fn fill(&mut self, re: &mut [f32], im: &mut [f32]) {
+        for (r, i) in re.iter_mut().zip(im.iter_mut()) {
+            (*r, *i) = self.next();
+        }
+    }
+
     /// `exp(-j 2 pi f n / fs)` for the next `n`.
     #[inline]
     pub(crate) fn next(&mut self) -> (f32, f32) {
@@ -200,6 +209,28 @@ mod tests {
     /// (negative `n`) and after it, at frequencies from near DC to near Nyquist. Its worst error is the refresh interval's
     /// worth of step rounding (3e-5), not growth with the run. A sign flipped (`exp(+j)`), a phase read off by a sample or a
     /// step that is not unit length shows at once.
+    /// `fill` gives `next`'s phasors bit for bit, across the exact reads, whatever the block sizes.
+    #[cfg(all(feature = "ft8", any(feature = "fft-rustfft", feature = "fft-extern")))]
+    #[test]
+    fn fill_is_next_bit_for_bit() {
+        let (mut a, mut b) = (
+            Rotor::new(1234.567, 12_000.0, -37),
+            Rotor::new(1234.567, 12_000.0, -37),
+        );
+        for len in [1usize, 5, 64, 65, 200, 3] {
+            let (mut re, mut im) = (vec![0.0f32; len], vec![0.0f32; len]);
+            a.fill(&mut re, &mut im);
+            for k in 0..len {
+                let (r, i) = b.next();
+                assert_eq!(
+                    (re[k].to_bits(), im[k].to_bits()),
+                    (r.to_bits(), i.to_bits()),
+                    "len {len} k {k}"
+                );
+            }
+        }
+    }
+
     #[cfg(all(feature = "ft8", any(feature = "fft-rustfft", feature = "fft-extern")))]
     #[test]
     fn the_rotor_is_the_complex_exponential() {

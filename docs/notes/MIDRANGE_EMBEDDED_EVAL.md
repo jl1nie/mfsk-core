@@ -149,22 +149,27 @@ single precision, so the `f32` sums are hardware there).
 `f64` on an LX7 the earlier note listed), the stages are `FirStage::push_block` (block of 256 samples, a scratch shared by a group), and
 the taps are `design_lowpass_kaiser`. About 130 lines went. Measured on the host, fixed-point, alternating with the previous binary:
 
-| | before | after |
-|---|---:|---:|
-| A (audio read per group), 22 recordings, 15 cand., time | 613-623 ms | 795-803 ms (+29 %) |
-| A, instructions per slot (`qso3_busy`) | 871 M | 1 059 M (+22 %) |
-| C, 3 passes, instructions per slot | 1 764 M | 1 963 M (+11 %) |
-| peak heap, A / C (fixed-point) | 220 160 / 330 316 B | 220 160 / 330 904 B |
-| decodes, A / C one pass, 15 and 30 candidates | | **unchanged** (every cell) |
-| decodes, C three passes, 15 cand. | 334 / 345 | 334 / 342 |
+| | before | unified (first) | unified, mixer fused + `dot2` + phasors apart |
+|---|---:|---:|---:|
+| A (audio read per group), `qso3_busy` x 21, 15 cand., wall | 0.59 s | 0.75 s (+27 %) | **0.53 s (-10 %)** |
+| A, instructions per slot | 871 M | 1 059 M | 726 M |
+| C, 3 passes, wall (same) | 1.18 s | 1.33 s | 1.19 s (+1 %) |
+| C, 3 passes, instructions per slot | 1 764 M | 1 963 M | 1 696 M |
+| peak heap, A / C (fixed-point) | 220 160 / 330 316 B | 220 160 / 330 904 B | same as the middle |
+| decodes | | C three passes 15 cand. 345 -> 342 | **the same as the middle, every cell** |
+
+The first version of the unification cost time and instructions; the third column is what removed that, and it did so **bit for bit**
+(the recall panel is identical to the middle column). Three changes, found by sampling the running binary (`sample`), not by
+guessing: (1) `FirStage::push_block_with`: the mixer writes straight into the first stage's history, with no staging buffer and no copy
+(`push_block` is it with a copy); (2) `dotprod::dot2_f32_portable`: the I and Q dots in one pass over the taps, written with
+`chunks_exact` (the indexed form was slower than two dots: 0.75 s against 0.67 s), bit-identical to two `dot_f32_portable`; (3)
+`Rotor::fill`: the phasors of a block made apart, so the dependent chain of rotations runs on its own and the multiply after it is a plain
+loop (0.67 s -> 0.53 s; the instruction count does not show it, the chain's latency does). Not measured: the board (on a
+`dotprod-extern` build `FirStage` still calls esp-dsp once per channel, so (2) does not apply there; (1) and (3) do).
 
 The decodes that moved (C, three passes, 15 candidates: f32 0, fixed-point -3; one-pass C fixed-point 15 cand. -1 and back to the same with a
 4096-sample refresh) are borderline ones: the Rotor's refresh interval was swept from 1 to 4096 samples with the same counts, so it is the
-baseband's perturbation at the 1e-5 level (the old mixers' sawtooth is gone), not the new mixer's accuracy. **The cost is real and is the
-price of the unification**: `FirStage` computes the in-phase and quadrature dot products in two passes (and pads its window for the
-aligned-dot backends) where the specialised stage did one; a larger history margin did not change it (797 / 772 / 771 ms for 32 / 128 / 512).
-On a board built with `dotprod-extern` `FirStage` calls esp-dsp's dot product, which may well be faster than the scalar loop it replaced;
-that is not measured.
+baseband's perturbation at the 1e-5 level (the old mixers' sawtooth is gone), not the new mixer's accuracy. The first version's cost (above) is gone with the three changes; a larger history margin never mattered (797 / 772 / 771 ms for 32 / 128 / 512).
 
 ## 4. What was verified, and how
 
