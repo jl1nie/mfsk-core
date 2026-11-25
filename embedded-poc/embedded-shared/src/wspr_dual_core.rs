@@ -73,11 +73,12 @@ use esp_idf_svc::sys::{
     vTaskDelay, xQueueGenericCreate, xQueueGenericSend, xQueueReceive, QueueHandle_t,
 };
 
+use mfsk_core::engine::alignment::Alignment;
 use mfsk_core::wspr::coarse_baseband::BasebandCandidate;
 use mfsk_core::wspr::decode::{
     deep_decode_pass2_candidate, WsprCallsignTable, WsprPass2Candidate, WsprResult,
 };
-use mfsk_core::wspr::SniperRequest;
+use mfsk_core::wspr::{decode_candidate, WsprCandidate, WsprInput};
 
 const PD_PASS: i32 = 1;
 const QUEUE_SEND_TO_BACK: i32 = 0;
@@ -295,7 +296,7 @@ unsafe impl Send for Pass01Job {}
 
 /// Pop candidates from the shared atomic-indexed slot array and
 /// decode them one at a time. Mirrors `wspr_bench`'s own pass-0/1
-/// inner loop (`SniperRequest::baseband` + the same `dt_sec`/`start_sample`/
+/// inner loop (`decode_candidate` on a `WsprInput::baseband` + the same `dt_sec`/`start_sample`/
 /// `snr_db` fixups) so dual-core and sequential produce identical
 /// per-candidate results — only the dispatch differs.
 ///
@@ -322,11 +323,10 @@ unsafe fn drain_pass01_queue(
         // ownership of slot `i` for the duration of this iteration.
         let cand = unsafe { (*slots_ptr.add(i)).take() };
         let Some(c) = cand else { continue };
-        if let Some(mut d) =
-            SniperRequest::baseband(idat, qdat, sample_rate, c.start_sample, c.freq_hz)
-                .drift(c.drift_hz)
-                .decode()
-        {
+        if let Some(mut d) = decode_candidate(
+            WsprInput::baseband(idat, qdat, sample_rate),
+            &WsprCandidate::new(Alignment::new(c.start_sample, c.freq_hz)).drift_hz(c.drift_hz),
+        ) {
             let start_refined = d.start_sample;
             d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
             d.start_sample = start_refined.saturating_sub(pad);

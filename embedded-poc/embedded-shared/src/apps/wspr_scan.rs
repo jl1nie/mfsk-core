@@ -31,12 +31,13 @@ use alloc::vec::Vec;
 
 use mfsk_core::fec::conv::fano::instrument as fano_hist;
 use mfsk_core::msg::WsprMessage;
+use mfsk_core::engine::alignment::Alignment;
 use mfsk_core::wspr::coarse_baseband::{coarse_baseband, BasebandCandidate};
 use mfsk_core::wspr::decode::{rank_pass2_candidates, WsprCallsignTable, WsprResult};
 use mfsk_core::wspr::demod::TONE_SPACING_HZ;
 use mfsk_core::wspr::instrument;
 use mfsk_core::wspr::subtract::subtract_signal_baseband;
-use mfsk_core::wspr::SniperRequest;
+use mfsk_core::wspr::{decode_candidate, WsprCandidate, WsprInput};
 
 use crate::wspr_dual_core;
 
@@ -306,11 +307,11 @@ pub fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<Wspr
             let mut raw = Vec::new();
             for (ci, c) in cands.iter().enumerate() {
                 let t_c = now_us();
-                if let Some(mut d) =
-                    SniperRequest::baseband(idat, qdat, SAMPLE_RATE, c.start_sample, c.freq_hz)
-                        .drift(c.drift_hz)
-                        .decode()
-                {
+                if let Some(mut d) = decode_candidate(
+                    WsprInput::baseband(idat, qdat, SAMPLE_RATE),
+                    &WsprCandidate::new(Alignment::new(c.start_sample, c.freq_hz))
+                        .drift_hz(c.drift_hz),
+                ) {
                     let start_refined = d.start_sample;
                     d.dt_sec =
                         (start_refined as i64 - PAD_AUDIO as i64) as f32 / SAMPLE_RATE as f32 - 1.0;
