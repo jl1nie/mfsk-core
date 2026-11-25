@@ -3406,6 +3406,73 @@ mod tests {
         }
     }
 
+    /// The **ceiling** on what the plausibility verdict lets through: the counts of `phantom_survival_rates` (the same
+    /// deterministic LCG, 2 M uniform 77-bit payloads) held per message type as a test, so that a loosening of the verdict
+    /// has to move these numbers on purpose. A real signal the verdict refuses is a recall loss (`20m_busy`: `DM100ZM`,
+    /// `LZ365BM`), a CRC survivor it lets through is a phantom that SIC would subtract: this is the second half of that
+    /// trade, in numbers. Update the constants **with the measurement that justifies the change**, in the same commit.
+    ///
+    /// Release only (about 0.5 s there, tens of seconds in a debug build).
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "2 M payloads: run in release")]
+    fn phantom_survival_is_bounded() {
+        const N: usize = 2_000_000;
+        // measured 2026-11-26 at the commit that added this test (`phantom_survival_rates`)
+        const UNPACKED: usize = 1_030_375;
+        const KEPT_MAX: usize = 652_496;
+        const I3_4_UNPACKED: usize = 250_135;
+        const I3_4_KEPT_MAX: usize = 11_153;
+        let mut x: u64 = 0x2026_0920_0000_0001;
+        let mut next_bit = || {
+            x = x
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((x >> 33) & 1) as u8
+        };
+        let (mut unpacked, mut kept) = (0usize, 0usize);
+        let (mut u4, mut k4, mut u5, mut k5) = (0usize, 0usize, 0usize, 0usize);
+        for _ in 0..N {
+            let mut m = [0u8; 77];
+            for b in m.iter_mut() {
+                *b = next_bit();
+            }
+            let i3 = read_bits(&m, 74, 3) as u8;
+            if unpack77(&m).is_none() {
+                continue;
+            }
+            unpacked += 1;
+            let ok = is_plausible_payload(&m);
+            kept += ok as usize;
+            match i3 {
+                4 => {
+                    u4 += 1;
+                    k4 += ok as usize;
+                }
+                5 => {
+                    u5 += 1;
+                    k5 += ok as usize;
+                }
+                _ => {}
+            }
+        }
+        // WSJT-X's own acceptance (`unpack77` success) is the ceiling's denominator and does not move
+        assert_eq!(
+            unpacked, UNPACKED,
+            "unpack77's acceptance moved: the port, not the verdict"
+        );
+        assert_eq!(u4, I3_4_UNPACKED);
+        assert!(
+            kept <= KEPT_MAX,
+            "the verdict lets {kept} uniform payloads through, ceiling {KEPT_MAX}"
+        );
+        assert!(
+            k4 <= I3_4_KEPT_MAX,
+            "i3=4 survivors {k4}, ceiling {I3_4_KEPT_MAX}"
+        );
+        // EU VHF contest with both calls unresolved: refused outright (a 44 % rise in the phantom population otherwise)
+        assert!(u5 > 0 && k5 == 0, "i3=5 survivors {k5} of {u5}");
+    }
+
     /// rc1 `packjt77.f90:1632-1640` — telemetry, 71 bits as 18 hex digits (`format(3z6.6)`):
     /// the leading zeros stay. Expected texts from rc1's own `unpack77`.
     #[test]
