@@ -100,8 +100,7 @@ candidates into stage 3 and of decodes, and the minimum free internal DRAM and P
 the stack mark after the arms before them is the stack without OSD. It does not model the streaming spectrogram, the second core, the deadline or the prefix: read
 the candidate stages (fine sync, pass 2, stage 3), not the totals.
 
-Compile-checked (`cargo check --release --features ft8-gate-bench --bin ft8-gate-bench`) and code-generated; **not linked here** (this Mac has `espflash` but no
-`ldproxy`: `cargo install ldproxy`), so no ELF exists yet. To run it, on a machine that can build and flash:
+Built and linked on this Mac (`cargo install ldproxy` was needed; `target/xtensa-esp32s3-espidf/release/ft8-gate-bench`, 2.16 MB against the 9 MiB factory partition), **not flashed**. To run it:
 
 ```sh
 cd embedded-poc/m5stack-cores3-app
@@ -134,6 +133,32 @@ To try it: `MFSK_FT8_GATE=1 MFSK_FT8_OSD=1 cargo build --release --features ft8-
 the board's time is exactly what `ft8-gate-bench` and then a radio say.
 
 What is not covered by any test: `dual_core.rs` runs only on the board (the mirror is a re-implementation of it, not a test of it).
+
+## OSD's stack, from the linked ELF (device-free; **the plan's "about 9 KB" was too small**)
+
+`ft8-gate-bench` links (this Mac now has `ldproxy`), so the frames of the call chain can be read from the ELF
+(`xtensa-esp32s3-elf-objdump -d`, each function's `entry a1, N`, the call graph through `call8` and the `l32r` + `callx8` pairs the
+linker uses for far calls; Rust symbols only, the IDF's C leaves and indirect calls through trait objects are not followed, so this is a floor):
+
+| from `process_candidates_into_with_cs_scratch_tuned` (stage 3, one candidate) | frame | cumulative |
+|---|---:|---:|
+| the function itself (the BP and LLR scratch of one candidate, inlined) | 9 632 B | |
+| `compute_llr_metric` and below (no OSD) | ~1.5 KB | **~11.2 KB without OSD** |
+| `osd_strategy::try_fallback` | 5 168 B | |
+| `osd_npre` (`g`, `orig`, `indices` on the stack) | 10 304 B | |
+| the sort inside it | ~0.3 KB | **~25.4 KB with OSD** |
+
+OSD adds **~14.3 KB**, not 9. `dsp_worker` (16 KB) and the CoreS3 main task (16 KB) run stage 3, so **OSD overflows both as they are**; internal DRAM has 7-15 KB
+to give at run time (`embedded-poc/CLAUDE.md`, "Stacks, heaps, and the space between them": an overflow rewrites TLSF headers and shows up later as heap
+corruption, `CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y` turns it into a panic at the instruction). Without OSD stage 3 fits with ~5 KB to spare, which is how
+the board runs today. Consequences made in the code:
+
+- `MFSK_FT8_OSD=1` now needs `--features ft8-osd` **and** `MFSK_FT8_OSD_STACKS_RAISED=1` (a `const` assertion says why): the switch cannot be turned on
+  by accident into a stack overflow. Raising the stacks is **not done**: it is a placement decision (PSRAM stacks for `dsp_worker`, which slows every frame in
+  them, or OSD's arrays off the stack, a library change) that wants the board's numbers first.
+- The bench runs on a thread with a 48 KB stack (the OSD arms would overflow the 16 KB main task) and logs the high-water mark, which is the measured figure
+  to set against this estimate.
+- The plan's risk 4 stands, larger: OSD costs stack as well as time, and the stack is the scarcer resource.
 
 ## Caveats (read before relying on this)
 

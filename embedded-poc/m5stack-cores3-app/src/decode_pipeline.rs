@@ -205,12 +205,22 @@ const FT8_HARD_SYNC_GATE: bool = match option_env!("MFSK_FT8_GATE") {
     None => false,
 };
 
-/// OSD in stage 3 (`DecodeDepth { osd: true, ..EMBEDDED }`). **Off.** `MFSK_FT8_OSD=1` turns it on and **needs
-/// `--features ft8-osd`** (which builds `mfsk-core/osd`); without the feature `DecodeDepth::osd` is a silent no-op, so a
-/// build that asks for it without it does not compile. OSD is a time and battery decision this board's own notes keep
-/// off (`CORES3_FT8_SLOT_BUDGET.md`): FT4 on an S3 measured +2 345 ms over 31 candidates for it, FT8's own cost on a
-/// board is unmeasured (`ft8-gate-bench`). Its arrays are on the stack (about 9 KB against 16 KB).
+/// OSD in stage 3 (`DecodeDepth { osd: true, ..EMBEDDED }`). **Off, and not enable-able as the stacks are.**
+///
+/// Stage 3 with OSD needs about **25.4 KB of stack** against about 11.2 KB without it (frames of the linked `ft8-gate-bench`
+/// ELF: `process_candidates_into_with_cs_scratch_tuned` 9.6 KB, `osd_strategy::try_fallback` 5.2 KB, `osd_npre` 10.3 KB;
+/// `docs/notes/S3_GATE_OSD_ABLATION.md`). `dsp_worker` (16 KB) and the main task (16 KB) run it, so OSD overflows both as they
+/// are, and internal DRAM has 7-15 KB to give at run time: the stacks have to move (PSRAM stacks, or OSD's arrays off the
+/// stack) before this can be on. That is not done, so the build refuses until it is acknowledged:
+/// `MFSK_FT8_OSD=1` needs `--features ft8-osd` **and** `MFSK_FT8_OSD_STACKS_RAISED=1` (meaning you raised both).
+///
+/// OSD is also a time and battery decision this board's notes keep off (`CORES3_FT8_SLOT_BUDGET.md`): FT4 on an S3 measured
+/// +2 345 ms over 31 candidates for it; FT8's own cost on a board is unmeasured (`ft8-gate-bench`).
 const FT8_OSD: bool = match option_env!("MFSK_FT8_OSD") {
+    Some(s) => parse_u32(s) != 0,
+    None => false,
+};
+const FT8_OSD_STACKS_RAISED: bool = match option_env!("MFSK_FT8_OSD_STACKS_RAISED") {
     Some(s) => parse_u32(s) != 0,
     None => false,
 };
@@ -218,6 +228,10 @@ const FT8_OSD: bool = match option_env!("MFSK_FT8_OSD") {
 const _: () = assert!(
     !FT8_OSD,
     "MFSK_FT8_OSD=1 needs --features ft8-osd (mfsk-core/osd); without it OSD silently does nothing"
+);
+const _: () = assert!(
+    !FT8_OSD || FT8_OSD_STACKS_RAISED,
+    "OSD needs ~25 KB of stack in stage 3 and dsp_worker / main have 16 KB: raise both, then set MFSK_FT8_OSD_STACKS_RAISED=1"
 );
 
 /// The stage-3 depth: the board's `EMBEDDED`, with OSD when [`FT8_OSD`].

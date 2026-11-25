@@ -9,8 +9,12 @@
 //! - the time of each stage (spectrogram, coarse search, `fine_sync_12k`, pass 2, stage 3) for each arm,
 //! - what OSD adds (arm differences) and how many candidates reach stage 3 against how many decode (the rest are
 //!   the candidates OSD is tried on, an upper bound: OSD's own gate is `osd_escalation_gates`),
-//! - the stack high-water mark of the task it runs on, after each arm (OSD's arrays are on the stack:
-//!   `osd_npre`'s `g`, `orig`, `indices`, about 9 KB; `dsp_worker`'s stack is 16 KB, the main task's 16 KB on the CoreS3),
+//! - the stack high-water mark of the thread it runs on, after each arm. **OSD's stack is not small**: from the linked ELF
+//!   (`xtensa-esp32s3-elf-objdump`, the frames of the Rust call chain from `process_candidates_into_with_cs_scratch_tuned`)
+//!   stage 3 is about **11.2 KB** without OSD (its own frame 9.6 KB) and about **25.4 KB** with it (`osd_strategy::try_fallback`
+//!   5.2 KB, `osd_npre` 10.3 KB, the sort 0.3 KB on top). `dsp_worker`'s stack and the CoreS3's main task are 16 KB, so the OSD
+//!   arms would overflow them: the bench runs on a thread of [`BENCH_STACK_BYTES`] and logs the mark, which is the measured
+//!   figure to set against that estimate (indirect calls and the IDF's C leaves are not in it),
 //! - the minimum free internal DRAM and PSRAM since boot, after each arm.
 //!
 //! Every arm runs the same stage 3 (`process_candidates_into_with_cs_scratch_tuned`, one candidate at a time, the
@@ -63,6 +67,10 @@ const PASS1_LIMIT: usize = 30;
 const MAX_CAND: usize = 15;
 const SYNC_LAG_S: f32 = 0.88;
 const SLOT_LEN: usize = 180_000;
+/// The bench thread's stack: the OSD arms need about 25.4 KB (see the module doc), the others 11.2 KB. 48 KB leaves room for
+/// the estimate to be wrong and for `fine_sync_12k`'s and the spectrogram's frames; in internal DRAM, which at bench time
+/// (no WiFi, no UAC) has the ~247 KB the boot log reports.
+const BENCH_STACK_BYTES: usize = 48 * 1024;
 
 fn now_us() -> i64 {
     unsafe { esp_idf_svc::sys::esp_timer_get_time() }
@@ -232,7 +240,7 @@ fn mem_line() -> String {
     }
 }
 
-/// Run the bench over `wavs` (`(label, wav bytes)`), then idle.
+/// Run the bench over `wavs` (`(label, wav bytes)`) on a thread with [`BENCH_STACK_BYTES`] of stack, then idle.
 pub fn run(target_name: &str, wavs: &'static [(&'static str, &'static [u8])]) -> ! {
     crate::apps::compute_bench::init_logger_once();
     log::info!("mfsk-core-{target_name} gate bench starting, mfsk-core {}", mfsk_core::VERSION);
@@ -240,6 +248,22 @@ pub fn run(target_name: &str, wavs: &'static [(&'static str, &'static [u8])]) ->
     log::info!("GATEBENCH mem boot {}", mem_line());
     crate::esp_dsp_fft::prewarm(mfsk_core::ft8::decode_block::NFFT_SPEC);
 
+    // The `cs` scratch arena is taken by the caller (`internal_pool::reserve_arena`) while the heap is whole, before
+    // this thread's stack is. The thread is joined: a panic in it (a stack overflow is an abort, not a panic) shows in the log.
+    let h = std::thread::Builder::new()
+        .name("gate_bench".into())
+        .stack_size(BENCH_STACK_BYTES)
+        .spawn(move || bench_body(wavs))
+        .expect("gate bench: could not spawn the bench thread");
+    let _ = h.join();
+    log::info!("GATEBENCH done");
+    loop {
+        unsafe { esp_idf_svc::sys::vTaskDelay(u32::MAX) };
+    }
+}
+
+fn bench_body(wavs: &'static [(&'static str, &'static [u8])]) {
+    log::info!("GATEBENCH thread stack {BENCH_STACK_BYTES} B, {}", mem_line());
     let slots: Vec<(&str, Box<[i16]>)> = wavs
         .iter()
         .map(|(label, wav)| (*label, load_wav_slot(wav)))
@@ -270,9 +294,5 @@ pub fn run(target_name: &str, wavs: &'static [(&'static str, &'static [u8])]) ->
                 }
             }
         }
-    }
-    log::info!("GATEBENCH done");
-    loop {
-        unsafe { esp_idf_svc::sys::vTaskDelay(u32::MAX) };
     }
 }

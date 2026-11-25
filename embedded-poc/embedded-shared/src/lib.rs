@@ -4,8 +4,8 @@
 #![no_std]
 
 extern crate alloc;
-// `jtty-bench` runs its two-core pipeline on std threads (#499)
-#[cfg(feature = "jtty-bench")]
+// `jtty-bench` runs its two-core pipeline on std threads (#499); `gate-bench` runs on one with a 48 KB stack (the OSD arms need ~25 KB)
+#[cfg(any(feature = "jtty-bench", feature = "gate-bench"))]
 extern crate std;
 
 pub mod apps;
