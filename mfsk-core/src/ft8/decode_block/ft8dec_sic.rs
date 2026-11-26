@@ -63,9 +63,10 @@ pub(super) struct SubSig {
     pub(super) tones: [u8; NN],
 }
 
-/// Per signal while streaming (`sst_t`, 102-107).
+/// Per signal while streaming (`sst_t`, 102-107): opaque, only `Default` and `Clone`; a [`SicScratch`] over the caller's own slices needs a slice of them
+/// ([`sic_signal_capacity`] of them).
 #[derive(Clone, Copy, Default)]
-struct SigState {
+pub struct SigState {
     /// Reference phase at the correlation / subtraction sample (2^32 = one turn).
     phc: u32,
     phs: u32,
@@ -340,6 +341,37 @@ pub const fn sic_signal_capacity(max_cand: usize, passes: usize) -> usize {
     };
     let later = if later < max_cand { later } else { max_cand };
     max_cand + passes.saturating_sub(1) * later
+}
+
+impl<'a> SicScratch<'a> {
+    /// A scratch over **the firmware's own memory** (a ring in internal DRAM, say): `ring` is exactly 8 192 samples, `rd` and `raw` at least a half symbol
+    /// (`rate.nsps() / 2`), `gidx` at least a symbol (`rate.nsps()`), `st` at least [`sic_signal_capacity`] states. Their contents on entry do not matter.
+    /// Panics if one is too small.
+    pub fn new(
+        rate: Ft8Rate,
+        ring: &'a mut [f32],
+        rd: &'a mut [f32],
+        raw: &'a mut [i16],
+        gidx: &'a mut [u8],
+        st: &'a mut [SigState],
+    ) -> Self {
+        let (block, sub) = (rate.nsps(), rate.nsps() / 2);
+        assert!(
+            ring.len() == RING && rd.len() >= sub && raw.len() >= sub && gidx.len() >= block,
+            "SicScratch::new: ring {} (need {RING}), rd {} and raw {} (need {sub}), gidx {} (need {block})",
+            ring.len(),
+            rd.len(),
+            raw.len(),
+            gidx.len()
+        );
+        Self {
+            ring,
+            rd,
+            raw,
+            gidx,
+            st,
+        }
+    }
 }
 
 impl SicStorage {

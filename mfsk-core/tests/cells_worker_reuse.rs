@@ -179,3 +179,70 @@ fn a_scratch_too_small_for_the_flow_is_refused() {
         &mut storage.scratch(),
     );
 }
+
+/// A `SicScratch` over the caller's own slices (a firmware's arena, here plain `Vec`s filled with garbage) gives what `SicStorage` gives. **Fails if** a buffer's
+/// previous contents matter (the ring is zeroed per flow, the states reset, the symbol table rebuilt) or `SicScratch::new` mis-slices.
+#[test]
+fn a_scratch_over_the_callers_slices_equals_the_storage() {
+    use mfsk_core::ft8::decode_block::{
+        SicScratch, SicStorage, SigState, sic_passes, sic_signal_capacity,
+    };
+    let a = audio("qso3_busy");
+    let tables = CellTables::new();
+    let mut cs: Box<[[Cmplx<f32>; 8]; 79]> =
+        vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
+    let mut bp = Box::new(Ft8BpScratch::new());
+    let mut worker = CellsWorker::new(&mut cs, &mut bp, &tables);
+    let search = GatedSearch::new(200.0, 3000.0, 1.3, 30);
+    let cap = sic_signal_capacity(30, 3);
+    let run = |scratch: &mut SicScratch<'_>, worker: &mut CellsWorker<'_>| {
+        let (cands, mut cells) =
+            coarse_sync_gated_cells(&mut SliceSource(&a), Ft8Rate::Hz8000, &search, 1).unwrap();
+        sic_passes(
+            &mut SliceSource(&a),
+            Ft8Rate::Hz8000,
+            &search,
+            30,
+            DecodeDepth::EMBEDDED,
+            3,
+            &cands,
+            &mut cells,
+            &tables,
+            worker,
+            scratch,
+        )
+        .iter()
+        .map(|d| {
+            (
+                unpack77(d.message77()),
+                d.freq_hz.to_bits(),
+                d.dt_sec.to_bits(),
+            )
+        })
+        .collect::<Vec<_>>()
+    };
+    let mut storage = SicStorage::new(Ft8Rate::Hz8000, cap);
+    let want = run(&mut storage.scratch(), &mut worker);
+    assert!(want.len() >= 9);
+    let (mut ring, mut rd, mut raw, mut gidx) = (
+        vec![f32::NAN; 8192],
+        vec![1e9f32; 700],
+        vec![-7i16; 700],
+        vec![255u8; 1300],
+    );
+    let mut st = vec![SigState::default(); cap + 3];
+    let mut mine = SicScratch::new(
+        Ft8Rate::Hz8000,
+        &mut ring,
+        &mut rd,
+        &mut raw,
+        &mut gidx,
+        &mut st,
+    );
+    assert_eq!(run(&mut mine, &mut worker), want);
+    assert_eq!(
+        run(&mut mine, &mut worker),
+        want,
+        "a second flow over the same slices"
+    );
+}

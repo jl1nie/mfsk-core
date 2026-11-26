@@ -9,6 +9,9 @@ pub mod compute_bench;
 /// The FT8 8 kHz half-dB cell producer on the board (the S3 cells plan's step 1).
 #[cfg(feature = "cells-bench")]
 pub mod cells_bench;
+/// SIC on the board: `sic_passes` over caller memory, the ring in PSRAM against internal DRAM (S3 cells plan, SIC-on-ESP32 step S2).
+#[cfg(feature = "sic-bench")]
+pub mod sic_bench;
 /// FT8 gate + `fine_sync_12k` + OSD against the shipped pipeline, on the board (the S3 plan's stage 1).
 #[cfg(feature = "gate-bench")]
 pub mod gate_bench;
