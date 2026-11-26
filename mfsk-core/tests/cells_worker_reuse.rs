@@ -246,3 +246,106 @@ fn a_scratch_over_the_callers_slices_equals_the_storage() {
         "a second flow over the same slices"
     );
 }
+
+/// `sic_passes_with` and a round shared by two workers through an atomic index (what a two-core firmware runs, work stealing) give **the same decodes, in the same
+/// order,** as `sic_passes` over one worker. **Fails if** the merge by candidate index differs from the sequential round (a candidate decoded twice or dropped,
+/// dedupe order changed), or if a worker's state leaks into the other's result.
+#[test]
+fn a_round_shared_by_two_workers_equals_the_sequential_round() {
+    use mfsk_core::ft8::decode_block::{
+        Found, SicStorage, sic_passes, sic_passes_with, sic_signal_capacity,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let tables = CellTables::new();
+    let rate = Ft8Rate::Hz8000;
+    let search = GatedSearch::new(200.0, 3000.0, 1.3, 30);
+    let mk = || -> (Box<[[Cmplx<f32>; 8]; 79]>, Box<Ft8BpScratch>) {
+        (
+            vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap(),
+            Box::new(Ft8BpScratch::new()),
+        )
+    };
+    let (mut cs0, mut bp0) = mk();
+    let (mut cs1, mut bp1) = mk();
+    for name in ["qso3_busy", "qso1", "qso2"] {
+        let a = audio(name);
+        for passes in [1usize, 3] {
+            let mut storage = SicStorage::new(rate, sic_signal_capacity(30, passes));
+            let (cands, mut cells) =
+                coarse_sync_gated_cells(&mut SliceSource(&a), rate, &search, 1).unwrap();
+            let mut w0 = CellsWorker::new(&mut cs0, &mut bp0, &tables);
+            let want = sic_passes(
+                &mut SliceSource(&a),
+                rate,
+                &search,
+                30,
+                DecodeDepth::EMBEDDED,
+                passes,
+                &cands,
+                &mut cells,
+                &tables,
+                &mut w0,
+                &mut storage.scratch(),
+            );
+            let (cands, mut cells) =
+                coarse_sync_gated_cells(&mut SliceSource(&a), rate, &search, 1).unwrap();
+            let mut w0 = CellsWorker::new(&mut cs0, &mut bp0, &tables);
+            let mut w1 = CellsWorker::new(&mut cs1, &mut bp1, &tables);
+            let got = sic_passes_with(
+                &mut SliceSource(&a),
+                rate,
+                &search,
+                30,
+                passes,
+                &cands,
+                &mut cells,
+                &tables,
+                &mut storage.scratch(),
+                |cells, cands, max_cand, known| {
+                    let n = cands.len().min(max_cand);
+                    let next = AtomicUsize::new(0);
+                    let run = |w: &mut CellsWorker<'_>| -> Vec<(usize, Option<Found>)> {
+                        let mut mine = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, Ordering::Relaxed);
+                            if i >= n {
+                                break;
+                            }
+                            mine.push((
+                                i,
+                                w.decode_candidate(cells, &cands[i].0, DecodeDepth::EMBEDDED, 0.25),
+                            ));
+                        }
+                        mine
+                    };
+                    let (a, b) = std::thread::scope(|s| {
+                        let h = s.spawn(|| run(&mut w1));
+                        (run(&mut w0), h.join().unwrap())
+                    });
+                    let mut all: Vec<_> = a.into_iter().chain(b).collect();
+                    all.sort_by_key(|x| x.0);
+                    for (_, f) in all {
+                        if let Some(f) = f
+                            && !known.iter().any(|o| o.res.message77() == f.res.message77())
+                        {
+                            known.push(f);
+                        }
+                    }
+                },
+            );
+            let key = |v: &[mfsk_core::ft8::decode::DecodeResult]| {
+                v.iter()
+                    .map(|d| {
+                        (
+                            d.message77().to_vec(),
+                            d.freq_hz.to_bits(),
+                            d.dt_sec.to_bits(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(key(&got), key(&want), "{name} passes {passes}");
+            assert!(!want.is_empty());
+        }
+    }
+}

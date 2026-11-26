@@ -9,6 +9,10 @@
 //! | `storage` | `sic_passes`: a `SicStorage` made once (its 32 KB ring is above the 2 KB internal threshold: PSRAM), the `cs` staging is `internal_pool`'s, a worker made once |
 //! | `ring-int` | as `storage`, but the whole `SicScratch` (ring, chunk buffers, table: 37 888 B) is one internal-DRAM block, `SicScratch::new` over slices of it |
 //!
+//! A fourth arm, `2core`, runs every round through two workers (core 0: the bench thread, core 1: `sic_w1`, each with its own staging block and BP scratch) that take
+//! candidates from one atomic index and are merged by candidate index (`sic_passes_with`; the host test `a_round_shared_by_two_workers_equals_the_sequential_round` shows the
+//! merge equals the sequential round). The search, the subtraction and the signals stay on core 0. The `search` figure is the same in every arm (one core).
+//!
 //! Logged: the time of the search and of the passes, the decodes (each arm's set against `alloc`'s), what making the memory cost in each heap, the heap minima
 //! since boot (**cumulative**: an arm shows only what goes below an earlier arm's, so the order is alloc, storage, ring-int and the minima are floors, not
 //! per-arm peaks) and the thread's stack high-water mark. No WiFi, no USB host: this says nothing about the 15.8 kB floor of the running firmware.
@@ -25,9 +29,13 @@ use mfsk_core::engine::dsp::resample::resample_to_8k;
 use mfsk_core::engine::source::SliceSource;
 use mfsk_core::ft8::decode::{DecodeDepth, DecodeResult};
 use mfsk_core::ft8::decode_block::{
-    CellTables, CellsWorker, Ft8BpScratch, Ft8Rate, GatedSearch, SicScratch, SicStorage, SigState,
-    coarse_sync_gated_cells, decode_block_cells_sic, sic_passes, sic_signal_capacity,
+    CellTables, CellsWorker, Found, Ft8BpScratch, Ft8Rate, GatedSearch, HalfDbCells, SicScratch,
+    SicStorage, SigState, coarse_sync_gated_cells, decode_block_cells_sic, sic_passes,
+    sic_passes_with, sic_signal_capacity,
 };
+use mfsk_core::engine::sync::SyncCandidate;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use mfsk_core::msg::wsjt77::unpack77;
 
 const INTERNAL: u32 = (1 << 11) | (1 << 2);
@@ -54,13 +62,51 @@ fn texts(out: &[DecodeResult]) -> Vec<String> {
     t
 }
 
+/// A round for the second core: the shared read-only inputs of one round (valid until the main core has received the reply).
+struct Job {
+    cells: *const HalfDbCells,
+    cands: *const (SyncCandidate, u8),
+    n: usize,
+    next: *const AtomicUsize,
+}
+// SAFETY: the sender blocks on the reply before it lets any of the pointees go.
+unsafe impl Send for Job {}
+type Done = Vec<(usize, Option<Found>)>;
+
+fn claim(w: &mut CellsWorker<'_>, j: &Job) -> Done {
+    // SAFETY: see `Job`
+    let (cells, next) = unsafe { (&*j.cells, &*j.next) };
+    let mut mine = Vec::new();
+    loop {
+        let i = next.fetch_add(1, Ordering::Relaxed);
+        if i >= j.n {
+            break;
+        }
+        let cand = unsafe { &(*j.cands.add(i)).0 };
+        mine.push((i, w.decode_candidate(cells, cand, DecodeDepth::EMBEDDED, 0.25)));
+    }
+    mine
+}
+
+fn spawn_pinned(
+    name: &'static core::ffi::CStr,
+    core: esp_idf_svc::hal::cpu::Core,
+    stack: usize,
+    f: impl FnOnce() + Send + 'static,
+) -> std::thread::JoinHandle<()> {
+    use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
+    let d = ThreadSpawnConfiguration::default();
+    ThreadSpawnConfiguration { name: Some(name), stack_size: stack, pin_to_core: Some(core), ..d }
+        .set()
+        .expect("sic-bench: thread config");
+    let h = std::thread::Builder::new().stack_size(stack).spawn(f).expect("sic-bench: spawn");
+    let _ = ThreadSpawnConfiguration::default().set();
+    h
+}
+
 pub fn run(target: &str, wavs: &'static [(&'static str, &'static [u8])]) -> ! {
-    log::info!("sic-bench: {target}, SIC on the board, one core (S3 plan, SIC-on-ESP32 step S2)");
-    let h = std::thread::Builder::new()
-        .name("sic_bench".into())
-        .stack_size(48 * 1024)
-        .spawn(move || body(wavs))
-        .expect("sic-bench: could not spawn the bench thread");
+    log::info!("sic-bench: {target}, SIC on the board: one core and two (S3 plan, SIC-on-ESP32 steps S2 and B)");
+    let h = spawn_pinned(c"sic_bench", esp_idf_svc::hal::cpu::Core::Core0, 48 * 1024, move || body(wavs));
     let _ = h.join();
     log::info!("sic-bench: end");
     loop {
@@ -110,6 +156,22 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
     );
     let mut st = vec![SigState::default(); sic_signal_capacity(MAX_CAND, 3)];
 
+    // the second core: its own staging (the worker half of the arena) and BP scratch, fed rounds through a channel
+    let (job_tx, job_rx): (Sender<Job>, Receiver<Job>) = channel();
+    let (done_tx, done_rx): (Sender<Done>, Receiver<Done>) = channel();
+    let tables_addr = &tables as *const CellTables as usize;
+    let _w1 = spawn_pinned(c"sic_w1", esp_idf_svc::hal::cpu::Core::Core1, 24 * 1024, move || {
+        // SAFETY: only this thread touches the worker half; `tables` outlives it (the bench never returns)
+        let cs = unsafe { crate::internal_pool::cs_scratch_worker() };
+        let mut bp = Box::new(Ft8BpScratch::new());
+        let tables = unsafe { &*(tables_addr as *const CellTables) };
+        let mut w = CellsWorker::new(cs, &mut bp, tables);
+        log::info!("sic-bench: sic_w1 up on core {}, stack free {} B", unsafe { esp_idf_svc::sys::xTaskGetCoreID(core::ptr::null_mut()) }, stack_free());
+        while let Ok(j) = job_rx.recv() {
+            let _ = done_tx.send(claim(&mut w, &j));
+        }
+    });
+
     for (label, wav) in wavs {
         let slot12: Vec<i16> = wav[44..]
             .chunks_exact(2)
@@ -136,7 +198,7 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
                 min_free(PSRAM)
             );
             // storage (ring in PSRAM) and ring-int
-            for arm in ["storage ", "ring-int"] {
+            for arm in ["storage ", "ring-int", "2core   "] {
                 if arm == "ring-int" && !have_int {
                     continue;
                 }
@@ -146,7 +208,25 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
                     let t0 = now_us();
                     let (cands, mut cells) = coarse_sync_gated_cells(&mut SliceSource(&a8), rate, &search, 1).unwrap();
                     let t1 = now_us();
-                    let out = if arm == "storage " {
+                    let out = if arm == "2core   " {
+                        sic_passes_with(&mut SliceSource(&a8), rate, &search, MAX_CAND, passes, &cands, &mut cells, &tables, &mut storage.scratch(),
+                            |cells, cands, max_cand, known| {
+                                let n = cands.len().min(max_cand);
+                                let next = AtomicUsize::new(0);
+                                let j = |next: &AtomicUsize| Job { cells, cands: cands.as_ptr(), n, next };
+                                job_tx.send(j(&next)).unwrap();
+                                let mut all = claim(&mut worker, &j(&next));
+                                all.extend(done_rx.recv().unwrap());
+                                all.sort_by_key(|x| x.0);
+                                for (_, f) in all {
+                                    if let Some(f) = f {
+                                        if !known.iter().any(|o| o.res.message77() == f.res.message77()) {
+                                            known.push(f);
+                                        }
+                                    }
+                                }
+                            })
+                    } else if arm == "storage " {
                         sic_passes(&mut SliceSource(&a8), rate, &search, MAX_CAND, DecodeDepth::EMBEDDED, passes, &cands, &mut cells, &tables, &mut worker, &mut storage.scratch())
                     } else {
                         // SAFETY: `blk` is BLOCK bytes, 16-aligned, used only through these disjoint slices for the life of this call

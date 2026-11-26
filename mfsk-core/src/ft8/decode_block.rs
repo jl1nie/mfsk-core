@@ -75,7 +75,8 @@ pub use coarse_lib::{
 };
 #[cfg(feature = "fixed-point")]
 pub use ft8dec_sic::{
-    SicScratch, SicStorage, SigState, decode_block_cells_sic, sic_passes, sic_signal_capacity,
+    SicScratch, SicStorage, SigState, decode_block_cells_sic, sic_passes, sic_passes_with,
+    sic_signal_capacity,
 };
 mod coarse_sync;
 mod fill_symbol_spectra;

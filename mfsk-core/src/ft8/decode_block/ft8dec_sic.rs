@@ -601,6 +601,40 @@ pub fn sic_passes<A: PcmSource>(
     worker: &mut CellsWorker<'_>,
     scratch: &mut SicScratch<'_>,
 ) -> Vec<DecodeResult> {
+    sic_passes_with(
+        src,
+        rate,
+        search,
+        max_cand,
+        passes,
+        cands,
+        cells,
+        tables,
+        scratch,
+        |cells, cands, max_cand, known| {
+            worker.decode_round(cells, cands, max_cand, depth, RETRY_MIN_SHIFT, known);
+        },
+    )
+}
+
+/// [`sic_passes`] with the **decoding of a round left to the caller**: `round(cells, cands, max_cand, known)` must do what
+/// [`CellsWorker::decode_round`] does (decode the first `max_cand` of `cands` from `cells`, with the retry at `RETRY_MIN_SHIFT`, and push each decode not already in `known`, in
+/// candidate order). A firmware with two cores passes a closure that shares the candidates between its workers (each candidate is decoded from the same read-only `cells`
+/// by [`CellsWorker::decode_candidate`], so the set and the order, once the results are merged by candidate index, are the sequential round's). Everything else (the subtraction,
+/// the searches, the signals) stays on the calling core.
+#[allow(clippy::too_many_arguments)]
+pub fn sic_passes_with<A: PcmSource>(
+    src: &mut A,
+    rate: Ft8Rate,
+    search: &GatedSearch,
+    max_cand: usize,
+    passes: usize,
+    cands: &[(SyncCandidate, u8)],
+    cells: &mut HalfDbCells,
+    tables: &CellTables,
+    scratch: &mut SicScratch<'_>,
+    mut round: impl FnMut(&HalfDbCells, &[(SyncCandidate, u8)], usize, &mut Vec<Found>),
+) -> Vec<DecodeResult> {
     assert!(
         scratch.st.len() >= sic_signal_capacity(max_cand, passes),
         "the SicScratch holds {} signals, this flow can decode {}",
@@ -613,7 +647,7 @@ pub fn sic_passes<A: PcmSource>(
     let mut sigs: Vec<SubSig> = Vec::new();
 
     // pass 0
-    worker.decode_round(cells, cands, max_cand, depth, RETRY_MIN_SHIFT, &mut known);
+    round(cells, cands, max_cand, &mut known);
     add_signals(
         &mut known,
         0,
@@ -657,12 +691,10 @@ pub fn sic_passes<A: PcmSource>(
         let view = View { cells, t: tables };
         let first_new = known.len();
         let cands: Vec<_> = cands.into_iter().filter(|c| c.1 >= PASS_MIN_HS).collect();
-        worker.decode_round(
+        round(
             cells,
             &cands,
             (max_cand / PASS_CAND_DIV).max(PASS_CAND_MIN).min(max_cand),
-            depth,
-            RETRY_MIN_SHIFT,
             &mut known,
         );
         add_signals(&mut known, first_new, &view, &mut sigs, df, nstep, fs);
