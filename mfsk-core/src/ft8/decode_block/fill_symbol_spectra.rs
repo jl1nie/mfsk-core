@@ -22,6 +22,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec;
+use alloc::vec::Vec;
 
 use num_complex::Complex;
 #[cfg(not(feature = "std"))]
@@ -47,7 +48,13 @@ pub fn goertzel_window_end_sample(dt_sec: f32) -> usize {
 /// [`goertzel_window_end_sample`] for audio at `rate` ([`Ft8Rate`]): the samples are the rate's, the symbol is `rate x 0.16`.
 pub fn goertzel_window_end_sample_at(dt_sec: f32, rate: Ft8Rate) -> usize {
     let i0 = ((TX_START_OFFSET_S + dt_sec) * rate.hz() as f32).round() as i64;
-    (i0 + (NN as i64) * (rate.nsps() as i64)).max(0) as usize
+    // a Hann window over two symbols reaches half a symbol past the last one
+    let tail = if rate.symbol_hann_2t() {
+        rate.nsps() as i64 / 2
+    } else {
+        0
+    };
+    (i0 + (NN as i64) * (rate.nsps() as i64) + tail).max(0) as usize
 }
 
 // Thread-local scratch for the `S -> i16` conversion in
@@ -544,6 +551,23 @@ pub fn fill_symbol_spectra_goertzel_at<S: AudioSample>(
         coeff[tone] = 2.0 * cos_w[tone];
     }
 
+    if rate.symbol_hann_2t() {
+        fill_hann_2t(
+            out,
+            audio,
+            nsps,
+            i0,
+            mask,
+            &cos_w,
+            &sin_w,
+            &coeff,
+            two_pi_over_fs,
+            freq_hz,
+            to_12k,
+        );
+        return;
+    }
+
     for sym in 0..NN {
         if !sym_in_mask(sym, mask) {
             continue;
@@ -597,6 +621,199 @@ pub fn fill_symbol_spectra_goertzel_at<S: AudioSample>(
                     im: im * to_12k,
                 }
             };
+        }
+    }
+}
+
+/// `w[k] = (1 - cos(theta k)) / 2` for `k = 0, 1, ...` by rotating `(cos, sin)` by `theta` each step (`theta = 2 pi / len` makes
+/// it the periodic Hann, `sin^2(pi k / len)`, over `len` samples).
+///
+/// The rotation and not the Chebyshev recurrence `c[k+1] = 2 cos(theta) c[k] - c[k-1]`: with `theta` this small
+/// (`2 pi / 2560`) the recurrence's error grows with `k^2` in `f32` (2e-4 by `k` = 114 and worse after), the rotation's with `k`.
+struct HannRecurrence {
+    cos_t: f32,
+    sin_t: f32,
+    c: f32,
+    s: f32,
+}
+
+impl HannRecurrence {
+    fn new(theta: f32) -> Self {
+        Self {
+            cos_t: theta.cos(),
+            sin_t: theta.sin(),
+            c: 1.0,
+            s: 0.0,
+        }
+    }
+
+    fn next(&mut self) -> f32 {
+        let w = 0.5 * (1.0 - self.c);
+        let (c, s) = (
+            self.c * self.cos_t - self.s * self.sin_t,
+            self.s * self.cos_t + self.c * self.sin_t,
+        );
+        self.c = c;
+        self.s = s;
+        w
+    }
+}
+
+/// The stage-3 symbol DFT with a **Hann window over two symbols** centred on the symbol (`Ft8Rate::symbol_hann_2t`): the
+/// Goertzel recursion over `2 x nsps` samples from `nsps / 2` before the symbol's first, each weighted by
+/// `w[k] = (1 - cos(2 pi k / (2 nsps))) / 2`.
+///
+/// The weight is made by a rotation of `(cos, sin)` (`HannRecurrence`: one `cos` and one `sin` per call, then multiplies and
+/// adds) into a table of the window's first half, once per call (`nsps + 1` floats: 5 KB at 8 kHz) and read mirrored for the 79
+/// symbols; computing it per sample instead costs 25 % more instructions. (One allocation per call: about 45 to 90 of 5 KB a slot
+/// at 15 to 30 candidates; the table depends on the rate only and could be built once.) Only IEEE `f32` arithmetic after the `cos` and `sin`,
+/// so the host and a board agree to the last bit given the same two. Its error over 2 560 steps is below 5e-4 (a test). The sum of
+/// the window is `nsps`, so a steady tone's cell is the rectangular one's. A sample outside the audio reads as 0, as in the
+/// rectangular kernel.
+#[allow(clippy::too_many_arguments)]
+fn fill_hann_2t<S: AudioSample>(
+    out: &mut [[Cmplx<f32>; 8]; 79],
+    audio: &[S],
+    nsps: usize,
+    i0: i64,
+    mask: SymMask,
+    cos_w: &[f32; NTONES],
+    sin_w: &[f32; NTONES],
+    coeff: &[f32; NTONES],
+    two_pi_over_fs: f32,
+    freq_hz: f32,
+    to_12k: f32,
+) {
+    let len = 2 * nsps;
+    // The window starts `nsps / 2` before the symbol and the recursion's output refers to the window's last sample, so the cell
+    // is the rectangular kernel's cell times `e^{j w nsps/2}` (`w` the tone's angular frequency): with the tone step of 6.25 Hz
+    // and `nsps / 2` samples of 0.08 s that is half a cycle a tone, **a sign flip on every odd tone** next to the common
+    // `f0` term. The coherent metrics (`llrb`, `llrc`, `llre`, which OSD always computes) add cells of different symbols and
+    // tones, so the cell is rotated back by `e^{-j w nsps/2}`, the rectangular kernel's reference. The angle is reduced to a
+    // fraction of a cycle first (`w nsps/2` is about 500 rad: too large for `f32` directly).
+    let mut rot_c = [0.0_f32; NTONES];
+    let mut rot_s = [0.0_f32; NTONES];
+    for tone in 0..NTONES {
+        let omega = two_pi_over_fs * (freq_hz + (tone as f32) * TONE_SPACING_HZ);
+        let cycles = omega * (nsps / 2) as f32 / core::f32::consts::TAU;
+        let frac = cycles - cycles.floor();
+        let theta = core::f32::consts::TAU * frac;
+        rot_c[tone] = theta.cos();
+        rot_s[tone] = theta.sin();
+    }
+    // the window once per call, its first half (`w[k] == w[len - k]`, `nsps + 1` floats: 5 KB at 8 kHz), made by `HannRecurrence`
+    let mut weight = HannRecurrence::new(core::f32::consts::TAU / len as f32);
+    let half: Vec<f32> = (0..=nsps).map(|_| weight.next()).collect();
+    let audio_len = audio.len() as i64;
+    for sym in 0..NN {
+        if !sym_in_mask(sym, mask) {
+            continue;
+        }
+        let start = i0 + (sym as i64) * (nsps as i64) - (nsps / 2) as i64;
+        let mut s_prev = [0.0_f32; NTONES];
+        let mut s_prev2 = [0.0_f32; NTONES];
+        let inside = start >= 0 && start + len as i64 <= audio_len;
+        for n in 0..len {
+            let w = half[n.min(len - n)];
+            // the window lies inside the audio (the hot path, no bounds test), or a sample outside it reads as 0
+            let raw = if inside {
+                audio[start as usize + n].to_i16() as f32
+            } else {
+                let idx = start + n as i64;
+                if idx >= 0 && idx < audio_len {
+                    audio[idx as usize].to_i16() as f32
+                } else {
+                    0.0
+                }
+            };
+            let sample = raw * w;
+            for tone in 0..NTONES {
+                let s = sample + coeff[tone] * s_prev[tone] - s_prev2[tone];
+                s_prev2[tone] = s_prev[tone];
+                s_prev[tone] = s;
+            }
+        }
+        for tone in 0..NTONES {
+            let re = s_prev[tone] - cos_w[tone] * s_prev2[tone];
+            let im = sin_w[tone] * s_prev2[tone];
+            // x e^{-j theta}
+            out[sym][tone] = Cmplx {
+                re: (re * rot_c[tone] + im * rot_s[tone]) * to_12k,
+                im: (im * rot_c[tone] - re * rot_s[tone]) * to_12k,
+            };
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_hann {
+    use super::*;
+
+    /// The recurrence is `sin^2` over the window: 2 x 1 280 and 2 x 1 920 samples, within 5e-4 of the double-precision value
+    /// at every sample, and the window sums to half its length (the property the cell scale rests on). Fails if the recurrence
+    /// starts at the wrong phase, uses the wrong `theta`, or drifts.
+    #[test]
+    fn the_hann_recurrence_is_sin_squared() {
+        for len in [2560usize, 3840] {
+            let theta = core::f32::consts::TAU / len as f32;
+            let mut r = HannRecurrence::new(theta);
+            let mut sum = 0.0f64;
+            for k in 0..len {
+                let w = r.next() as f64;
+                let want = (core::f64::consts::PI * k as f64 / len as f64)
+                    .sin()
+                    .powi(2);
+                assert!((w - want).abs() < 5e-4, "{len}: k {k}: {w} against {want}");
+                sum += w;
+            }
+            assert!(
+                (sum / (len as f64 / 2.0) - 1.0).abs() < 1e-3,
+                "{len}: the window sums to {sum}"
+            );
+        }
+    }
+
+    /// The Hann cell has the **phase** of the rectangular kernel's cell, not only its magnitude: for a steady tone at each of the
+    /// eight tone frequencies (a different run each), the 8 kHz cell of the tone equals `1.5 x sum_m x[s0 + m] e^{jw (nsps - 1 - m)}`
+    /// (the rectangular Goertzel's value over the symbol, computed here in double precision, times the `12000 / rate` scale)
+    /// within 3 %, as a complex number. The coherent metrics (`llrb`, `llrc`, `llre`) add cells of different symbols and tones;
+    /// before the rotation by `e^{-j w nsps/2}` every odd tone's cell had the opposite sign. Fails without that rotation.
+    #[cfg(feature = "fixed-point")]
+    #[test]
+    fn the_hann_cell_has_the_rectangular_cells_phase() {
+        let rate = Ft8Rate::Hz8000;
+        let (nsps, fs) = (1280usize, 8000.0f64);
+        let (freq_hz, dt) = (1003.3f32, 0.2f32);
+        let i0 = ((0.5f32 + dt) * 8000.0).round() as i64;
+        for tone in 0..8usize {
+            let f = freq_hz as f64 + tone as f64 * 6.25;
+            let slot: Vec<i16> = (0..15 * 8000)
+                .map(|n| (3000.0 * (core::f64::consts::TAU * f * n as f64 / fs + 0.7).cos()) as i16)
+                .collect();
+            let mut cs = [[Cmplx::<f32>::default(); 8]; 79];
+            for mask in [SymMask::SyncOnly, SymMask::DataOnly] {
+                fill_symbol_spectra_goertzel_at(&mut cs, &slot, rate, freq_hz, dt, mask);
+            }
+            for sym in [10usize, 11, 40] {
+                let s0 = (i0 + (sym * nsps) as i64) as usize;
+                let w = core::f64::consts::TAU * f / fs;
+                let (mut re, mut im) = (0.0f64, 0.0f64);
+                for m in 0..nsps {
+                    let a = w * (nsps - 1 - m) as f64;
+                    re += slot[s0 + m] as f64 * a.cos();
+                    im += slot[s0 + m] as f64 * a.sin();
+                }
+                let (re, im) = (1.5 * re, 1.5 * im);
+                let c = cs[sym][tone];
+                let err = ((c.re as f64 - re).powi(2) + (c.im as f64 - im).powi(2)).sqrt();
+                let mag = (re * re + im * im).sqrt();
+                assert!(
+                    err < 0.03 * mag,
+                    "tone {tone} symbol {sym}: cell ({}, {}) against the rectangular ({re}, {im})",
+                    c.re,
+                    c.im
+                );
+            }
         }
     }
 }

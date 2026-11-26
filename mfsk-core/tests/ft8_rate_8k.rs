@@ -387,10 +387,15 @@ fn fine_sync_at_finds_an_off_grid_signal_at_either_rate() {
     }
 }
 
-/// The f32 Goertzel's cells of one signal are the same at either rate (the sums are scaled by `12000 / rate`): the
-/// transmitted tone's magnitude in every symbol within 3 % of the 12 kHz one's, the other seven tones small; and the window
-/// end is the symbol length of the rate (`i0 + 79 x rate x 0.16`). Fails if the symbol is not `rate x 0.16` samples, the
-/// scale is missing (2/3 of it) or the tone frequencies use the wrong rate.
+/// The Goertzel's cells of one signal are the same at either rate (the sums are scaled by `12000 / rate`): the transmitted
+/// tone's magnitude in every symbol within 3 % of the 12 kHz one's, the other seven tones small; and the window end is the symbol
+/// length of the rate (`i0 + 79 x rate x 0.16`). Fails if the symbol is not `rate x 0.16` samples, the scale is missing (2/3 of
+/// it) or the tone frequencies use the wrong rate.
+///
+/// **In the fixed-point build at 8 kHz the symbol DFT is a Hann window over two symbols** (`Ft8Rate::symbol_hann_2t`): a tone
+/// of one symbol has `0.5 + 1/pi` = 0.82 of the rectangular amplitude (more where the neighbouring symbols are the same tone, up
+/// to 1), so the magnitude is compared within 0.75..1.05 of the 12 kHz one's, the other seven tones may leak the neighbour
+/// symbols' tones (up to about 0.11 of it from the half-window on each side), and the window end is half a symbol later.
 #[test]
 fn the_goertzel_cells_are_the_same_at_either_rate() {
     use mfsk_core::engine::scalar::Cmplx;
@@ -413,13 +418,23 @@ fn the_goertzel_cells_are_the_same_at_either_rate() {
     for (sym, &tone) in tones.iter().enumerate() {
         let t = tone as usize;
         let (ma, mb) = (mag(&a[sym][t]), mag(&b[sym][t]));
+        #[cfg(not(feature = "fixed-point"))]
         assert!(
             (mb / ma - 1.0).abs() < 0.03,
             "symbol {sym}: 8 kHz {mb} against 12 kHz {ma}"
         );
+        #[cfg(feature = "fixed-point")]
+        assert!(
+            (0.75..1.05).contains(&(mb / ma)),
+            "symbol {sym}: 8 kHz {mb} against 12 kHz {ma}"
+        );
         for k in (0..8).filter(|&k| k != t) {
+            #[cfg(not(feature = "fixed-point"))]
+            let leak = 0.15;
+            #[cfg(feature = "fixed-point")]
+            let leak = 0.2;
             assert!(
-                mag(&b[sym][k]) < 0.15 * mb,
+                mag(&b[sym][k]) < leak * mb,
                 "symbol {sym}: tone {k} leaks at 8 kHz"
             );
         }
@@ -429,10 +444,44 @@ fn the_goertzel_cells_are_the_same_at_either_rate() {
         end(Ft8Rate::Hz12000),
         ((0.5 + c.4) * 12_000.0).round() as usize + 79 * 1920
     );
+    // the Hann window over two symbols reaches half a symbol past the last one
+    #[cfg(feature = "fixed-point")]
+    let tail = 640;
+    #[cfg(not(feature = "fixed-point"))]
+    let tail = 0;
     assert_eq!(
         end(Ft8Rate::Hz8000),
-        ((0.5 + c.4) * 8_000.0).round() as usize + 79 * 1280
+        ((0.5 + c.4) * 8_000.0).round() as usize + 79 * 1280 + tail
     );
+}
+
+/// At 8 kHz in the fixed-point build the stage-3 symbol DFT (a Hann window over two symbols, centred on the symbol) reads **every
+/// transmitted tone** of a clean signal, all 79 symbols, as the strongest of the eight, for an on-grid and an off-grid frequency and
+/// a dt that is not a sample multiple of anything: the window is centred on its symbol, not half a symbol off (where the two
+/// neighbouring symbols weigh the same and the strongest tone is the neighbour's about half the time). Fails if the `nsps / 2`
+/// lead is missing or wrong, or the window is grossly asymmetric about its centre (a one-sample shift passes; the phase test in
+/// `fill_symbol_spectra.rs` and the window's own tests pin the rest).
+#[cfg(feature = "fixed-point")]
+#[test]
+fn the_8k_hann_symbol_dft_reads_every_sent_tone() {
+    use mfsk_core::engine::scalar::Cmplx;
+    use mfsk_core::ft8::decode_block::{SymMask, fill_symbol_spectra_goertzel_at};
+    for c in &CASES[..4] {
+        let m77 = pack77(c.0, c.1, c.2).unwrap();
+        let tones = message_to_tones::<Ft8>(&m77);
+        let slot = slot_at(Ft8Rate::Hz8000, std::slice::from_ref(c), 3000, 0.0, 1);
+        let mut cs = [[Cmplx::<f32>::default(); 8]; 79];
+        for mask in [SymMask::SyncOnly, SymMask::DataOnly] {
+            fill_symbol_spectra_goertzel_at(&mut cs, &slot, Ft8Rate::Hz8000, c.3, c.4, mask);
+        }
+        let mag2 = |x: &Cmplx<f32>| x.re * x.re + x.im * x.im;
+        for (sym, &tone) in tones.iter().enumerate() {
+            let best = (0..8)
+                .max_by(|&a, &b| mag2(&cs[sym][a]).total_cmp(&mag2(&cs[sym][b])))
+                .unwrap();
+            assert_eq!(best, tone as usize, "{} {}: symbol {sym}", c.0, c.1);
+        }
+    }
 }
 
 /// `from_hz` is the inverse of `hz` for the rates there are, and nothing else is one.

@@ -157,6 +157,21 @@ pub const ATTESTED_EXTRAS: &[(&str, &str, &str)] = &[
         "tier B's `ATTESTED` list, 'undecided': made by the wide-band decoder too, recovered in 6 of 16 noisy copies",
     ),
     (
+        "191111_110215",
+        "GJ0KYZ VK2LAW QF56",
+        "`ft8dec` (3 passes) lists it; the message's tones read 17 of 58 data symbols wrong at the decoded place (noise-only: 40 or more)",
+    ),
+    (
+        "191111_110630",
+        "CQ DX IK0YVV JN62",
+        "`ft8dec` lists it at 2727.9 Hz and the message's tones read 0 of 58 wrong there; this one is at 2628.6 Hz, 100 Hz lower, where the audio holds a copy of the signal (7 of 58 wrong): the splattered copies of a strong signal that `K4VBM HA8EK RR73` above is another case of",
+    ),
+    (
+        "websdr_test6",
+        "SM2EKA UT7IS -06",
+        "`jt9` lists it at 1716 Hz (this one: 1615.6 Hz, 100 Hz lower) and the message's tones read 0 of 58 wrong at both: the audio holds the signal and a copy of it 100 Hz below",
+    ),
+    (
         "191111_110700",
         "<...> DF1XG JO53",
         "ICAP's own decoder (`ft8dec`) lists it at 2111 Hz, -21 dB; found by the baseband path's subtraction passes",

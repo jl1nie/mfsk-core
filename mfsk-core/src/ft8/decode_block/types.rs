@@ -178,11 +178,31 @@ impl Ft8Rate {
     /// because the rectangular frame's sidelobes bury the Costas array of a signal that is not on the bin grid (a strong tone
     /// leaves 260 of 30 000 in the cell 25 Hz away, a Hann frame 0). `docs/notes/FT8_WINDOW_AND_COARSE_DESIGN.md`. It also moves
     /// the public `decode_block_low_mem` / `coarse_sync_gated` at `Hz8000` in this build (22 recordings, 30 candidates: 280 ->
-    /// 284 of 402, one more decode `jt9` lacks and nothing attests, `icap_profile.rs`). `Hz12000` and the f32 build are
+    /// 284 of 402, one more decode `jt9` lacks, a copy of a signal 100 Hz away, attested in `profile::ATTESTED_EXTRAS`). `Hz12000` and the f32 build are
     /// not measured and keep the rectangular frame.
     #[cfg(feature = "fixed-point")]
     pub(super) const fn coarse_hann_2t(self) -> bool {
         matches!(self, Ft8Rate::Hz8000)
+    }
+
+    /// Whether the **stage-3 symbol DFT** (the Goertzel of `fill_symbol_spectra_goertzel_at`) weights its window with a Hann window
+    /// over two symbols (`2 x nsps` samples centred on the symbol) instead of leaving it rectangular over the symbol: `Hz8000` in
+    /// the `fixed-point` build only (the numeric path the boards ship, and the one it was measured in), the same rate and build as
+    /// [`coarse_hann_2t`](Self::coarse_hann_2t), whose frame it matches.
+    ///
+    /// **A deliberate divergence from WSJT-X** (`ft8b.f90:153-161`: `cs(0:7,k)=csymb(1:8)/1e3`, the symbol's 32 samples of the 200 Hz
+    /// baseband through a rectangular 32-point FFT). Doubles the stage-3 DFT work (`2 x nsps` samples a symbol, 8 tones), which is
+    /// about 63 % of a candidate's cost at the DFT alone; the whole S3 flow measured +25..+29 % instructions per slot (198 -> 255 M at
+    /// 15 candidates). The Goertzel output is rotated back by `e^{-j w nsps/2}` to the rectangular kernel's phase reference: without
+    /// it every odd tone's cell had the opposite sign and the coherent metrics (`llrb`, `llrc`, `llre`, which **OSD computes whatever
+    /// the LLR effort**, so the measured S3 flow reads them) added cells of different tones with the wrong sign.
+    ///
+    /// What is **not** validated: the coherent metrics with **overlapping windows** (adjacent symbols' DFTs share half a window, so
+    /// they are not independent) beyond the recall of the corpora in `FT8_WINDOW_AND_COARSE_DESIGN.md`; and the SNR read from
+    /// these cells: a tone of one symbol in the window has 0.82 of its rectangular amplitude (power 0.67) and noise 0.75 of its
+    /// power, which would put it about 0.5 dB low (**computed, not measured**; the neighbours' tones leak in and move it).
+    pub(super) const fn symbol_hann_2t(self) -> bool {
+        cfg!(feature = "fixed-point") && matches!(self, Ft8Rate::Hz8000)
     }
 
     /// The spectrogram's step between frames, samples (`NSPS / 4`, or `NSPS / 2` under `nstep-half`).

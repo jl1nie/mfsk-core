@@ -295,15 +295,16 @@ leaves the cells 25 / 50 / 100 Hz away at 0 where the rectangular frame leaves 2
 starts at; the noise cell is 0.75 of 12 kHz's; the Q15 table is the periodic Hann, symmetric, summing to `nfft / 2`) and, in `icap_profile.rs`,
 `the_s3_flow_at_native_8khz_meets_its_floor` (22 recordings, floors 216 / 272 of 402, no unattested extra) and
 `the_low_memory_profile_at_native_8khz_meets_its_floor`, now in both builds (fixed-point floors 221 / 284; one decode `jt9` lacks and nothing
-attests, pinned by identity). Mutations checked: the 8 kHz frame rectangular again fails the leak and noise tests and the S3 floor at 30
+attests, pinned by identity: now attested, see below). Mutations checked: the 8 kHz frame rectangular again fails the leak and noise tests and the S3 floor at 30
 candidates (268 < 272); no `nsps / 2` lead fails the burst test; a half-sine instead of `sin^2` fails the noise test, the 12 kHz / 8 kHz cell
 test and the table test (not the leak and burst tests).
 
 **The public low-memory path moves too.** `decode_block_low_mem` / `coarse_sync_gated` at `Hz8000` in the fixed-point build reach the same
 spectrogram (found by the review, which ran the existing native-8 kHz body in a fixed-point build: it had no fixed-point test, its doc said the
 build panics). With the window: 221 / 284 of 402 at 15 / 30 candidates, extras 3 / 3; without: 221 / 280, extras 1 / 2. The one added extra is
-`websdr_test6`'s `SM2EKA UT7IS -06` at 1615.6 Hz where `jt9` has it at 1716 Hz: 100 Hz away, an alias of the 200 Hz baseband, a real message at the
-wrong frequency; the S3 flow gives the same decode without the window at 30 candidates. It is pinned as debt by identity.
+`websdr_test6`'s `SM2EKA UT7IS -06` at 1615.6 Hz where `jt9` has it at 1716 Hz: the message's tones read 0 of 58 wrong at both, so the audio holds
+the signal and a copy of it 100 Hz below (the review first read it as a baseband alias; it is not). It is attested (`profile::ATTESTED_EXTRAS`); the
+S3 flow gives the same decode without the window at 30 candidates.
 
 Measured on the production build against the same tree with the window off (60 slots, S3 flow, 8 kHz, host):
 
@@ -325,3 +326,51 @@ Not done for 5.1a: noise-only slots (tier C), the boards (`stage1_inc`, `esp_dsp
 (-1.25 dB), so a signal is about 0.5 dB weaker against the noise and `xsnr2_db_simple` (not rate-aware) would read about 0.5 dB low at 8 kHz;
 unmeasured, not compensated. **WSJT-X**: `sync8.f90:35-37` is one symbol, rectangular, zero-padded to `NFFT1` (this note said two symbols in
 its first version: wrong).
+
+## 10. 5.1b as built (2026-11-26)
+
+In the tree: `Ft8Rate::symbol_hann_2t` (`types.rs`, `Hz8000` and `fixed-point`) and `fill_hann_2t` in `fill_symbol_spectra.rs`: the stage-3
+Goertzel over `2 x nsps` samples centred on the symbol, weighted by a half-window table made by rotating `(cos, sin)` once per call (the
+Chebyshev recurrence first tried drifts with `k^2` in `f32` at this `theta` and failed its own test: 2e-4 by sample 114), the output
+rotated back by `e^{-j w nsps/2}`, and `goertzel_window_end_sample_at` half a symbol later. `Hz12000` and the f32 build are unchanged.
+
+**The phase.** The window starts `nsps / 2` before the symbol and the recursion's output refers to the window's last sample, so the first
+version's cell was the rectangular cell times `e^{j w nsps/2}`: with a 6.25 Hz tone step and 0.08 s that is half a cycle a tone, **a sign flip
+on every odd tone** (and a common `f0` term). The magnitudes were right and every magnitude-only reader (`sync_quality`, llra, llrd, the
+block-0 q) was unaffected, but OSD computes the coherent `llrb`/`llrc`/`llre` whatever the LLR effort, so the measured flow read cells of
+different tones with the wrong sign (found by the review, which measured 224 / 287 with the sign fixed against 223 / 286 without, on the
+22 recordings). The first version's docs said "validated for `LlrEffort::Minimal`"; that was wrong for the flow measured. The cell now has the
+rectangular kernel's phase (`the_hann_cell_has_the_rectangular_cells_phase`, checked against a double-precision DFT for all eight tones).
+The coherent metrics with **overlapping** windows are validated by the corpora's recall only.
+
+Measured on the final code (60 slots, S3 flow, 8 kHz, host; hits of 1 338, extras, ft8dec's 1 026, M instructions per slot from 12 slots):
+
+| candidates | neither window (shipped) | 5.1a (coarse) | **5.1a + 5.1b** |
+|---:|---|---|---|
+| 10 | 519 / 1 / 512, 159 M | 506 / 1 / 500, 173 M | 523 / 4 / 516, 203 M |
+| 15 | 710 / 4 / 702, 198 M | 700 / 4 / 695, 215 M | **737 / 12 / 734, 255 M** |
+| 20 | 821 / 10 / 808, 259 M | 831 / 9 / 822, 278 M | 888 / 19 / 880, 327 M |
+| 30 | 893 / 18 / 877, 392 M | 921 / 15 / 905, 417 M | **993 / 25 / 980, 500 M** |
+| 45 | 896 / 19 / 879, 527 M | 922 / 15 / 905, 544 M | 997 / 25 / 982, 674 M |
+| 60 | 896 / 19 / 879, 608 M | 922 / 15 / 905, 608 M | 997 / 25 / 982, 760 M |
+
+* **The 15-candidate loss of 5.1a is closed**: 737 against the shipped 710 (+27) for +29 % instructions (255 against 198 M).
+* **The cost is lower than the model of section 6a** (+60 % per candidate at the symbol DFT alone): the whole flow is +25..+29 %, the window
+  table is once per call and the rotation 25 % cheaper than per sample, and fewer candidates reach the full DFT.
+* **30 candidates with both windows (993 hits, 500 M) against the shipped 60 (896 hits, 608 M): +97 hits for 18 % fewer instructions.**
+* The shipped flow saturates at 30 candidates (893 -> 896); the windowed one at 30-45 (993 -> 997).
+* Extras at 60 candidates 19 -> 25 (15 added, 9 gone): 10 of the 15 are listed by `ft8dec`, 10 read under 40 of 58 data tones wrong at the
+  decoded frequency (noise-only: 40 or more), 4 are hashed or special-event calls the count cannot judge (one, `<...> JH1RGG`,
+  unconfirmed by anything). **No noise-only slot was run** (tier C).
+
+Tests: `the_8k_hann_symbol_dft_reads_every_sent_tone` (all 79 symbols of four signals read as the strongest tone: fails without the
+`nsps / 2` lead), `the_goertzel_cells_are_the_same_at_either_rate` (fixed-point: 0.75..1.05 of the 12 kHz cell, the window end half a symbol
+later), `the_hann_cell_has_the_rectangular_cells_phase` (fails without the rotation, tone 0 included), `the_hann_recurrence_is_sin_squared`, and the
+22-recording floors (`icap_profile.rs`: S3 flow 224 / 287 of 402, native low-memory 221 / 284). Mutations checked: the symbol window off fails the
+window-end test and the S3 floor; no lead fails four tests of `ft8_rate_8k.rs`; a recurrence from the wrong phase fails its own test and two of
+`ft8_rate_8k.rs`; no phase rotation fails the phase test. A one-sample shift of the mirror passes every test (the claim of the tone-reading test
+is "grossly asymmetric").
+
+Not done: noise-only slots, the boards (`esp_dsp` Goertzel / the board's symbol DFT), 12 kHz and f32, the SNR at 8 kHz (computed about 0.5 dB
+low from the cells, not measured, not compensated), one allocation of the window table per call (45 to 90 of 5 KB a slot at 15 to 30
+candidates; it depends on the rate only and could be built once).

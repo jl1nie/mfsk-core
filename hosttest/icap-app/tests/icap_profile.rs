@@ -107,19 +107,14 @@ fn the_low_memory_profile_meets_its_floor() {
 /// signal is lost at 30 candidates (`websdr_test6`, `OM7AZA SV8EUB -11`, 348.5 Hz); at 45 and 60 the two recalls are equal
 /// (277 and 277, 278 and 278): a candidate on the edge of the list. **Fixed-point** (the coarse spectrogram's frame is a Hann
 /// window over two symbols at 8 kHz, `Ft8Rate::coarse_hann_2t`): 221 and 284 of 402 with the window, 221 and 280 without; with
-/// the window **one decode `jt9` lacks and nothing attests** (`websdr_test6`, `SM2EKA UT7IS -06` at 1615.6 Hz, which `jt9` has at
-/// 1716 Hz: 100 Hz away, an alias of the 200 Hz baseband, so a real message reported at the wrong frequency), which the profile
-/// counts as an extra; it is pinned by identity below (debt, not a count), as `band_baseband.rs` pins its own. The S3 flow
-/// (`the_s3_flow_at_native_8khz_meets_its_floor`) gives the same message without the window, at 30 candidates.
+/// the window one more decode `jt9` lacks: `websdr_test6`'s `SM2EKA UT7IS -06` at 1615.6 Hz, which `jt9` lists at 1716 Hz; the
+/// message's tones read 0 of 58 wrong at both places (the audio holds the signal and a copy of it 100 Hz below), so it is
+/// attested (`profile::ATTESTED_EXTRAS`) like the copies of strong signals already there; the S3 flow gives the same message
+/// without the window, at 30 candidates.
 #[cfg(not(feature = "fixed-point"))]
 const NATIVE_8K_FLOORS: [(usize, usize); 2] = [(15, 224), (30, 273)];
 #[cfg(feature = "fixed-point")]
 const NATIVE_8K_FLOORS: [(usize, usize); 2] = [(15, 221), (30, 284)];
-/// The decodes `jt9` lacks and nothing attests at 8 kHz native, by identity (see above).
-#[cfg(not(feature = "fixed-point"))]
-const NATIVE_8K_DEBT: [(&str, &str); 0] = [];
-#[cfg(feature = "fixed-point")]
-const NATIVE_8K_DEBT: [(&str, &str); 1] = [("websdr_test6", "SM2EKA UT7IS -06")];
 
 #[test]
 fn the_low_memory_profile_at_native_8khz_meets_its_floor() {
@@ -158,13 +153,10 @@ fn the_low_memory_profile_at_native_8khz_meets_its_floor() {
                 s.hits
             );
         }
-        let debt: Vec<(String, String)> = NATIVE_8K_DEBT
-            .iter()
-            .map(|(a, b)| (a.to_string(), b.to_string()))
-            .collect();
-        assert_eq!(
-            s.unexplained_list, debt,
-            "max_cand {max_cand}: the decodes jt9 lacks that nothing attests are the pinned debt, no others"
+        assert!(
+            s.unexplained_list.is_empty(),
+            "max_cand {max_cand}: a decode jt9 lacks that is not attested: {:?}",
+            s.unexplained_list
         );
     }
 }
@@ -178,15 +170,13 @@ fn banding_the_low_memory_profile_changes_no_decode() {
 
 /// The S3's own flow (`profile::run_slot_s3`: the gate by hard sync, `fine_sync_at`, block-0 refine, stage 3 with OSD, in the
 /// fixed-point numeric path the boards run, no FIR baseband) on the same 22 recordings **read at 8 kHz as they are**
-/// (`Ft8Rate::Hz8000`): what the 8 kHz coarse spectrogram's Hann window over two symbols
-/// (`Ft8Rate::coarse_hann_2t`, `docs/notes/FT8_WINDOW_AND_COARSE_DESIGN.md`) is worth where it is on.
+/// (`Ft8Rate::Hz8000`), with both windows of `docs/notes/FT8_WINDOW_AND_COARSE_DESIGN.md` on: the coarse spectrogram's Hann
+/// window over two symbols (`Ft8Rate::coarse_hann_2t`) and the symbol DFT's (`Ft8Rate::symbol_hann_2t`).
 ///
-/// Measured 2026-11-26 against `jt9`'s 402, the same tree with the window on and off: **15 candidates 216 / 216, 30 candidates
-/// 272 / 268** (extras 2 / 1 and 3 / 4; with the window off one of the four is unexplained, `websdr_test6`'s
-/// `SM2EKA UT7IS -06`). On these 22 recordings the window is a small gain; on the 60 slots of the design note (the 38 busy
-/// ones of `ft8_lib/test/wav/20m_busy` added) it is +28 hits at 30 candidates and **-10 at 15**: the recall at 15 is the order of
-/// the first 15 by hard sync, which the window changes before it improves the rest. The floors are the measured figures
-/// with the window on; every extra must be attested (`profile::ATTESTED_EXTRAS`) or it is a phantom.
+/// Measured 2026-11-26 against `jt9`'s 402: **15 candidates 224, 30 candidates 287**; with the coarse window only 216 and 272; with
+/// neither 216 and 268. Extras 4 and 5, every one attested (`profile::ATTESTED_EXTRAS`). On the 60 slots of the design note (the 38
+/// busy ones of `ft8_lib/test/wav/20m_busy` added) the two windows are +27 hits at 15 candidates and +100 at 30 (against neither).
+/// The floors are the measured figures; every extra must be attested or it is a phantom.
 #[cfg(feature = "fixed-point")]
 #[test]
 fn the_s3_flow_at_native_8khz_meets_its_floor() {
@@ -225,8 +215,8 @@ fn the_s3_flow_at_native_8khz_meets_its_floor() {
 }
 
 #[cfg(feature = "fixed-point")]
-const S3_FLOOR_15: usize = 216;
+const S3_FLOOR_15: usize = 224;
 #[cfg(feature = "fixed-point")]
-const S3_FLOOR_30: usize = 272;
+const S3_FLOOR_30: usize = 287;
 #[cfg(feature = "fixed-point")]
-const S3_MAX_EXTRAS: usize = 3;
+const S3_MAX_EXTRAS: usize = 5;
