@@ -1512,7 +1512,7 @@ impl Default for LowMem {
 
 /// The embedded FT8 decode for a small heap and a real QSO: [`decode_block`]'s stages with the candidate
 /// path rebuilt around what a short list of candidates needs. **Not the same decodes as [`decode_block`]**,
-/// and the same in every build (a public function does not change meaning with a cargo feature).
+/// and the same in every build **except** that at `Ft8Rate::Hz8000` with `fixed-point` the candidate search is `ft8_lib`'s (`Ft8Rate::coarse_ft8lib`; `sync_min` is not read there and `sync_score` is that search's integer score, 8..127 in 0.5 dB units).
 ///
 /// - **Candidates by hard sync** ([`super::coarse_sync_gated`]): the coarse list of [`super::HARD_SYNC_POOL`]
 ///   is reordered by how many of the 21 Costas symbols read right in the spectrogram, and `max_cand` of
@@ -1544,7 +1544,7 @@ impl Default for LowMem {
 ///
 /// `search` is what is looked for (`GatedSearch::new(freq_min, freq_max, sync_min, max_cand)`: `keep` is the number of
 /// candidates decoded), `mem` how it is held (`LowMem`): the first changes what is found, the second only memory, SD reads
-/// and time. **Only `search`'s band, `sync_min` and `keep` are read**: `lag_s` and `fill` are for a spectrogram you
+/// and time. **Only `search`'s band, `sync_min` (not at `Hz8000` with `fixed-point`) and `keep` are read**: `lag_s` and `fill` are for a spectrogram you
 /// already hold ([`coarse_sync_gated_spec`](super::coarse_sync_gated_spec)); set here they are ignored.
 ///
 /// `LowMem::coarse_bands` changes memory and time only: the decodes are the same for any number of bands.

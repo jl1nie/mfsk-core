@@ -185,6 +185,19 @@ impl Ft8Rate {
         matches!(self, Ft8Rate::Hz8000)
     }
 
+    /// Whether the audio-source gated search (`coarse_sync_gated`) scores the slot with **`ft8_lib`'s statistic** on 0.5 dB cells of the
+    /// demux's 32-bit power (`coarse_lib`) instead of `sync8`'s: `Hz8000` in the `fixed-point` build, the rate and build of the two
+    /// windows ([`coarse_hann_2t`](Self::coarse_hann_2t), [`symbol_hann_2t`](Self::symbol_hann_2t)), whose frame it reads.
+    ///
+    /// **A deliberate divergence from WSJT-X** (`sync8.f90`). On 60 real slots (38 `20m_busy` + the 22 recordings, 1 338 `jt9` decodes;
+    /// `ft8dec`'s 1 026 messages as the yardstick) it takes the S3 flow with both windows from 982 to 1 001 of those at 60 candidates (hits 997 -> 1 011; 15 candidates 737 -> 761); see
+    /// `docs/notes/FT8_WINDOW_AND_COARSE_DESIGN.md` for the measurement and the cost. `Hz12000`, the f32 build and the streamed
+    /// spectrogram's gate (`coarse_sync_gated_spec`) keep `sync8`.
+    #[cfg(feature = "fixed-point")]
+    pub(super) const fn coarse_ft8lib(self) -> bool {
+        matches!(self, Ft8Rate::Hz8000)
+    }
+
     /// Whether the **stage-3 symbol DFT** (the Goertzel of `fill_symbol_spectra_goertzel_at`) weights its window with a Hann window
     /// over two symbols (`2 x nsps` samples centred on the symbol) instead of leaving it rectangular over the symbol: `Hz8000` in
     /// the `fixed-point` build only (the numeric path the boards ship, and the one it was measured in), the same rate and build as

@@ -164,7 +164,12 @@ pub const ATTESTED_EXTRAS: &[(&str, &str, &str)] = &[
     (
         "191111_110630",
         "CQ DX IK0YVV JN62",
-        "`ft8dec` lists it at 2727.9 Hz and the message's tones read 0 of 58 wrong there; this one is at 2628.6 Hz, 100 Hz lower, where the audio holds a copy of the signal (7 of 58 wrong): the splattered copies of a strong signal that `K4VBM HA8EK RR73` above is another case of",
+        "`jt9` lists it at 2728 Hz and `ft8dec` at 2727.9 Hz, and the message's tones read 0 of 58 wrong there; this one is at 2628.6 Hz, 100 Hz lower, where the audio holds a copy of the signal (7 of 58 wrong): the splattered copies of a strong signal that `K4VBM HA8EK RR73` above is another case of",
+    ),
+    (
+        "191111_110700",
+        "CQ DX IK0YVV JN62",
+        "`jt9` lists it at 2728 Hz and `ft8dec` at 2727.9 Hz; this is at 2828.6 Hz, 100 Hz above, where the audio holds a copy of the signal: the message's tones read 2 of 58 wrong there (the same signal as `191111_110630`'s, whose copy is 100 Hz below)",
     ),
     (
         "websdr_test6",

@@ -374,3 +374,110 @@ is "grossly asymmetric").
 Not done: noise-only slots, the boards (`esp_dsp` Goertzel / the board's symbol DFT), 12 kHz and f32, the SNR at 8 kHz (computed about 0.5 dB
 low from the cells, not measured, not compensated), one allocation of the window table per call (45 to 90 of 5 KB a slot at 15 to 30
 candidates; it depends on the rate only and could be built once).
+
+## 11. 5.2 as built: the candidate search on `ft8_lib`'s statistic (2026-11-26)
+
+In the tree: `coarse_lib.rs` (new; `Ft8Rate::coarse_ft8lib`, `Hz8000` and `fixed-point`), the arm in `coarse_sync_gated`, and the demux of
+`spectrogram.rs` made **generic over the cell conversion** (`LinearShift`: the shipped `p >> FP_SPEC_SHIFT`, bit for bit, pinned by a checksum
+test of the u16 cells at 12 kHz and 8 kHz, whole range and band; `HalfDb`: `half_db(p)`, `20 log10 p` of the 32-bit power in 0.5 dB units from the
+leading-zero count and a 16-entry table in quarter units, rounded once, within 0.82 units of the exact value, at most 193).
+
+**What it does.** Per band of carriers (the dB cells of the band are built, scored and dropped, as `banded_peaks` does): every position (carrier bin
+x row `j0` = -22..37, DT -2.26..+2.46 s, `ft8dec`'s rows) is scored by the mean over the Costas symbols of the tone's dB minus the adjacent
+tones' and the adjacent symbols' (integer, one division a position); the band keeps its best `12 x pool` positions by a total order (score, carrier,
+row) with a histogram cut, each with its hard-sync count; the union is cut to the best `12 x pool` of that order, suppressed (+-2 bins,
++-2 rows), cut to `pool` (300), ordered by hard sync (stable) and to `keep`. The result does not depend on the number of bands, to the bit.
+
+**Deviations from the plan.** (1) The cells stay u16 (the half-dB value is at most 193) and live one band at a time, so the memory is the banded
+u16 spectrogram's, not the whole-slot 178 KB of u8 the plan counted: a u8 store of the whole slot would have been more memory, not less, than the
+banded flow already has. (2) The pool (300) and the order (hard sync over the pool) were chosen by measurement, below; the plan listed three.
+(3) **The instruction gate was replaced** (agreed with the user): the plan asked for at most +50 M at 60 candidates and +40 M at 15; it failed at 60
+(+252 M; +40 M at 15 candidates, +54 M at 30, so it also failed the 15-candidate limit by nothing: exactly 40 M). The search itself is dearer by 45 M
+(`coarse_sync_gated` alone, measured on the stage: 106.7 M with `sync8`, 151.7 M with `ft8_lib`, the same at 15 / 30 / 60 candidates), and the rest is that its
+candidates are more often real and so reach the full stage-3 DFT and OSD (about 15 against 11 M a candidate, a fit). The earlier reading of the fit's intercepts
+(105 against 112 M, "the search is cheaper") was wrong: the score-order variant, running the same search, fitted 142 M. The gate that means something
+is instructions **at the same recall**, below, with the caveat that the `sync8` cost at 919 hits is a linear interpolation between two points.
+
+Measured (60 slots, S3 flow, 8 kHz, host, both windows on; hits of 1 338 / extras / ft8dec's 1 026 / M instructions per slot from 12 slots):
+
+| candidates | `sync8` order (5.1a + 5.1b) | `ft8_lib`, score order | `ft8_lib`, pool 300 -> hard sync (**built**) |
+|---:|---|---|---|
+| 10 | 523 / 4 / 516, 203 M | 514 / 6 / 512, 242 M | 534 / 5 / 529, 236 M |
+| 15 | 737 / 12 / 734, 255 M | 733 / 9 / 722, 305 M | **761 / 11 / 754, 295 M** |
+| 20 | 888 / 19 / 880, 327 M | 877 / 16 / 865, 372 M | 919 / 23 / 909, 373 M |
+| 30 | 993 / 25 / 980, 499 M | 1 001 / 31 / 987, 522 M | **1 009 / 36 / 1 001, 553 M** |
+| 60 | 997 / 25 / 982, 760 M | 1 011 / 36 / 1 001, 823 M | 1 011 / 37 / 1 001, 1 012 M |
+
+The pool of 100 and of 600 gave the same hits within one (15 candidates 761 both; 30 candidates 1 010 with 100 and 1 009 with 600; 60 candidates 1 011), 919 / 1 019 M at 60.
+The `ft8_lib` score order alone is below the `sync8` order at 15 and 20 candidates (733 against 737; 877 against 888): it has no hard-sync
+re-rank of the top of the list, which the gated search always had. Fixed part and per candidate (fit over 1 / 15 / 30 / 60 candidates):
+`sync8` 112 M + 11.1 M, `ft8_lib` hard-sync order 105 M + 15.0 M, score order 142 M + 11.6 M.
+
+**Gates, as checked.** ft8dec's 1 026 at 60 candidates 1 001 (>= 1 000: passed); hits at 15 candidates 761 (>= 737) and at 30 candidates 1 009
+(>= 993): passed. **Instructions at the same recall**: 919 hits cost 373 M at 20 candidates, the `sync8` flow reaches that between its
+888 hits (327 M) and 993 (499 M), about 378 M: equal; 1 009 hits at 30 candidates cost 553 M, which the `sync8` flow does not reach at all
+(997 at 60 candidates, 760 M): the ceiling moved. `Hz12000` / f32 / banded invariance tests green; the u16 cells bit-for-bit.
+
+**Extras** (60 candidates, against the `sync8` flow): 25 -> 37 (15 added, 3 gone); at 30 candidates 25 -> 36 (14 added). Of the 15: 12 are
+listed by `ft8dec` (3 passes), and all 15 read under 40 of 58 data tones wrong at the decoded place (noise-only: 40 or more); none is
+hashed, none unconfirmed. Two of the 22 recordings' decodes `jt9` lacks are new in the profile and attested: `191111_110700`'s `CQ DX IK0YVV JN62`
+(`ft8dec` lists it, 2 of 58 tones wrong at 2828.6 Hz: a copy 100 Hz above the signal) and `websdr_test3`'s `EY8MM YB1BZV OI33` (23 of 58 wrong;
+the same station is in `websdr_test1`; not listed by `ft8dec` or `jt9`). **No noise-only slot was run.**
+
+**22 recordings** (`icap_profile.rs`): S3 flow 230 / 289 of 402 at 15 / 30 candidates (224 / 287 with the `sync8` search); the native
+low-memory profile at 8 kHz 229 / 287 (221 / 284), with no extra at 15 candidates (the `SM2EKA` copy is not decoded by it now).
+
+**Tests** (`coarse_lib.rs`): the clean signals of a slot (one with a strong neighbour 25 Hz away) are among the first candidates at their place, the
+strong one's hard sync is the whole 21, no two candidates are neighbours; the list is the same for 1, 2, 4 and 7 bands (both orders); the
+selection equals a plain sort and suppression written out again in the test; every candidate is inside the rows and the band, the signal at DT +2.6 s
+is not one. `spectrogram.rs`: the u16 cells' checksum, `half_db` against `20 log10` over the whole range and against the linear cell. Mutations
+checked: suppression off fails the neighbour test and the plain-sort test; the DT range widened fails the range test; the cut too small fails the
+plain-sort test; the adjacent-symbol term reading the wrong row fails all four; the dB table off by an octave step fails the `half_db` test.
+
+Not done: noise-only slots, the boards (`stage1_inc` and the streamed spectrogram would have to produce the half-dB cells: the library side first), 12 kHz and
+f32, the position choice (5.3), and the idea of dropping the per-candidate DFT (5.4, section 12).
+
+## 12. Against `ft8dec`, and the per-candidate DFT (5.4, not built)
+
+**Recall and cost against `ft8dec`** (same 60 slots, `jt9`'s 1 338; host instructions, `ft8dec` as the icap-sdk's C built `-O2`, its driver's wav read and
+double-precision 12 -> 8 kHz resample (1 546 M a slot) taken out; the two are different code on one CPU: a ratio, not ESP32 time):
+
+| | hits | extras | M instr / slot |
+|---|---:|---:|---:|
+| `ft8dec`, 1 pass | 990 (74.0 %) | 36 | 335 |
+| `ft8dec`, 2 passes | 1 189 (88.9 %) | 68 | 850 |
+| `ft8dec`, 3 passes | 1 204 (90.0 %) | 71 | 1 278 |
+| S3 flow, both windows + `ft8_lib` search, 30 candidates | 1 009 (75.4 %) | 36 | 553 |
+| the same, 15 candidates | 761 (56.9 %) | 11 | 295 |
+
+At 30 candidates the flow reaches `ft8dec`'s one-pass recall (1 009 against 990 hits) for 1.65 times its instructions, and has no subtraction pass (`ft8dec`'s second pass
+adds 15 points). `ft8dec`'s peak working memory was 234 KB (1 and 3 passes), the flow's 425 KB at 30 candidates (before this change).
+
+**Why `ft8dec` is cheaper.** It decodes about 200 candidates a slot from the 8-bit dB waterfall alone: an LLR is a lookup of eight cells, about 1.7 M
+instructions a candidate with BP and OSD. The flow recomputes 79 symbols x 8 tones from the audio for each candidate that passes the Costas gate
+(about 10 M instructions a candidate, 63 % of it the DFT).
+
+**How the Goertzel got here** (`git log -S fill_symbol_spectra_goertzel`; `ROADMAP.md` 0.6.4, "fine_refine attempt postmortem"; `524a9ad1`):
+0.6.2 tried two ways to give the board a per-candidate refinement: one DFT per (symbol, tone) per candidate (about 100 ms projected, over 5 s measured, the
+watchdog fired) and a 200 Hz complex baseband by FIR (PSRAM bandwidth, about 1 s for 15 candidates; recall stayed 7 of 18). The shipped per-symbol DFT was a **Q15
+sin/cos table and esp-dsp's dot product** (60 KB x re/im x 2 cores = 120 KB of internal DRAM). 0.6.4 (`18f798c7`, 2026-05-18) replaced it by the Goertzel recursion
+**to free that DRAM** (M5StickS3's I2S DMA descriptor could not be allocated beside it), at equal speed (S3 stage 3 about 1.4 s) and +0.06..+0.63 dB. It was
+a memory fix; the reasons given for having a per-candidate extraction at all (`524a9ad1`: the spectrogram is a search grid, 80 ms and 3.125 Hz, with a u16 power and
+no phase) are the three things `ft8dec` shows it can live without (its waterfall is the same grid; a dB cell keeps the floor; it uses no phase).
+
+**The phase is not needed (measured).** The same S3 flow with the Goertzel cell's phase thrown away (the cell replaced by its magnitude) and/or OSD without `llrb` / `llrc`
+(the coherent metrics), 60 slots, hits of 1 338 at 15 / 30 / 60 candidates: phase kept 737 / 993 / 997; magnitude only 736 / 990 / 994; OSD without `llrb`, `llrc`
+736 / 991 / 995; both 736 / 990 / 994 (ft8dec's 1 026: 982 -> 981 at 60). Extras unchanged. The coherent metrics are worth at most 3 hits of 1 338; leaving them out of OSD
+saves 6 to 7 % of the instructions for 2 hits. (Measured before 5.2, on the `sync8` search.)
+
+**What 5.4 would be**: after 5.2 the dB waterfall exists; an LLR from its cells at the candidate's grid place (the max-log of the eight tone cells, `ft8dec`'s `llr == 0`), into the
+existing BP and OSD, with `ft8dec`'s retry at a place interpolated from the Costas tones, would replace the per-candidate DFT (and `fine_sync_at`, and the
+block-0 refine) for the candidates it decodes. **Unmeasured**: the recall of an LLR from half-dB cells on the grid place against the Goertzel's at the fine place
+(the Goertzel at `ft8dec`'s own places decodes 1 018 of 1 026; the grid place without fine sync gave 1 000 against 999 with it), and the instruction count. It also needs the
+cells kept for the whole slot (the 5.2 search drops each band after scoring): 180 KB of u8, against the 425 KB the flow peaks at.
+
+Notes added after the review: the score is clamped at 127 (a tie of very strong signals is broken by carrier and row, not by the peak; none is that strong in the corpora);
+the histogram cut and the per-band / merge truncation never bind in `search` at `RAW_FACTOR` 12 on a real slot (150-616 positions above the minimum a slot against 3 600), so
+their invariance is tested one stage lower (`the_merged_bands_are_the_best_positions_of_the_whole_range`, with mutations for the threshold, the merge and the
+per-band truncation; the tie-break order is an equivalent mutant: the stable sort and the arrival order give the same list). 8 kHz banding on real audio is untested
+(the S3 flow runs one band). `websdr_test3`'s `EY8MM YB1BZV OI33` is **not** attested: `band_baseband.rs` already counts it as a chance match, and it is pinned as debt (`S3_DEBT`).

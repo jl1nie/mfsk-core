@@ -60,6 +60,8 @@
 // owns only module declarations + re-exports + tests.
 pub(crate) mod band_bb;
 mod cd0_fir;
+#[cfg(feature = "fixed-point")]
+mod coarse_lib;
 mod coarse_sync;
 mod fill_symbol_spectra;
 mod fine_sync_12k;

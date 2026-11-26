@@ -421,6 +421,59 @@ fn hann_q15(n: usize) -> Vec<i16> {
         .collect()
 }
 
+/// How a demux power (`re^2 + im^2`, 32 bits) becomes a cell: `p >> LinearShift` is the shipped `p >> FP_SPEC_SHIFT`; `p >> HalfDb`
+/// is the power in 0.5 dB units, `20 log10 p` from the leading-zero count and a 16-entry table (0..~190, so it fits the u16
+/// cell and the demux's `min(u16::MAX)` leaves it alone). The `Shr` impls are the way the demux's `>> conv` takes either one
+/// without a second copy of its unrolled loop; both are zero-sized and inline.
+#[cfg(feature = "fixed-point")]
+#[derive(Clone, Copy)]
+pub(super) struct LinearShift;
+#[cfg(feature = "fixed-point")]
+#[derive(Clone, Copy)]
+pub(super) struct HalfDb;
+
+#[cfg(feature = "fixed-point")]
+impl core::ops::Shr<LinearShift> for u32 {
+    type Output = u32;
+    #[inline(always)]
+    fn shr(self, _: LinearShift) -> u32 {
+        self >> FP_SPEC_SHIFT
+    }
+}
+
+/// `round(4 x 20 log10(1 + (m + 1/2) / 16))` for `m` = 0..15: [`half_db`]'s fractional octave in quarter units of 0.5 dB, at the middle of
+/// the four-bit step it stands for (the top four bits after the leading one are truncated, so the middle halves the error); the
+/// quarter units keep the rounding to one place, at the end.
+#[cfg(feature = "fixed-point")]
+const HALF_DB_TABLE: [u8; 16] = [1, 3, 5, 7, 9, 10, 12, 13, 15, 16, 18, 19, 20, 21, 22, 24];
+
+/// `20 log10 p` for a 32-bit power `p` (the power in 0.5 dB units: 6.02 per octave), by `6.02 x floor(log2 p)` plus the table at
+/// the next four bits (both in quarter units, rounded once); 0 for `p` = 0. Within 0.82 units (0.41 dB) of the exact value, at most 193
+/// (`the_half_db_cell_is_twenty_log10`).
+#[cfg(feature = "fixed-point")]
+#[inline(always)]
+pub(super) fn half_db(p: u32) -> u32 {
+    if p == 0 {
+        return 0;
+    }
+    let l = 31 - p.leading_zeros();
+    let m = if l >= 4 {
+        (p >> (l - 4)) & 15
+    } else {
+        (p << (4 - l)) & 15
+    } as usize;
+    (((l * 12332) >> 9) + HALF_DB_TABLE[m] as u32 + 2) >> 2
+}
+
+#[cfg(feature = "fixed-point")]
+impl core::ops::Shr<HalfDb> for u32 {
+    type Output = u32;
+    #[inline(always)]
+    fn shr(self, _: HalfDb) -> u32 {
+        half_db(self)
+    }
+}
+
 /// [`compute_spectrogram_bins`] from an [`PcmSource`], with the slot's gain given: the frames are read
 /// forward, one window at a time.
 #[cfg(feature = "fixed-point")]
@@ -431,6 +484,36 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
     hi: usize,
     shift: Gain,
 ) -> Spectrogram {
+    spectrogram_cells(src, rate, lo, hi, shift, LinearShift)
+}
+
+/// The same frames and FFT as [`compute_spectrogram_bins_src`], the cells in 0.5 dB units of the **32-bit power** ([`half_db`]) instead
+/// of the power right-shifted into a u16, whose `>> FP_SPEC_SHIFT` throws the noise floor away: what `ft8_lib`'s differential score
+/// reads (`coarse_lib::search`). A cell is at most 193: the u16 holds it and the demux's `min(u16::MAX)` leaves it alone.
+#[cfg(feature = "fixed-point")]
+pub(super) fn compute_half_db_bins_src<A: PcmSource>(
+    src: &mut A,
+    rate: Ft8Rate,
+    lo: usize,
+    hi: usize,
+    shift: Gain,
+) -> Spectrogram {
+    spectrogram_cells(src, rate, lo, hi, shift, HalfDb)
+}
+
+/// The demux behind both: `conv` is [`LinearShift`] (`p >> FP_SPEC_SHIFT`, the shipped cell, bit for bit) or [`HalfDb`].
+#[cfg(feature = "fixed-point")]
+fn spectrogram_cells<A: PcmSource, C: Copy>(
+    src: &mut A,
+    rate: Ft8Rate,
+    lo: usize,
+    hi: usize,
+    shift: Gain,
+    conv: C,
+) -> Spectrogram
+where
+    u32: core::ops::Shr<C, Output = u32>,
+{
     use crate::engine::fft::default_planner_16;
 
     // The frame, the FFT and the step in samples of `rate` (the 2560-point plan at 8 kHz has the 3840 one's inner kernel and
@@ -561,8 +644,8 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
         if lo == 0 && hi > 0 {
             let r0 = buf[0].re as i32;
             let i0 = buf[0].im as i32;
-            data[row_a] = ((r0 * r0) as u32 >> FP_SPEC_SHIFT).min(u16::MAX as u32) as u16;
-            data[row_b] = ((i0 * i0) as u32 >> FP_SPEC_SHIFT).min(u16::MAX as u32) as u16;
+            data[row_a] = ((r0 * r0) as u32 >> conv).min(u16::MAX as u32) as u16;
+            data[row_b] = ((i0 * i0) as u32 >> conv).min(u16::MAX as u32) as u16;
         }
 
         let mut k = lo.max(1);
@@ -609,28 +692,22 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
                 (yn3.re as i32 - yk3.re as i32) >> 1,
             );
 
-            data[row_a + (k - lo)] = (((a0r * a0r) as u32 + (a0i * a0i) as u32) >> FP_SPEC_SHIFT)
-                .min(u16::MAX as u32) as u16;
-            data[row_b + (k - lo)] = (((b0r * b0r) as u32 + (b0i * b0i) as u32) >> FP_SPEC_SHIFT)
-                .min(u16::MAX as u32) as u16;
-            data[row_a + (k - lo) + 1] = (((a1r * a1r) as u32 + (a1i * a1i) as u32)
-                >> FP_SPEC_SHIFT)
-                .min(u16::MAX as u32) as u16;
-            data[row_b + (k - lo) + 1] = (((b1r * b1r) as u32 + (b1i * b1i) as u32)
-                >> FP_SPEC_SHIFT)
-                .min(u16::MAX as u32) as u16;
-            data[row_a + (k - lo) + 2] = (((a2r * a2r) as u32 + (a2i * a2i) as u32)
-                >> FP_SPEC_SHIFT)
-                .min(u16::MAX as u32) as u16;
-            data[row_b + (k - lo) + 2] = (((b2r * b2r) as u32 + (b2i * b2i) as u32)
-                >> FP_SPEC_SHIFT)
-                .min(u16::MAX as u32) as u16;
-            data[row_a + (k - lo) + 3] = (((a3r * a3r) as u32 + (a3i * a3i) as u32)
-                >> FP_SPEC_SHIFT)
-                .min(u16::MAX as u32) as u16;
-            data[row_b + (k - lo) + 3] = (((b3r * b3r) as u32 + (b3i * b3i) as u32)
-                >> FP_SPEC_SHIFT)
-                .min(u16::MAX as u32) as u16;
+            data[row_a + (k - lo)] =
+                (((a0r * a0r) as u32 + (a0i * a0i) as u32) >> conv).min(u16::MAX as u32) as u16;
+            data[row_b + (k - lo)] =
+                (((b0r * b0r) as u32 + (b0i * b0i) as u32) >> conv).min(u16::MAX as u32) as u16;
+            data[row_a + (k - lo) + 1] =
+                (((a1r * a1r) as u32 + (a1i * a1i) as u32) >> conv).min(u16::MAX as u32) as u16;
+            data[row_b + (k - lo) + 1] =
+                (((b1r * b1r) as u32 + (b1i * b1i) as u32) >> conv).min(u16::MAX as u32) as u16;
+            data[row_a + (k - lo) + 2] =
+                (((a2r * a2r) as u32 + (a2i * a2i) as u32) >> conv).min(u16::MAX as u32) as u16;
+            data[row_b + (k - lo) + 2] =
+                (((b2r * b2r) as u32 + (b2i * b2i) as u32) >> conv).min(u16::MAX as u32) as u16;
+            data[row_a + (k - lo) + 3] =
+                (((a3r * a3r) as u32 + (a3i * a3i) as u32) >> conv).min(u16::MAX as u32) as u16;
+            data[row_b + (k - lo) + 3] =
+                (((b3r * b3r) as u32 + (b3i * b3i) as u32) >> conv).min(u16::MAX as u32) as u16;
 
             k += 4;
         }
@@ -645,10 +722,10 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
                 (yk.im as i32 + yn.im as i32) >> 1,
                 (yn.re as i32 - yk.re as i32) >> 1,
             );
-            data[row_a + (k - lo)] = (((ar * ar) as u32 + (ai * ai) as u32) >> FP_SPEC_SHIFT)
-                .min(u16::MAX as u32) as u16;
-            data[row_b + (k - lo)] = (((br * br) as u32 + (bi * bi) as u32) >> FP_SPEC_SHIFT)
-                .min(u16::MAX as u32) as u16;
+            data[row_a + (k - lo)] =
+                (((ar * ar) as u32 + (ai * ai) as u32) >> conv).min(u16::MAX as u32) as u16;
+            data[row_b + (k - lo)] =
+                (((br * br) as u32 + (bi * bi) as u32) >> conv).min(u16::MAX as u32) as u16;
             k += 1;
         }
     }
@@ -664,8 +741,7 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
         for i in lo..hi {
             let re = buf[i].re as i32;
             let im = buf[i].im as i32;
-            let mag2 =
-                (((re * re) as u32 + (im * im) as u32) >> FP_SPEC_SHIFT).min(u16::MAX as u32);
+            let mag2 = (((re * re) as u32 + (im * im) as u32) >> conv).min(u16::MAX as u32);
             data[row_base + (i - lo)] = mag2 as u16;
         }
     }
@@ -757,6 +833,100 @@ mod tests_fixed {
         let mut src = SliceSource(slot);
         let gain = spectrogram_gain(&mut src);
         compute_spectrogram_bins_src(&mut src, rate, 0, spectrogram_n_freq(3000.0, rate), gain)
+    }
+
+    /// FNV-1a over the u16 cells of the fixed-point spectrogram of a deterministic slot (a tone, a second weaker tone, LCG noise):
+    /// the cells' bits are pinned, so a change to how the demux converts a power to a cell (the 5.2 refactor made it generic) that
+    /// moves one cell fails here. 12 kHz and 8 kHz, a band and the whole range (`lo` > 0 takes the unrolled loop's other entry).
+    fn cells_checksum(rate: Ft8Rate, lo: usize, hi: usize) -> u64 {
+        let hz = rate.hz() as f32;
+        let mut s = 0x9e37_79b9_7f4a_7c15u64;
+        let slot: Vec<i16> = (0..rate.nmax())
+            .map(|n| {
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let noise = ((s >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 900.0;
+                let a = 2500.0 * (core::f32::consts::TAU * 1003.3 * n as f32 / hz).cos();
+                let b = 400.0 * (core::f32::consts::TAU * 2211.9 * n as f32 / hz).cos();
+                (a + b + noise) as i16
+            })
+            .collect();
+        let sp = {
+            let mut src = SliceSource(&slot);
+            let gain = spectrogram_gain(&mut src);
+            compute_spectrogram_bins_src(&mut src, rate, lo, hi, gain)
+        };
+        sp.data.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &c| {
+            (h ^ c as u64).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+    }
+
+    #[test]
+    fn the_u16_cells_are_bit_for_bit_what_they_were() {
+        // recorded on the tree before the demux was made generic over the cell conversion (2026-11-26)
+        let want: [(Ft8Rate, u64, u64); 2] = [
+            (Ft8Rate::Hz12000, 0xc51b7b7159d4d2a0, 0x14b49f17b55df413),
+            (Ft8Rate::Hz8000, 0xf352ff03319e19f0, 0x14210bc942f3ae69),
+        ];
+        for (rate, full, band) in want {
+            let nf = spectrogram_n_freq(3000.0, rate);
+            assert_eq!(
+                cells_checksum(rate, 0, nf),
+                full,
+                "{rate:?}: the whole range"
+            );
+            assert_eq!(cells_checksum(rate, 100, 300), band, "{rate:?}: a band");
+        }
+    }
+
+    /// The half-dB cell is `20 log10 p` within one unit (0.5 dB) over the whole range of a 32-bit power (1 .. 2^32 - 1), monotone, 0 at
+    /// `p` = 0, at most 193; and the demux writes it: a tone's cell in the dB spectrogram is the dB of the cell of the linear one
+    /// (before its `>> 12`), to the 0.5 dB.
+    #[test]
+    fn the_half_db_cell_is_twenty_log10() {
+        assert_eq!(half_db(0), 0);
+        let mut prev = 0u32;
+        let mut p = 1u64;
+        while p < (1u64 << 32) {
+            for q in [p, p + p / 3, p + 2 * p / 3] {
+                if q >= (1u64 << 32) {
+                    continue;
+                }
+                let got = half_db(q as u32) as f64;
+                let want = 20.0 * (q as f64).log10();
+                assert!((got - want).abs() <= 1.0, "p {q}: {got} against {want}");
+                assert!(half_db(q as u32) >= prev, "monotone at {q}");
+                prev = half_db(q as u32);
+            }
+            p = p * 2 + 1;
+        }
+        assert!(half_db(u32::MAX) <= 193);
+        let nf = spectrogram_n_freq(3000.0, Ft8Rate::Hz8000);
+        // `tone` adds the spike that keeps the auto-gain at 0: the tone's cell is then its own size, not the top of the u16 range
+        let slot = tone(Ft8Rate::Hz8000, 1000.0, 1500.0);
+        let mut src = SliceSource(&slot);
+        let gain = spectrogram_gain(&mut src);
+        let lin = compute_spectrogram_bins_src(&mut src, Ft8Rate::Hz8000, 0, nf, gain);
+        let db = compute_half_db_bins_src(&mut src, Ft8Rate::Hz8000, 0, nf, gain);
+        let bin = (1000.0f32 / 3.125) as usize;
+        let at = |s: &Spectrogram| s.data[(s.n_time / 2) * s.n_freq + bin] as f64;
+        // the linear cell is the power / 4096 (floored, at most 65535): its dB plus 20 log10 4096 is the dB cell, to a cell
+        let want = 20.0 * (at(&lin) * 4096.0).log10();
+        assert!(
+            (at(&db) - want).abs() <= 8.0,
+            "dB cell {} against {want} from the linear cell {}",
+            at(&db),
+            at(&lin)
+        );
+        // the floor the linear cell loses: powers below 2^12 are all 0 after its `>> 12` and are told apart here (3 dB: 6 units)
+        assert_eq!((1000u32 >> FP_SPEC_SHIFT, 3000u32 >> FP_SPEC_SHIFT), (0, 0));
+        assert!(
+            half_db(3000) >= half_db(1000) + 4,
+            "{} {}",
+            half_db(1000),
+            half_db(3000)
+        );
     }
 
     /// The Q15 table is the periodic Hann: 0 at the first sample, 32767 at the middle, symmetric about it (`w[k] == w[n - k]`),

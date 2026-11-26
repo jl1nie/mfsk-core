@@ -1294,7 +1294,9 @@ pub const HARD_SYNC_POOL: usize = 300;
 /// and FFT are in samples of it; its bins and rows are not, so the candidates are the same list at either rate for the
 /// same signal), the form the radio needs: the slot is
 /// never held. Only `search`'s band, `sync_min` and `keep` are read (`lag_s` and `fill` are [`coarse_sync_gated_spec`]'s;
-/// set here they are ignored). It is read forward `bands` times (the spectrogram is built a band of carriers at a time), plus once more in the fixed-point build for the slot's
+/// set here they are ignored). **At `Hz8000` in the `fixed-point` build** (`Ft8Rate::coarse_ft8lib`) the search is `ft8_lib`'s
+/// (`coarse_lib`): `sync_min` is not read (the minimum is `ft8_lib`'s score of 8 in 0.5 dB units), `SyncCandidate::score` is that integer
+/// score (8..127), not the `sync8` ratio, the candidates are on a 3.125 Hz x 80 ms grid, and `bands` changes memory only. It is read forward `bands` times (the spectrogram is built a band of carriers at a time), plus once more in the fixed-point build for the slot's
 /// peak (a value the capture could hand over instead).
 pub fn coarse_sync_gated<A: PcmSource>(
     src: &mut A,
@@ -1310,6 +1312,19 @@ pub fn coarse_sync_gated<A: PcmSource>(
         ..
     } = *search;
     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::CoarseSync);
+    // `ft8_lib`'s statistic at 8 kHz in the fixed-point build (`Ft8Rate::coarse_ft8lib`); `sync_min` is `sync8`'s scale and is not read
+    #[cfg(feature = "fixed-point")]
+    if rate.coarse_ft8lib() {
+        return super::coarse_lib::search(
+            src,
+            rate,
+            freq_min,
+            freq_max,
+            keep,
+            bands,
+            super::coarse_lib::ORDER,
+        );
+    }
     let Some((peaks, g)) = banded_peaks(src, rate, freq_min, freq_max, bands, true) else {
         return Vec::new();
     };
@@ -1380,7 +1395,8 @@ pub struct GatedSearch {
     pub freq_min: f32,
     /// Upper edge of the carrier search, Hz.
     pub freq_max: f32,
-    /// Minimum normalised Costas score.
+    /// Minimum normalised Costas score (`sync8`'s ratio; **not read** by the `ft8_lib` search `coarse_sync_gated` runs at `Hz8000` in
+    /// the `fixed-point` build, `Ft8Rate::coarse_ft8lib`).
     pub sync_min: f32,
     /// Candidates kept, after the reorder by hard sync.
     pub keep: usize,
@@ -1420,7 +1436,8 @@ impl GatedSearch {
 /// [`coarse_sync_gated`] from a spectrogram the caller already has: the boards' `stage1_inc` builds the `u16`
 /// spectrogram while the slot is captured, and the gate only reads it (the score, the lazy per-carrier `allsum`
 /// and the hard-sync count), so nothing is read from the audio and nothing is rebuilt. On a whole slot
-/// (`fill == None`, default lag window) the candidates are [`coarse_sync_gated`]'s, bit for bit.
+/// (`fill == None`, default lag window) the candidates are [`coarse_sync_gated`]'s, bit for bit **except** at `Hz8000` in the
+/// `fixed-point` build, where that function runs the `ft8_lib` search (`Ft8Rate::coarse_ft8lib`) and this one is still `sync8`'s.
 ///
 /// `search.lag_s` is the lag window (`None`: the crate's default, as the audio version uses; the boards pass
 /// theirs, `coarse_sync_with_lag`'s). `search.fill` describes a streaming spectrogram: the hard-sync count skips rows
