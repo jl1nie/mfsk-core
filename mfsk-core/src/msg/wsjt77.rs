@@ -824,13 +824,16 @@ impl Wsjt77Fields {
             // room WSJT-X made for callsigns the 28-bit form cannot hold —
             // special-event calls with long suffixes among them. `ft8b.f90`
             // accepts whatever `unpack77` renders there; this keeps the
-            // structure check (prefix, digit, letters) and lifts only the
-            // 7-character / 4-letter-suffix limits of an ordinary call.
+            // structure check (prefix, number part, letters: `is_c58_special_call`)
+            // and lifts only the 7-character / 4-letter-suffix limits of an
+            // ordinary call; the number part may be a run of up to three digits
+            // (`DM100ZM`, `LZ365BM`).
             // #721: `jt9` decodes `<...> DA0FONTANE` (BP, 15 hard errors) in
             // ft8_lib's `191111_110645.wav`; it was refused here for length.
             // Cost, `phantom_survival_rates` (2 M uniform payloads): `i3=4`
             // survivors 2 877 -> 11 153 of 250 135 (1.2 -> 4.5 %; WSJT-X keeps
-            // all), every type together 644 220 -> 652 496 (+1.3 %).
+            // all), every type together 644 220 -> 652 496 (+1.3 %); the digit
+            // run then took them to 13 223 and 654 566 (+0.32 %).
             Self::Nonstandard { call1, call2, .. } => [Some(call1.as_str()), call2.as_deref()]
                 .into_iter()
                 .flatten()
@@ -1433,25 +1436,41 @@ fn is_base_callsign(s: &str) -> bool {
     suffix.len() <= 4 && suffix.iter().all(|c| c.is_ascii_uppercase())
 }
 
-/// [`is_base_callsign`]'s shape — a 1-3 character prefix holding a letter,
-/// one digit, a letters-only suffix — without its length limits, up to the
-/// 11 characters of the `i3=4` `c58` field (`packjt77.f90` `pack58`). Only
-/// [`Wsjt77Fields::is_plausible`]'s `Nonstandard` arm uses it.
+/// [`is_base_callsign`]'s shape - a prefix of [`C58_MAX_PREFIX`] characters at most holding a letter, a **number part**, a
+/// letters-only suffix - without its length limits, up to the 11 characters of the `i3=4` `c58` field (`packjt77.f90`
+/// `pack58`). Only [`Wsjt77Fields::is_plausible`]'s `Nonstandard` arm uses it.
+///
+/// The number part is the **whole digit run** that ends at the rightmost digit, of up to [`C58_MAX_DIGIT_RUN`] digits; a longer
+/// run is not a callsign's number and is refused (`AB1234CD`, `A12345B`). It used to be the rightmost digit alone, so the
+/// special-event stations `DM100ZM` and `LZ365BM`, which `jt9` decodes (`ft8_lib/test/wav/20m_busy`: 28 reference decodes, 25 of
+/// them refused here), had the prefix `DM10` and `LZ36`, four characters. Both have a run of three digits, which is therefore the
+/// least that clears them (run 2 refuses both). A callsign without a digit (`ZNEWVJUSXYW`, a phantom of the same corpus) stays
+/// refused.
 fn is_c58_special_call(s: &str) -> bool {
     let b = s.as_bytes();
     if b.len() < 3 || b.len() > 11 {
         return false;
     }
-    let Some(split) = b.iter().rposition(|c| c.is_ascii_digit()) else {
+    let Some(last) = b.iter().rposition(|c| c.is_ascii_digit()) else {
         return false;
     };
-    let (prefix, suffix) = (&b[..split], &b[split + 1..]);
-    (1..=3).contains(&prefix.len())
+    let mut first = last;
+    while first > 0 && b[first - 1].is_ascii_digit() {
+        first -= 1;
+    }
+    let (prefix, suffix) = (&b[..first], &b[last + 1..]);
+    last + 1 - first <= C58_MAX_DIGIT_RUN
+        && (1..=C58_MAX_PREFIX).contains(&prefix.len())
         && prefix.iter().all(|c| c.is_ascii_alphanumeric())
         && prefix.iter().any(|c| c.is_ascii_alphabetic())
         && !suffix.is_empty()
         && suffix.iter().all(|c| c.is_ascii_uppercase())
 }
+
+/// The longest digit run [`is_c58_special_call`] takes as a call's number part.
+const C58_MAX_DIGIT_RUN: usize = 3;
+/// The longest prefix [`is_c58_special_call`] takes (the characters before the number part).
+const C58_MAX_PREFIX: usize = 3;
 
 /// Check whether a string is a valid FT8 callsign (standard or non-standard).
 ///
@@ -3406,22 +3425,75 @@ mod tests {
         }
     }
 
+    /// The arm the `i3=4` message verdict uses for a call - `is_plausible_call` **or** `is_c58_special_call` - against JTDX's
+    /// `ALLCALL7.TXT` (`$JTDX_ALLCALL7`; skips without it): the real callsigns of PSK Reporter that no standard 28-bit call
+    /// carries are exactly the ones a message sends as `i3=4`. Prints what it refuses. `tests/callsign_acceptance.rs` has the
+    /// public-API half (`is_plausible_call` alone).
+    ///
+    /// Measured 2026-11-26: of the 100 303 entries **225** are not standard calls, and the arm refuses **8** of them (3.6 %): `2EOJKH`,
+    /// `2EOTFZ`, `2EOUNO` (a letter O for a zero), `ZZZZ`, `PA5T0N` (a zero for an O), and three that read as real special-event
+    /// calls, `8J4Y70A`, `8J9J2BM`, `DL0E35Y`, whose prefix is four characters. A four-character prefix would take those (and
+    /// `PA5T0N`) for +6 513 uniform-payload survivors (+1.0 %, `i3=4` +49 %): stage S1b, waiting for tier C's noise slots.
+    #[test]
+    fn the_nonstandard_arm_knows_the_callsigns_of_psk_reporter() {
+        let Ok(path) = std::env::var("JTDX_ALLCALL7") else {
+            std::eprintln!("skipping: JTDX_ALLCALL7 unset (JTDX's ALLCALL7.TXT)");
+            return;
+        };
+        let text = std::fs::read_to_string(&path).unwrap();
+        let calls: alloc::vec::Vec<&str> = text
+            .lines()
+            .filter(|l| !l.starts_with("//") && !l.trim().is_empty())
+            .flat_map(|l| {
+                l.split([',', ' ', '\t'])
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+            })
+            .collect();
+        assert!(
+            calls.len() > 100_000,
+            "{} entries: not the list",
+            calls.len()
+        );
+        // a call a type-1 message cannot carry goes out as i3=4
+        let nonstd: alloc::vec::Vec<&&str> =
+            calls.iter().filter(|c| !is_standard_callsign(c)).collect();
+        let refused: alloc::vec::Vec<&&&str> = nonstd
+            .iter()
+            .filter(|c| !(is_plausible_call(c) || is_c58_special_call(c)))
+            .collect();
+        std::println!(
+            "{} callsigns, {} not standard, {} refused by the i3=4 arm: {:?}",
+            calls.len(),
+            nonstd.len(),
+            refused.len(),
+            refused
+        );
+        assert!(
+            refused.len() <= 8,
+            "the i3=4 arm refuses {} of {} non-standard callsigns of PSK Reporter",
+            refused.len(),
+            nonstd.len()
+        );
+    }
+
     /// The **ceiling** on what the plausibility verdict lets through: the counts of `phantom_survival_rates` (the same
     /// deterministic LCG, 2 M uniform 77-bit payloads) held per message type as a test, so that a loosening of the verdict
-    /// has to move these numbers on purpose. A real signal the verdict refuses is a recall loss (`20m_busy`: `DM100ZM`,
-    /// `LZ365BM`), a CRC survivor it lets through is a phantom that SIC would subtract: this is the second half of that
-    /// trade, in numbers. Update the constants **with the measurement that justifies the change**, in the same commit.
+    /// has to move these numbers on purpose. A real signal the verdict refuses is a recall loss (it was `DM100ZM` and
+    /// `LZ365BM` in `20m_busy` until the `c58` digit run), a CRC survivor it lets through is a phantom that SIC would subtract:
+    /// this is the second half of that trade, in numbers. Update the constants **with the measurement that justifies the change**, in the same commit.
     ///
     /// Release only (about 0.5 s there, tens of seconds in a debug build).
     #[test]
     #[cfg_attr(debug_assertions, ignore = "2 M payloads: run in release")]
     fn phantom_survival_is_bounded() {
         const N: usize = 2_000_000;
-        // measured 2026-11-26 at the commit that added this test (`phantom_survival_rates`)
+        // measured 2026-11-26 (`phantom_survival_rates`): 652 496 and 11 153 before the c58 digit-run loosening (S1); 654 566 and
+        // 13 223 after it (+0.32 %). The next stage (a four-character prefix, S1b) would be 661 079 and 19 736: it waits for tier C's noise slots.
         const UNPACKED: usize = 1_030_375;
-        const KEPT_MAX: usize = 652_496;
+        const KEPT_MAX: usize = 654_566;
         const I3_4_UNPACKED: usize = 250_135;
-        const I3_4_KEPT_MAX: usize = 11_153;
+        const I3_4_KEPT_MAX: usize = 13_223;
         let mut x: u64 = 0x2026_0920_0000_0001;
         let mut next_bit = || {
             x = x

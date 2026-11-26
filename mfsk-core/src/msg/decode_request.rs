@@ -597,6 +597,36 @@ pub trait FrameDecodable: SyncFrontEnd {
     /// lacked 57 of the 138 letter+digit prefixes in `cty.dat`. It was removed; the
     /// grammar check is what removes phantoms.
     ///
+    /// Re-measured on 2026-11-26 on **real** busy-band recordings, because a station was being refused: `ft8_lib/test/wav/20m_busy`
+    /// (38 recordings, 936 `jt9`-format reference decodes), the 22 recordings against `jt9` beta6 (402), `qso1`, `qso2`, `qso3_busy`
+    /// and two more, 65 files in all, through five decoder profiles (the S3 flow, the ICAP low-memory profile at two candidate
+    /// counts, the band-baseband SIC profile), the verdict on against off. With the verdict as it was, **off gained 12 to 31
+    /// decodes** a profile, 31 distinct (file, message) pairs: 27 name the special-event stations `DM100ZM` and `LZ365BM`
+    /// (`CQ DM100ZM`, `<...> DM100ZM RR73`; the references hold 28 decodes of the two, 25 of them refused; two more are `CQ`s of
+    /// the same stations in files whose reference lacks them), 3 are ordinary standard messages the references do carry and that
+    /// only the SIC profile lost (a refused real decode is not subtracted, and the cascade loses its neighbours), and 1 is a phantom.
+    /// `jt9` decodes the two stations; the prefix rule of `is_base_callsign` and `is_c58_special_call` (1-3 characters before the
+    /// rightmost digit) refused them: `DM10` is four. The `i3=4` arm now takes **the whole digit run of up to three as the number
+    /// part** (run 2 would refuse both stations; a longer run is refused), and what the verdict still refuses on those recordings
+    /// is **one phantom**, `CQ ZNEWVJUSXYW` (no digit), which the band-baseband SIC profile accepts with the verdict off. Cost, 2 M
+    /// uniform payloads: survivors 652 496 -> 654 566 (+0.32 %; `i3=4` 4.5 -> 5.3 %).
+    ///
+    /// Against JTDX's `ALLCALL7.TXT` (100 303 callsigns spotted on PSK Reporter, 2024-06..2025-06): `is_plausible_call` alone refuses
+    /// 9 (0.009 %); of the **225** entries no standard 28-bit call carries (the ones a message sends as `i3=4`) the arm still refuses
+    /// **8** (3.6 %): `2EOJKH`, `2EOTFZ`, `2EOUNO` (letter O for zero), `ZZZZ`, `PA5T0N` (zero for O) look like typos, and `8J4Y70A`,
+    /// `8J9J2BM`, `DL0E35Y` read as real special-event calls with a four-character prefix. A four-character prefix takes them (and
+    /// `PA5T0N`) at 661 079 survivors (+1.0 % over the 654 566; `i3=4` 7.9 %): **stage S1b, not taken**: none of the real recordings
+    /// needs it and its false-decode side is not measured on noise slots. Tests: `tests/callsign_acceptance.rs` (with
+    /// `$JTDX_ALLCALL7`), `wsjt77::tests::the_nonstandard_arm_knows_the_callsigns_of_psk_reporter` (the arm itself, 8 of 225) and
+    /// `wsjt77::tests::phantom_survival_is_bounded` (the ceiling).
+    ///
+    /// **The other two arms that bite are not tested by this evidence**: `i3=5` (EU VHF contest, both calls unresolved hashes:
+    /// 138 700 of 138 700 uniform survivors refused) and the WSPR types (1.5 %) refused no real decode of those 65 files, but the
+    /// recordings are HF busy-band FT8 and hold few or no such messages, so this says nothing about contest or WSPR-type traffic.
+    /// WSJT-X accepts both (`ft8b.f90:443-458`); they are unchanged here until a recording of that traffic is in a corpus. What is
+    /// **not** measured: the noise-only corpora of tier C (generated, not on the machine this was run on) and the SIC regression of
+    /// #383 on them; both are run before a release.
+    ///
     /// `false` for FST4. The argument that stood here — CRC-24 puts its
     /// false-positive rate 512x below FT8's and FT4's — described the
     /// (240,101) search this crate ran until #456. WSJT-X searches

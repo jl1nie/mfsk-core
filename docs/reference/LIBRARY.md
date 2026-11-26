@@ -1637,6 +1637,28 @@ counterpart** — `ft8b.f90` accepts on `nbadcrc` and
 it is a judgement call rather than a port, and the judgement belongs
 to whoever knows the band.
 
+**Where it bites** (2 M uniform 77-bit payloads, bounded by
+`wsjt77::tests::phantom_survival_is_bounded`; measured 2026-11-26): it keeps
+every free-text, DXpedition, Field Day, telemetry, standard, EU VHF /P and
+RTTY Roundup message that `unpack77` accepts and 98.5 % of the WSPR types, so
+the whole grammar is in fact three arms: **5.3 % of the non-standard-call
+messages (`i3=4`)** survive, and **none** of the EU VHF contest messages
+(`i3=5`) whose two calls are unresolved hashes. 63.5 % of what `unpack77`
+accepts survives; WSJT-X keeps all of it. On 65 real busy-band recordings (the
+936 and 402 `jt9`-format reference decodes of two of the corpora), run through
+five decoder profiles with the verdict on and off, the only thing it still
+refuses is **one phantom** (`CQ ZNEWVJUSXYW`); before the `i3=4` number part
+took a run of up to three digits it also refused the special-event stations
+`DM100ZM` and `LZ365BM`, which `jt9` decodes (25 of their 28 reference decodes were refused). The
+callsign grammar accepts 99.991 % of the 100 303 callsigns of JTDX's
+`ALLCALL7.TXT` (spotted on PSK Reporter); of the 225 of them that no standard
+call carries, and that a message therefore sends as `i3=4`, the verdict refuses 8
+(four look like typos, three like special-event calls with a four-character
+prefix: `8J4Y70A`, `8J9J2BM`, `DL0E35Y`, a loosening waiting for noise-slot
+evidence). The EU VHF contest and WSPR-type arms refused no real decode of those
+recordings, which hold no such traffic: they are unchanged, and untested by it. A caller that wants WSJT-X's own
+acceptance, phantoms included, says `.message_filter(|_| true)`.
+
 **It judges fields, not text.** `unpack` returns `Wsjt77Fields`, the
 decoded message as its fields, and the verdict reads the *callsign*
 fields. Asking anything of the rendered string instead means splitting
