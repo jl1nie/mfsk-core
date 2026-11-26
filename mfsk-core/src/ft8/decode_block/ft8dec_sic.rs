@@ -25,7 +25,7 @@ use num_traits::Float;
 
 use super::super::decode::{DecodeDepth, DecodeResult};
 use super::super::params::NN;
-use super::cells_flow::{Found, RETRY_MIN_SHIFT, Tables, View, decode_round};
+use super::cells_flow::{CellTables, Found, RETRY_MIN_SHIFT, View, decode_round};
 use super::coarse_lib::{coarse_sync_gated_cells, search_near};
 use super::coarse_sync::GatedSearch;
 use super::spectrogram::spectrogram_gain;
@@ -452,18 +452,14 @@ pub fn decode_block_cells_sic<S: AudioSample>(
     let (cands, cells) = coarse_sync_gated_cells(&mut SliceSource(audio), rate, search, 1)?;
     let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
     let (nstep, fs) = (rate.nstep() as i64, rate.hz() as f32);
-    let tables = Tables::new();
+    let tables = CellTables::new();
     let mut known: Vec<Found> = Vec::new();
     let mut sigs: Vec<SubSig> = Vec::new();
 
     // pass 0
     decode_round(
-        audio,
-        rate,
-        &View {
-            cells: &cells,
-            t: &tables,
-        },
+        &cells,
+        &tables,
         &cands,
         max_cand,
         depth,
@@ -521,9 +517,8 @@ pub fn decode_block_cells_sic<S: AudioSample>(
         let first_new = known.len();
         let cands: Vec<_> = cands.into_iter().filter(|c| c.1 >= PASS_MIN_HS).collect();
         decode_round(
-            audio,
-            rate,
-            &view,
+            &cells,
+            &tables,
             &cands,
             (max_cand / PASS_CAND_DIV).max(PASS_CAND_MIN).min(max_cand),
             depth,

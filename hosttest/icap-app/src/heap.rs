@@ -8,6 +8,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
 static CUR: AtomicUsize = AtomicUsize::new(0);
+/// Allocations (`alloc` and a growing `realloc`) since the process started: [`alloc_count`].
+static ALLOCS: AtomicUsize = AtomicUsize::new(0);
+static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
+static ALLOC_MAX: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 
 /// Allocations of at least this many bytes are logged (size only), the first 256 since [`reset_peak`].
@@ -34,6 +38,9 @@ fn add(n: usize) {
 
 unsafe impl GlobalAlloc for Meter {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        ALLOCS.fetch_add(1, Relaxed);
+        ALLOC_BYTES.fetch_add(l.size(), Relaxed);
+        ALLOC_MAX.fetch_max(l.size(), Relaxed);
         add(l.size());
         log_big(l.size());
         let p = unsafe { System.alloc(l) };
@@ -46,6 +53,9 @@ unsafe impl GlobalAlloc for Meter {
         unsafe { System.dealloc(p, l) }
     }
     unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
+        ALLOCS.fetch_add(1, Relaxed);
+        ALLOC_BYTES.fetch_add(n, Relaxed);
+        ALLOC_MAX.fetch_max(n, Relaxed);
         if n > l.size() {
             add(n - l.size());
             log_big(n);
@@ -271,6 +281,26 @@ pub fn reset_peak() -> usize {
 /// High-water mark since [`reset_peak`].
 pub fn peak() -> usize {
     PEAK.load(Relaxed)
+}
+
+/// How many allocations (`alloc`, `realloc`) the process has made: the difference across a call is the number of heap allocations it made.
+pub fn alloc_count() -> usize {
+    ALLOCS.load(Relaxed)
+}
+
+/// The largest single allocation since [`reset_alloc_max`].
+pub fn alloc_max() -> usize {
+    ALLOC_MAX.load(Relaxed)
+}
+
+/// Forget the largest allocation so far.
+pub fn reset_alloc_max() {
+    ALLOC_MAX.store(0, Relaxed);
+}
+
+/// The bytes those allocations asked for (a `realloc` counts its new size).
+pub fn alloc_bytes() -> usize {
+    ALLOC_BYTES.load(Relaxed)
 }
 
 /// The large allocations (>= [`BIG_MIN`]) made since [`reset_peak`], largest first, one entry per

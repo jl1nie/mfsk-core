@@ -28,7 +28,8 @@ use super::super::decode::{DecodeDepth, DecodeResult};
 use super::super::params::{COSTAS, DEFAULT_BP_MAX_ITER};
 use super::coarse_lib::{HalfDbCells, coarse_sync_gated_cells};
 use super::coarse_sync::GatedSearch;
-use super::process_candidates::process_candidates_into_with_cs_scratch_tuned_with_fill;
+use super::fill_symbol_spectra::{SymMask, sym_in_mask};
+use super::process_candidates::{Ft8BpScratch, process_candidate_with_scratch};
 use super::types::{AudioSample, DEFAULT_Q_THRESH, Ft8Rate, SAMPLE_RATE_HZ};
 use crate::engine::scalar::Cmplx;
 use crate::engine::source::SliceSource;
@@ -46,13 +47,21 @@ const MAX_CELL: usize = 193;
 const OUTSIDE: usize = MAX_CELL + 1;
 
 /// `10^(h / 40)` and `10^(h / 20)` for every cell value `h`, and 0 for [`OUTSIDE`].
-pub(super) struct Tables {
+/// The 194-entry amplitude and power tables of the cells (`10^(h / 40)`, `10^(h / 20)`, and 0 for a cell outside): made once, read by every fill. 1.5 KB; a firmware
+/// keeps them in a `static` so that they are in internal DRAM.
+pub struct CellTables {
     amp: [f32; OUTSIDE + 1],
     pow: [f32; OUTSIDE + 1],
 }
 
-impl Tables {
-    pub(super) fn new() -> Self {
+impl Default for CellTables {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CellTables {
+    pub fn new() -> Self {
         let mut t = Self {
             amp: [0.0; OUTSIDE + 1],
             pow: [0.0; OUTSIDE + 1],
@@ -66,10 +75,11 @@ impl Tables {
 }
 
 /// Where a candidate sits on the cells: the row of its Costas symbol 0 and the bin of its tone 0.
-#[derive(Clone, Copy)]
-pub(super) struct Grid {
-    pub(super) j0: i32,
-    pub(super) k: i64,
+/// Where a candidate sits on the cells: the row of its Costas symbol 0 and the bin (3.125 Hz) of its tone 0.
+#[derive(Clone, Copy, Debug)]
+pub struct Grid {
+    pub j0: i32,
+    pub k: i64,
 }
 
 /// A place off the grid: the neighbour row (`dr`, +-1) and bin (`dc`, +-1) and the weight of each neighbour (`wa`, `wb`, 0..0.5).
@@ -106,7 +116,7 @@ const ON_GRID: Place = Place {
 
 pub(super) struct View<'a> {
     pub(super) cells: &'a HalfDbCells,
-    pub(super) t: &'a Tables,
+    pub(super) t: &'a CellTables,
 }
 
 impl View<'_> {
@@ -171,7 +181,7 @@ impl View<'_> {
 
     /// The 79 x 8 spectra of the candidate at `g` moved by `p`: the amplitude of each cell, or the square root of the mix of the four cells'
     /// powers. Phase is not kept (`im` is 0): the metrics that read it are worth at most 3 hits of 1 338 (`FT8_WINDOW_AND_COARSE_DESIGN.md`, 12).
-    fn fill(&self, cs: &mut [[Cmplx<f32>; 8]; 79], g: Grid, p: Place) {
+    fn fill_mask(&self, cs: &mut [[Cmplx<f32>; 8]; 79], g: Grid, p: Place, mask: SymMask) {
         let on_grid = p.wa == 0.0 && p.wb == 0.0;
         let (w00, w10, w01, w11) = (
             (1.0 - p.wa) * (1.0 - p.wb),
@@ -180,6 +190,9 @@ impl View<'_> {
             p.wa * p.wb,
         );
         for (sym, row) in cs.iter_mut().enumerate() {
+            if !sym_in_mask(sym, mask) {
+                continue;
+            }
             for (t, c) in row.iter_mut().enumerate() {
                 let re = if on_grid {
                     self.t.amp[self.h(g, sym, t, 0, 0)]
@@ -190,6 +203,18 @@ impl View<'_> {
                 };
                 *c = Cmplx { re, im: 0.0 };
             }
+        }
+    }
+
+    /// All 79 symbols (the tests' form of [`fill_mask`](Self::fill_mask)).
+    #[cfg(test)]
+    fn fill(&self, cs: &mut [[Cmplx<f32>; 8]; 79], g: Grid, p: Place) {
+        for mask in [
+            SymMask::SyncBlock0,
+            SymMask::SyncBlocks12,
+            SymMask::DataOnly,
+        ] {
+            self.fill_mask(cs, g, p, mask);
         }
     }
 }
@@ -223,33 +248,82 @@ fn tcal(d: f32) -> f32 {
     if d < 0.0 { -u } else { u }
 }
 
-/// One attempt at the staircase for the spectra `cs` made at (`g`, `p`): `None` if the candidate does not decode.
-#[allow(clippy::too_many_arguments)]
-fn attempt<S: AudioSample>(
-    audio: &[S],
-    view: &View<'_>,
-    cand: &SyncCandidate,
-    g: Grid,
-    p: Place,
-    depth: DecodeDepth,
-    cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
-) -> Option<DecodeResult> {
-    let mut cs: Box<[[Cmplx<f32>; 8]; 79]> = vec![[Cmplx::<f32>::default(); 8]; 79]
-        .try_into()
-        .expect("79 x 8");
-    view.fill(&mut cs, g, p);
-    // the staircase computes its own sync quality: the third field of the tuple is not read
-    process_candidates_into_with_cs_scratch_tuned_with_fill(
-        audio,
-        vec![(cand.clone(), cs, 0)],
-        depth,
-        DEFAULT_Q_THRESH,
-        DEFAULT_BP_MAX_ITER,
-        cs_scratch,
-        |cs, _, _| view.fill(cs, g, p),
-    )
-    .into_iter()
-    .next()
+/// A worker of the cells flow over **memory the caller owns**: the staging block of 79 x 8 spectra (internal DRAM on a board: its existing staging pair), the BP scratch
+/// (about 12 KB, made once per worker) and the tables. [`decode_candidate`](Self::decode_candidate) allocates nothing for a candidate that does not decode (OSD off: the OSD
+/// fallback makes a scratch of its own), so a firmware runs one worker a core and pulls candidates from a queue. `decode_block_cells` and `decode_block_cells_sic` make one
+/// worker per call.
+pub struct CellsWorker<'a> {
+    cs: &'a mut [[Cmplx<f32>; 8]; 79],
+    bp: &'a mut Ft8BpScratch,
+    tables: &'a CellTables,
+}
+
+impl<'a> CellsWorker<'a> {
+    /// A worker over the caller's staging block, BP scratch and tables.
+    pub fn new(
+        cs: &'a mut [[Cmplx<f32>; 8]; 79],
+        bp: &'a mut Ft8BpScratch,
+        tables: &'a CellTables,
+    ) -> Self {
+        Self { cs, bp, tables }
+    }
+
+    /// One attempt at the staircase for the spectra read at (`g`, `p`): `None` if the candidate does not decode.
+    fn attempt(
+        &mut self,
+        cells: &HalfDbCells,
+        cand: &SyncCandidate,
+        g: Grid,
+        p: Place,
+        depth: DecodeDepth,
+    ) -> Option<DecodeResult> {
+        let view = View {
+            cells,
+            t: self.tables,
+        };
+        process_candidate_with_scratch(
+            self.cs,
+            self.bp,
+            cand,
+            |cs, _, mask| view.fill_mask(cs, g, p, mask),
+            depth,
+            DEFAULT_Q_THRESH,
+            DEFAULT_BP_MAX_ITER,
+            &[],
+        )
+    }
+
+    /// One candidate: decoded at its grid place from `cells`, and, if that fails and the Costas tones point to a place `min_shift` cells off, once more there (the
+    /// retry; the decode then reports the place it was found at). `None` if it does not decode. The candidate's place is `cand`'s (the search's grid).
+    pub fn decode_candidate(
+        &mut self,
+        cells: &HalfDbCells,
+        cand: &SyncCandidate,
+        depth: DecodeDepth,
+        min_shift: f32,
+    ) -> Option<Found> {
+        let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
+        let tstep = cells.rate().nstep() as f32 / cells.rate().hz() as f32;
+        let g = Grid {
+            j0: ((cand.dt_sec + 0.5) / tstep).round() as i32,
+            k: (cand.freq_hz / df).round() as i64,
+        };
+        let mut found = self.attempt(cells, cand, g, ON_GRID, depth);
+        if found.is_none() {
+            let p = View {
+                cells,
+                t: self.tables,
+            }
+            .place(g);
+            if p.worth_a_retry(min_shift)
+                && let Some(mut d) = self.attempt(cells, cand, g, p, depth)
+            {
+                (d.freq_hz, d.dt_sec) = p.moved(d.freq_hz, d.dt_sec, df, tstep);
+                found = Some(d);
+            }
+        }
+        found.map(|res| Found { res, grid: g })
+    }
 }
 
 /// The FT8 flow of the S3 at 8 kHz from the half-dB cells: the search of `search` ([`coarse_sync_gated_cells`]: `ft8_lib`'s statistic, the
@@ -285,62 +359,44 @@ fn decode_cells_inner<S: AudioSample>(
     min_shift: f32,
 ) -> Option<Vec<DecodeResult>> {
     let (cands, cells) = coarse_sync_gated_cells(&mut SliceSource(audio), rate, search, 1)?;
-    let tables = Tables::new();
-    let view = View {
-        cells: &cells,
-        t: &tables,
-    };
+    let tables = CellTables::new();
     let mut known = Vec::new();
     decode_round(
-        audio, rate, &view, &cands, max_cand, depth, min_shift, &mut known,
+        &cells, &tables, &cands, max_cand, depth, min_shift, &mut known,
     );
     Some(known.into_iter().map(|f| f.res).collect())
 }
 
 /// A decode with the grid place of the candidate it came from (the place [`View::refine`] starts from).
-pub(super) struct Found {
-    pub(super) res: DecodeResult,
-    pub(super) grid: Grid,
+pub struct Found {
+    pub res: DecodeResult,
+    pub grid: Grid,
 }
 
 /// The first `max_cand` of `cands` decoded at their grid place, and, for each that did not decode, at the place the Costas tones point to when that
-/// is `min_shift` cells off (the retry); a decode already in `known` (same 77 bits) is not added again. Returns how many were added.
+/// is `min_shift` cells off (the retry); a decode already in `known` (same 77 bits) is not added again. Returns how many were added. One worker (its staging block
+/// and BP scratch) for the whole round.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn decode_round<S: AudioSample>(
-    audio: &[S],
-    rate: Ft8Rate,
-    view: &View<'_>,
+pub(super) fn decode_round(
+    cells: &HalfDbCells,
+    tables: &CellTables,
     cands: &[(SyncCandidate, u8)],
     max_cand: usize,
     depth: DecodeDepth,
     min_shift: f32,
     known: &mut Vec<Found>,
 ) -> usize {
-    let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
-    let tstep = rate.nstep() as f32 / rate.hz() as f32;
-    let mut cs_scratch: Box<[[Cmplx<f32>; 8]; 79]> = vec![[Cmplx::<f32>::default(); 8]; 79]
+    let mut cs: Box<[[Cmplx<f32>; 8]; 79]> = vec![[Cmplx::<f32>::default(); 8]; 79]
         .try_into()
         .expect("79 x 8");
+    let mut bp = Box::new(Ft8BpScratch::new());
+    let mut worker = CellsWorker::new(&mut cs, &mut bp, tables);
     let before = known.len();
     for (cand, _hs) in cands.iter().take(max_cand) {
-        let g = Grid {
-            j0: ((cand.dt_sec + 0.5) / tstep).round() as i32,
-            k: (cand.freq_hz / df).round() as i64,
-        };
-        let mut found = attempt(audio, view, cand, g, ON_GRID, depth, &mut cs_scratch);
-        if found.is_none() {
-            let p = view.place(g);
-            if p.worth_a_retry(min_shift)
-                && let Some(mut d) = attempt(audio, view, cand, g, p, depth, &mut cs_scratch)
-            {
-                (d.freq_hz, d.dt_sec) = p.moved(d.freq_hz, d.dt_sec, df, tstep);
-                found = Some(d);
-            }
-        }
-        if let Some(d) = found
-            && !known.iter().any(|o| o.res.message77() == d.message77())
+        if let Some(f) = worker.decode_candidate(cells, cand, depth, min_shift)
+            && !known.iter().any(|o| o.res.message77() == f.res.message77())
         {
-            known.push(Found { res: d, grid: g });
+            known.push(f);
         }
     }
     known.len() - before
@@ -457,7 +513,7 @@ mod tests {
                         .total_cmp(&(b.0.freq_hz - f_true).abs())
                 })
                 .unwrap();
-            let t = Tables::new();
+            let t = CellTables::new();
             let v = View {
                 cells: &cells,
                 t: &t,
@@ -484,7 +540,7 @@ mod tests {
     /// `10^(h / 20)`. **Fails if** either is off by a scale (a decade per 10 or 20 units) or the two disagree.
     #[test]
     fn the_tables_are_the_power_scale() {
-        let t = Tables::new();
+        let t = CellTables::new();
         assert_eq!(t.amp[0], 1.0);
         assert_eq!((t.amp[OUTSIDE], t.pow[OUTSIDE]), (0.0, 0.0));
         assert!((t.amp[40] - 10.0).abs() < 1e-3, "{}", t.amp[40]);
@@ -609,7 +665,7 @@ mod tests {
             j0: ((c.dt_sec + 0.5) / 0.08).round() as i32,
             k: (c.freq_hz / df).round() as i64,
         };
-        let t = Tables::new();
+        let t = CellTables::new();
         let v = View {
             cells: &cells,
             t: &t,
@@ -644,7 +700,7 @@ mod tests {
             data[6 * nf + b] = 60;
         }
         let cells = HalfDbCells::from_parts(nf, nt, 0, Ft8Rate::Hz8000, data);
-        let t = Tables::new();
+        let t = CellTables::new();
         let v = View {
             cells: &cells,
             t: &t,
@@ -711,5 +767,86 @@ mod tests {
             ferr <= 1.0 && terr <= 0.02,
             "mean error {ferr} Hz, {terr} s over {checked} decodes"
         );
+    }
+
+    /// A fill by mask writes only the symbols of the mask, and the three masks the staircase asks for (`SyncBlock0`, `SyncBlocks12`, `DataOnly`) together make the whole block.
+    /// **Fails if** a mask fills another mask's symbols (the staircase would gate on a block it has not read, or overwrite the sync block a failed gate leaves), or a
+    /// symbol is in no mask.
+    #[test]
+    fn a_fill_by_mask_writes_only_its_symbols() {
+        let a = slot(&[("CQ", "K1ABC", "FN42", 700.0, 0.3, 8000)], 1500.0, 21);
+        let (_, cells) =
+            coarse_sync_gated_cells(&mut SliceSource(&a), Ft8Rate::Hz8000, &search(), 1).unwrap();
+        let t = CellTables::new();
+        let v = View {
+            cells: &cells,
+            t: &t,
+        };
+        let g = Grid { j0: 10, k: 224 };
+        let mut all = [[Cmplx::<f32>::default(); 8]; 79];
+        v.fill(&mut all, g, ON_GRID);
+        let mut staged = [[Cmplx::<f32>::default(); 8]; 79];
+        v.fill_mask(&mut staged, g, ON_GRID, SymMask::SyncBlock0);
+        for (sym, row) in staged.iter().enumerate() {
+            let filled = row.iter().any(|c| c.re != 0.0);
+            assert_eq!(filled, sym < 7, "symbol {sym} after SyncBlock0");
+        }
+        v.fill_mask(&mut staged, g, ON_GRID, SymMask::SyncBlocks12);
+        v.fill_mask(&mut staged, g, ON_GRID, SymMask::DataOnly);
+        assert!(
+            staged
+                .iter()
+                .zip(&all)
+                .all(|(x, y)| x.iter().zip(y).all(|(p, q)| p.re == q.re)),
+            "the three masks together are the whole block"
+        );
+        assert!(all.iter().all(|r| r.iter().any(|c| c.re != 0.0)));
+    }
+
+    /// One worker over the caller's memory decodes, candidate by candidate, what a fresh worker decodes for each, and what `decode_block_cells` decodes in all.
+    /// **Fails if** state leaks from one candidate into the next (the staging block or the BP scratch is not rewritten), or the per-candidate step changes the
+    /// first-try / retry logic.
+    #[test]
+    fn a_worker_decodes_candidate_by_candidate_what_the_flow_decodes() {
+        let signals = [
+            ("CQ", "K1ABC", "FN42", 700.0f32, 0.2f32, 6000i16),
+            ("K1ABC", "W9XYZ", "-12", 1500.3, 0.9, 5000),
+            ("CQ", "JA1ABC", "PM95", 2300.7, -0.6, 5000),
+        ];
+        let a = slot(&signals, 1500.0, 11);
+        let (cands, cells) =
+            coarse_sync_gated_cells(&mut SliceSource(&a), Ft8Rate::Hz8000, &search(), 1).unwrap();
+        let tables = CellTables::new();
+        let mut cs = Box::new([[Cmplx::<f32>::default(); 8]; 79]);
+        let mut bp = Box::new(Ft8BpScratch::new());
+        let mut reused = CellsWorker::new(&mut cs, &mut bp, &tables);
+        let mut got = Vec::new();
+        for (c, _) in cands.iter().take(15) {
+            let one = reused.decode_candidate(&cells, c, osd_on(), RETRY_MIN_SHIFT);
+            let mut cs2 = Box::new([[Cmplx::<f32>::default(); 8]; 79]);
+            let mut bp2 = Box::new(Ft8BpScratch::new());
+            let fresh = CellsWorker::new(&mut cs2, &mut bp2, &tables).decode_candidate(
+                &cells,
+                c,
+                osd_on(),
+                RETRY_MIN_SHIFT,
+            );
+            assert_eq!(
+                one.as_ref().map(|f| *f.res.message77()),
+                fresh.as_ref().map(|f| *f.res.message77()),
+                "candidate at {} Hz: a reused worker and a fresh one differ",
+                c.freq_hz
+            );
+            if let Some(f) = one {
+                got.push(f.res);
+            }
+        }
+        let mut want =
+            texts(&decode_block_cells(&a, Ft8Rate::Hz8000, &search(), 15, osd_on()).unwrap());
+        let mut have = texts(&got);
+        have.dedup();
+        want.dedup();
+        assert_eq!(have, want);
+        assert_eq!(have.len(), 3);
     }
 }

@@ -1824,6 +1824,125 @@ where
     )
 }
 
+/// The belief-propagation scratch of FT8's staircase at this build's LLR scalar (`Q11i16` with `fixed-point`, `f32` otherwise): what a caller that owns its scratch
+/// hands to [`process_candidate_with_scratch`]. About 12 KB; one per worker, made once.
+#[doc(hidden)]
+pub type Ft8BpScratch =
+    crate::fec::ldpc::bp::BpScratch<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>;
+
+/// One candidate through the staircase over **the caller's memory**: `cs_scratch` is the staging block of 79 x 8 spectra (internal DRAM on the boards), `bp_scratch` the
+/// BP scratch, and `fill` makes the block's symbols by [`SymMask`] (`SyncBlock0`, then `SyncBlocks12`, then `DataOnly`, as `process_candidates_into_with_cs_scratch_tuned_with_fill`
+/// calls it). Nothing is allocated here for a candidate that does not decode (with OSD off: the OSD fallback makes a scratch of its own). `known` are decodes to reject duplicates of.
+/// Defaults of the board's driver: `DecodeStrictness::Normal`, no AP, the first pass.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn process_candidate_with_scratch<F>(
+    cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
+    bp_scratch: &mut Ft8BpScratch,
+    cand: &SyncCandidate,
+    mut fill: F,
+    depth: DecodeDepth,
+    q_thresh: u32,
+    bp_max_iter: u32,
+    known: &[DecodeResult],
+) -> Option<DecodeResult>
+where
+    F: FnMut(&mut [[Cmplx<f32>; 8]; 79], &SyncCandidate, SymMask),
+{
+    process_candidate_staged(
+        cs_scratch,
+        bp_scratch,
+        cand,
+        None,
+        &mut fill,
+        depth,
+        q_thresh,
+        bp_max_iter,
+        known,
+        None,
+        DecodeStrictness::Normal,
+        PassCtx::FIRST,
+    )
+}
+
+/// One candidate of [`process_candidates_with_ap`]: stage its block into `cs_scratch` (the caller's memory: internal DRAM on the boards), the
+/// sync-quality gate on the sync symbols, the data symbols for the survivors, then the staircase. `block0` is the block-0 spectrum kept by the refine
+/// (`None`: the low-pass profile, block 0 is made again by `fill`). The loop body of `process_candidates_with_ap`, moved here unchanged so that a
+/// caller that owns its scratch (`process_candidate_with_scratch`, the cells flow) can run one candidate without a `Vec` of candidates or a scratch of its own
+/// allocated per call.
+#[allow(clippy::too_many_arguments)]
+fn process_candidate_staged<F>(
+    cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
+    bp_scratch: &mut crate::fec::ldpc::bp::BpScratch<
+        crate::fec::ldpc::params::Ldpc174_91Params,
+        LlrT,
+    >,
+    cand: &SyncCandidate,
+    block0: Option<&[[Cmplx<f32>; 8]; 79]>,
+    fill: &mut F,
+    depth: DecodeDepth,
+    q_thresh: u32,
+    bp_max_iter: u32,
+    known: &[DecodeResult],
+    ap_hint: Option<&ApHint>,
+    strictness: DecodeStrictness,
+    pass: PassCtx,
+) -> Option<DecodeResult>
+where
+    F: FnMut(&mut [[Cmplx<f32>; 8]; 79], &SyncCandidate, SymMask),
+{
+    // Stage cs into the caller's scratch (typically internal DRAM
+    // on Xtensa) so the LLR / BP / sync_quality hot loops below
+    // read from fast memory. Cost: ~60 µs (5 KB at ~80 MB/s OCT
+    // PSRAM read on S3) vs many-hundred-µs gains in BP iter loop.
+    // Slice-borrow form (PR #118 round-2): caller keeps ownership
+    // of `cs_box`, enabling auto-AP to reuse the same refined
+    // candidates across multiple callsigns without per-candidate
+    // Box reallocation.
+    match block0 {
+        Some(cs) => *cs_scratch = *cs,
+        // Pass 2 kept only the candidate (the low-memory profile): block 0 is computed again, by
+        // the same fill it was computed with, so the spectrum below is the same to the bit. The
+        // other 72 symbols are filled by the two calls that follow, so nothing of the previous
+        // candidate survives in the scratch.
+        None => fill(cs_scratch, cand, SymMask::SyncBlock0),
+    }
+    // Two-step fill: sync blocks first, gate by full sync_quality,
+    // then fill data symbols only for survivors. Saves the 58 ×
+    // 8 = 464 data-symbol DFTs on every candidate that fails the
+    // q gate (typically half of `max_cand`). `SyncBlocks12`
+    // (instead of `SyncOnly`) skips re-filling block 0 — Pass 2
+    // already populated it on `SyncBlock0`, and that data
+    // survives in `cs_scratch` here. Saves an additional
+    // 56 DFTs / candidate.
+    fill(cs_scratch, cand, SymMask::SyncBlocks12);
+    let q = sync_quality(cs_scratch);
+    if q <= q_thresh.max(pass.nsync_floor()) {
+        #[cfg(feature = "std")]
+        TRACE_NSYNC_FAIL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        return None;
+    }
+    #[cfg(feature = "std")]
+    TRACE_NSYNC_PASS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    fill(cs_scratch, cand, SymMask::DataOnly);
+    process_one_candidate_inner(
+        cs_scratch,
+        cand,
+        cand.dt_sec,
+        q,
+        depth,
+        bp_max_iter,
+        bp_scratch,
+        known,
+        ap_hint,
+        strictness,
+        0.0,
+        &DefaultPolicy,
+        pass,
+        crate::engine::pipeline::QsoFreq::Unknown,
+    )
+}
+
 /// Common body of `process_candidates` / `process_candidates_into`
 /// / `process_candidates_into_with_cs_scratch` — the BP staircase
 /// logic is identical between them; only the per-candidate
@@ -1868,55 +1987,19 @@ where
     // `tlsf_malloc` traffic that dominated stage-3 non-DFT cost on
     // Core2 (~50–100 ms / qso). See `mfsk_core::fec::ldpc::bp::BpScratch`.
     for (cand, block0) in cands {
-        // Stage cs into the caller's scratch (typically internal DRAM
-        // on Xtensa) so the LLR / BP / sync_quality hot loops below
-        // read from fast memory. Cost: ~60 µs (5 KB at ~80 MB/s OCT
-        // PSRAM read on S3) vs many-hundred-µs gains in BP iter loop.
-        // Slice-borrow form (PR #118 round-2): caller keeps ownership
-        // of `cs_box`, enabling auto-AP to reuse the same refined
-        // candidates across multiple callsigns without per-candidate
-        // Box reallocation.
-        match block0 {
-            Some(cs) => *cs_scratch = *cs,
-            // Pass 2 kept only the candidate (the low-memory profile): block 0 is computed again, by
-            // the same fill it was computed with, so the spectrum below is the same to the bit. The
-            // other 72 symbols are filled by the two calls that follow, so nothing of the previous
-            // candidate survives in the scratch.
-            None => fill(cs_scratch, cand, SymMask::SyncBlock0),
-        }
-        // Two-step fill: sync blocks first, gate by full sync_quality,
-        // then fill data symbols only for survivors. Saves the 58 ×
-        // 8 = 464 data-symbol DFTs on every candidate that fails the
-        // q gate (typically half of `max_cand`). `SyncBlocks12`
-        // (instead of `SyncOnly`) skips re-filling block 0 — Pass 2
-        // already populated it on `SyncBlock0`, and that data
-        // survives in `cs_scratch` here. Saves an additional
-        // 56 DFTs / candidate.
-        fill(cs_scratch, cand, SymMask::SyncBlocks12);
-        let q = sync_quality(cs_scratch);
-        if q <= q_thresh.max(pass.nsync_floor()) {
-            #[cfg(feature = "std")]
-            TRACE_NSYNC_FAIL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            continue;
-        }
-        #[cfg(feature = "std")]
-        TRACE_NSYNC_PASS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        fill(cs_scratch, cand, SymMask::DataOnly);
-        if let Some(r) = process_one_candidate_inner(
+        if let Some(r) = process_candidate_staged(
             cs_scratch,
-            cand,
-            cand.dt_sec,
-            q,
-            depth,
-            bp_max_iter,
             bp_scratch,
+            cand,
+            block0,
+            &mut fill,
+            depth,
+            q_thresh,
+            bp_max_iter,
             &results,
             ap_hint,
             strictness,
-            0.0,
-            &DefaultPolicy,
             pass,
-            crate::engine::pipeline::QsoFreq::Unknown,
         ) {
             if let Some(cb) = on_result.as_mut() {
                 cb(&r);

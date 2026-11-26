@@ -67,7 +67,7 @@ mod coarse_lib;
 #[cfg(feature = "fixed-point")]
 mod ft8dec_sic;
 #[cfg(feature = "fixed-point")]
-pub use cells_flow::decode_block_cells;
+pub use cells_flow::{CellTables, CellsWorker, Found, Grid, decode_block_cells};
 #[cfg(feature = "fixed-point")]
 pub use coarse_lib::{HalfDbCells, coarse_sync_gated_cells};
 #[cfg(feature = "fixed-point")]
@@ -101,6 +101,7 @@ pub use process_candidates::decode_block_streaming;
 /// Phase 1.7.7-Stick: fill-closure variant for host research /
 /// regression tests (spec-lookup vs BASIS dot product comparison).
 pub use process_candidates::process_candidates_into_with_cs_scratch_tuned_with_fill;
+pub use process_candidates::{Ft8BpScratch, process_candidate_with_scratch};
 pub use process_candidates::{LowMem, decode_block_low_mem};
 pub use process_candidates::{RefinedCandidate, decode_block, decode_block_tuned, xsnr2_db_simple};
 #[cfg(feature = "fixed-point")]
