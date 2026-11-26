@@ -1832,7 +1832,10 @@ pub type Ft8BpScratch =
 
 /// One candidate through the staircase over **the caller's memory**: `cs_scratch` is the staging block of 79 x 8 spectra (internal DRAM on the boards), `bp_scratch` the
 /// BP scratch, and `fill` makes the block's symbols by [`SymMask`] (`SyncBlock0`, then `SyncBlocks12`, then `DataOnly`, as `process_candidates_into_with_cs_scratch_tuned_with_fill`
-/// calls it). Nothing is allocated here for a candidate that does not decode (with OSD off: the OSD fallback makes a scratch of its own). `known` are decodes to reject duplicates of.
+/// calls it). The staging block and the BP scratch are the caller's and are not remade. **It is not allocation-free** (measured 2026-11-27, host, 30 candidates, noise only): the LLR step makes
+/// three small buffers per attempt (696, 64 and 32 bytes, `compute_llr_generic_metric` / `fill_bmet_for_nsym`: under the board's 2 KB internal-DRAM threshold, freed at once), and in a build
+/// with `fft-rustfft` (the host) a candidate that does not decode also runs the blind-CQ AP pass (`PassCtx::FIRST` has `ap: true`), which makes a BP scratch of its own; the board's build has no
+/// such pass. With OSD on, the OSD fallback makes a scratch of its own as well. `known` are decodes to reject duplicates of.
 /// Defaults of the board's driver: `DecodeStrictness::Normal`, no AP, the first pass.
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]

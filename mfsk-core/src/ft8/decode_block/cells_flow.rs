@@ -324,6 +324,31 @@ impl<'a> CellsWorker<'a> {
         }
         found.map(|res| Found { res, grid: g })
     }
+
+    /// The first `max_cand` of `cands` decoded at their grid place, and, for each that did not decode, at the place the Costas tones point to when that is
+    /// `min_shift` cells off (the retry); a decode already in `known` (same 77 bits) is not added again. Returns how many were added. The worker's memory is
+    /// the caller's and is **reused** by every call (a firmware keeps one worker per core for the slot, and for every pass of a subtraction flow): a call
+    /// does not remake the staging block or the BP scratch, which is all it guarantees: the attempts still make small buffers (the LLR step, see
+    /// [`process_candidate_with_scratch`](super::process_candidate_with_scratch)) and `known` grows.
+    pub fn decode_round(
+        &mut self,
+        cells: &HalfDbCells,
+        cands: &[(SyncCandidate, u8)],
+        max_cand: usize,
+        depth: DecodeDepth,
+        min_shift: f32,
+        known: &mut Vec<Found>,
+    ) -> usize {
+        let before = known.len();
+        for (cand, _hs) in cands.iter().take(max_cand) {
+            if let Some(f) = self.decode_candidate(cells, cand, depth, min_shift)
+                && !known.iter().any(|o| o.res.message77() == f.res.message77())
+            {
+                known.push(f);
+            }
+        }
+        known.len() - before
+    }
 }
 
 /// The FT8 flow of the S3 at 8 kHz from the half-dB cells: the search of `search` ([`coarse_sync_gated_cells`]: `ft8_lib`'s statistic, the
@@ -373,9 +398,7 @@ pub struct Found {
     pub grid: Grid,
 }
 
-/// The first `max_cand` of `cands` decoded at their grid place, and, for each that did not decode, at the place the Costas tones point to when that
-/// is `min_shift` cells off (the retry); a decode already in `known` (same 77 bits) is not added again. Returns how many were added. One worker (its staging block
-/// and BP scratch) for the whole round.
+/// [`CellsWorker::decode_round`] with a worker of its own (the staging block and the BP scratch made for this one round): what the one-shot flows use.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode_round(
     cells: &HalfDbCells,
@@ -390,16 +413,8 @@ pub(super) fn decode_round(
         .try_into()
         .expect("79 x 8");
     let mut bp = Box::new(Ft8BpScratch::new());
-    let mut worker = CellsWorker::new(&mut cs, &mut bp, tables);
-    let before = known.len();
-    for (cand, _hs) in cands.iter().take(max_cand) {
-        if let Some(f) = worker.decode_candidate(cells, cand, depth, min_shift)
-            && !known.iter().any(|o| o.res.message77() == f.res.message77())
-        {
-            known.push(f);
-        }
-    }
-    known.len() - before
+    CellsWorker::new(&mut cs, &mut bp, tables)
+        .decode_round(cells, cands, max_cand, depth, min_shift, known)
 }
 
 #[cfg(test)]
