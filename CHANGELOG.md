@@ -5,7 +5,7 @@
 ### CoreS3: the cells flow's first board runs, and the ft8dec comparison (`S3_CELLS_IMPLEMENTATION_PLAN.md` §9, steps 1-2)
 
 - **New** (embedded, `fixed-point`): `esp_dsp_fft` plans a 2 560-point sc16 transform (`MixedRadix2560Sc16Fft`, 256 x 10 on the esp-dsp kernel); `fft_mixed_2560_sc16::build_twiddles` is `pub`. `ft8-cells-bench` (CoreS3): esp-dsp against the software plan differs by up to 83 LSB (mean 3.1; the shipped 3 840 plan: 123 / 3.7), a row pair is 7.0 ms of the 160 ms it covers, and `decode_block_cells` decodes the same sets as the host on 3 recordings (2.25 s at 15 candidates, 3.06 s at 30, one core).
-- Against ft8dec (icap-sdk 1ca9f04) on the same 8 kHz audio: equal decode counts at equal knobs (30 candidates, OSD off: 19 / 19 on 3 recordings), but **on x86 the cells flow takes 1.65-2.55x the instructions** (BP: 179 calls, 263 M against ft8dec's 18 calls, 9 M; the front ends are equal). This contradicts the design note's Apple Silicon figures; `scripts/compare-ft8dec-cells.sh` repeats it on a Mac. Not explained.
+- Against ft8dec (icap-sdk 1ca9f04) on the same 8 kHz audio: equal decode counts at equal knobs (30 candidates, OSD off: 19 / 19 on 3 recordings), but **on x86 the cells flow takes 1.65-2.55x the instructions** (BP: 179 calls, 263 M against ft8dec's 18 calls, 9 M; the front ends are equal). This contradicts the design note's Apple Silicon figures; `scripts/compare-ft8dec-cells.sh` repeats it on a Mac. Not explained. On the CoreS3, SIC takes 1.6-1.9x the plain flow (2 passes 4.8-6.0 s), `ft8dec` (as an IDF component) 1.5-2.4x less than the cells flow at equal knobs; details in the plan, section 10.
 
 ### FT8 at 8 kHz (fixed-point): what the CoreS3 firmware needs of the library (step 0 of `S3_CELLS_IMPLEMENTATION_PLAN.md`)
 
