@@ -844,3 +844,10 @@ The port was found faithful line for line (`sig_corr`, `sig_sub`, `ph_inc`, `ph_
 * **The new decodes in neither list, re-checked on the landed configuration** (2 passes, 30 candidates: **9 new**, 20 in neither list in all): `2E0LDW` 13 and `F5CCX F4AGZ` 34 wrong tones real; `JO1COV PD0MNO` 41 and `MM0IMC 4U1A` 43 probably real; **`LU5HA UA9TK R-13` 60 and `R-20` 50 read like noise**; `F6DEO/QRP` and `E77VM` (hashed calls) not checkable; `EA8PP JH0INP PM96` 44: **attested** now (below). The earlier count of "5 real" was too strong: 2 real, 2 probable.
 * **`EA8PP JH0INP PM96`** was classified two ways: tier B (`ft8_real_recordings_vs_jt9.rs`) attests it for `websdr_test7` (`jt9`'s exact text, same 940 Hz and DT -0.6, in `websdr_test5`), `band_baseband.rs` kept it as by-identity debt. It is in `profile::ATTESTED_EXTRAS` with that evidence and out of the SIC floor test's debt; `band_baseband.rs`'s list is left as it is (a message that stops being unexplained is allowed to leave it).
 * Landed ledger (60 slots, jt9 hits / union found / in neither, host M instr): 15 candidates 754 / 765 / 3, 180 M; 922 / 941 / 8, 488 M; 939 / 960 / 10, 859 M (1, 2, 3 passes). 20: 912, 233; 1 097, 594; 1 111, 1 055. 24: 979, 280; 1 161, 699; 1 174, 1 218. 30: 1 001 / 1 035 / 11, 396 M; 1 192 / 1 247 / 20, 881 M; 1 206 / 1 262 / 21, 1 443 M.
+
+## 24. The board plan
+
+The CoreS3 side (a 2 560-point esp-dsp plan, the byte producer in `stage1_inc`, the gate on a partially filled store, stage 3 by work stealing from the cells, the subtraction
+passes after the slot boundary, the internal-DRAM / PSRAM placement under `SPIRAM_MALLOC_ALWAYSINTERNAL` = 2048) is planned in `S3_CELLS_IMPLEMENTATION_PLAN.md`: what is established
+(sections 2-3 there), the steps and their gates, the decisions that are the owner's, and what is not known (the ESP32 time of integer / table code, PSRAM bandwidth, the early emit on a partial store,
+OSD on the board, tier C). Nothing there has been run on a board.
