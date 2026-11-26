@@ -864,3 +864,27 @@ Three commits (`7d14c115`, `d0d39689`, `9f41fe0a`), host only, each with its tie
 * **0c, 48 -> 8 kHz.** `antialias_taps(src, target)`; 8 kHz spec pass 3 200 / stop 4 000 Hz / 40 dB. 12 kHz outputs pinned by FNV hashes taken from the previous commit. 22 recordings via 12 -> 48 -> 8 kHz: 225 / 285 against the ICAP model's 226 / 286 (extras 2 / 3).
 * **Not done: step 0d** (OSD-off ledger of the cells flow and the passes; the early emit at row pair 87 / 85 on a partly filled store). Both are host measurements that need no new library item.
 
+## 26. Where the cells flow's instructions go, against `ft8dec` (Apple M5, 2026-11-27)
+
+`scripts/compare-ft8dec-cells.sh` on the Mac (`/usr/bin/time -l`, 3 vendored recordings, 8 kHz, 30 candidates, OSD off), after the x86 run in `S3_CELLS_IMPLEMENTATION_PLAN.md` section 10 found the cells flow dearer than `ft8dec`:
+M instructions, sum of 3: cells 915 (15 candidates) / 1 479 (30); `ft8dec` 444 (30 candidates, OSD off, 1 pass) / 741 (its defaults, 300 candidates, OSD, 1 pass). **The direction is the x86 one, not reversed** (cells 3.3x `ft8dec` at the same knobs; 2.0x its defaults).
+Wall time, same audio (ms, 3 recordings, load subtracted): cells 59 (30 cand.), 34 (15) against `ft8dec` 13 (30 cand., OSD off), 32 (defaults): 4.4x, so time is further apart than instructions. A sampled profile of the same runs (OSD off) puts **BP at 60 % of the time** and the search at 17 %, the FFTs at 16 %, the LLR and the cell fill at about 1 %: BP is an instruction-poor, time-rich stage (about 17 % of the instructions, 45 000 a BP iteration on f32 NMS, measured on random LLRs).
+
+**BP calls, counted with a probe (since removed), 30 candidates, 3 recordings:**
+
+| | cells flow | `ft8dec` |
+|---|---:|---:|
+| candidates that reach BP | 87 | 35 |
+| of them decoded / failed | 19 / 68 | 19 / 16 |
+| BP calls on a failed candidate | 2.7 | 2.0 |
+| iterations a BP call | 29.6 | 24.1 |
+| BP iterations in all | 5 666 | 919 |
+
+A decoded candidate costs 1-2 calls and about 10 iterations; **95 % or more of the iterations are failed candidates**. The 6.2x in iterations is 2.5x (candidates tried) x 1.35 (calls a failed one: `a` and `d` at the grid, and again at the retry) x 1.23 (iterations a call: the stall exit rarely fires, a failed call runs all 31 passes; `ft8dec` stops at 25 and exits early). `ft8dec` tries fewer because it takes the top 30 by score, then skips those under 7 hard-sync tones and those within +-2 steps of a decoded candidate; the cells flow takes the top 30 by hard sync, all of which have 6-21. Two guesses ruled out: no failed candidate lies within +-2 rows / +-2 bins of a decoded one (the search's suppression already removed them), and a hard-sync floor of 7 would remove 14 of 208 calls.
+**Not explained:** the x86 record counts 179 BP calls on `qso1` at 30 candidates; here it is 63. The x86 run may have a different setting; the probe has not been run on x86.
+
+**BP iteration cap 30 -> 25 / 24** (24 = `ft8dec`'s 25 passes), 60 slots, OSD on, cells flow: **hits, extras, union found and "in neither list" are identical** at 15 and 30 candidates, 1 and 2 passes (754 / 1 001 / 922 / 1 192 `jt9` hits); instructions at 30 candidates 398.0 -> 387.8 (-2.6 %) / 385.7 M (-3.1 %), at 2 passes 884.9 -> 868.3 / 864.8 M, at 15 candidates -0.6 %. The saving is small because the number of failed BP calls is unchanged. **Not applied** (a change of `DEFAULT_BP_MAX_ITER` for the cells flow only; safe on this corpus, worth 2-3 % of instructions, a little more of BP's time). The levers that matter are the candidates tried (87 against 35) and the calls on a failed candidate (2.7 against 2.0): each costs recall (754 -> 1 001 hits from 15 to 30 candidates) and needs the 60-slot ledger and the board's time before any is chosen. Instruction counts understate BP: the board's time should be predicted from BP iterations, not from instructions.
+
+**The corpus.** `20m_busy` is `kgoba/ft8_lib` `test/wav/20m_busy` (MIT; 38 slots, 76 files with their text), read from a clone at `~/src/ft8_lib` (commit 9fec6ca), **not vendored in this repo**: the 60-slot ledgers are reproducible only with that clone and the references of `jt9` v3.3 beta6 (the 22 recordings are vendored). The design was tuned on the same 60 slots (no held-out set).
+**On the board:** a 12-slot replay (`test_01`..`test_12`, about 4.2 MB of the 9 MiB factory partition, one slot at a time from PSRAM, 240 KB at 8 kHz) would give the board's time per BP iteration against these counts; 38 slots do not fit in one image. Not built.
+

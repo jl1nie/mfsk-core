@@ -234,3 +234,5 @@ Release gate before the library items go out: tier C (section 6).
 
 **Corpus.** `kgoba/ft8_lib` at 9fec6ca3 (`test/wav/20m_busy`, 38 slots with a `.txt` each, 936 decodes) is not vendored; clone it for any evaluation of the 60 slots. A local `jt9` (not the beta6 of the design note: version unchecked) is at `~/src/WSJT-X/build_jt9/jt9`.
 
+**Mac run, BP breakdown and the iteration cap (2026-11-27): design note section 26.** On the Mac the cells flow is 3.3x `ft8dec`'s instructions at 30 candidates / OSD off (4.4x its wall time): the same direction as x86. BP is 60 % of the time (17 % of the instructions); the gap is the number of failed candidates sent to BP (68 against 16) rather than the cost of a call. A BP cap of 25 costs no recall on 60 slots and saves 2-3 % (not applied). For the board: predict time from BP iterations, and consider a 12-slot `20m_busy` replay (section 26, "On the board").
+

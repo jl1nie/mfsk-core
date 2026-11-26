@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Cells flow against ft8dec on Apple Silicon: where the BP calls go (measurement only; design note section 26)
+
+- The cells flow is 3.3x `ft8dec`'s instructions (4.4x its wall time) at 30 candidates / OSD off on an M5, the x86 direction, not a reversal. BP is 60 % of the time: 87 candidates reach BP against `ft8dec`'s 35 (68 failed against 16), 2.7 calls against 2.0 on a failed one, 29.6 iterations a call against 24.1. A BP cap of 25 (not applied) keeps every decode on 60 slots and saves 2-3 % of instructions. The x86 record's 179 BP calls (here 63) is unexplained.
+
 ### CoreS3: the cells flow's first board runs, and the ft8dec comparison (`S3_CELLS_IMPLEMENTATION_PLAN.md` §9, steps 1-2)
 
 - **New** (embedded, `fixed-point`): `esp_dsp_fft` plans a 2 560-point sc16 transform (`MixedRadix2560Sc16Fft`, 256 x 10 on the esp-dsp kernel); `fft_mixed_2560_sc16::build_twiddles` is `pub`. `ft8-cells-bench` (CoreS3): esp-dsp against the software plan differs by up to 83 LSB (mean 3.1; the shipped 3 840 plan: 123 / 3.7), a row pair is 7.0 ms of the 160 ms it covers, and `decode_block_cells` decodes the same sets as the host on 3 recordings (2.25 s at 15 candidates, 3.06 s at 30, one core).
