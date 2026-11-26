@@ -74,7 +74,9 @@ pub use coarse_lib::{
     search_cells,
 };
 #[cfg(feature = "fixed-point")]
-pub use ft8dec_sic::decode_block_cells_sic;
+pub use ft8dec_sic::{
+    SicScratch, SicStorage, decode_block_cells_sic, sic_passes, sic_signal_capacity,
+};
 mod coarse_sync;
 mod fill_symbol_spectra;
 mod fine_sync_12k;

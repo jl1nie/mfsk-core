@@ -9,7 +9,7 @@
 //! by symbol, with the **input** chunk (`sig_corr`, 243-279), and subtracted, with a complex amplitude **linearly interpolated between
 //! symbol centres**, from the **output** chunk 1.5 symbols behind (`sig_sub`, 280-319); `build_wf` (321-379) is the loop that
 //! drives them, here [`ResidualSource::read`]. After the whole slot has been read, the frequency of each signal is corrected from the
-//! phase steps between its symbols (`build_wf` 373-377: [`ResidualSource::into_signals`]).
+//! phase steps between its symbols (`build_wf` 373-377: [`ResidualSource::finish`]).
 //!
 //! Why: the exact subtraction the library has (`subtract_tones_lpf`) costs about 18 M instructions a signal on the host (two full-length
 //! FFTs); this one has no FFT: a few operations a sample over the signal's own span
@@ -26,13 +26,14 @@ use num_traits::Float;
 use super::super::decode::{DecodeDepth, DecodeResult};
 use super::super::params::NN;
 use super::cells_flow::{CellTables, CellsWorker, Found, RETRY_MIN_SHIFT, View};
-use super::coarse_lib::{coarse_sync_gated_cells, search_near_into};
+use super::coarse_lib::{HalfDbCells, coarse_sync_gated_cells, search_near_into};
 use super::coarse_sync::GatedSearch;
 use super::process_candidates::Ft8BpScratch;
 use super::spectrogram::spectrogram_gain;
 use super::types::{AudioSample, Ft8Rate, SAMPLE_RATE_HZ};
 use crate::engine::scalar::Cmplx;
 use crate::engine::source::{PcmSource, SliceSource};
+use crate::engine::sync::SyncCandidate;
 use crate::engine::tx::message_to_tones;
 
 /// Tone spacing, Hz (`ft8dec`'s `df`: fs / block).
@@ -79,22 +80,25 @@ struct SigState {
 }
 
 /// What the signals share: the sine table and the sample-in-symbol to 1/128-symbol map.
-struct Tabs {
+struct Tabs<'a> {
     sn: [f32; STAB + STAB / 4 + 1],
-    gidx: Vec<u8>,
+    gidx: &'a mut [u8],
     block: usize,
     fscale: f32,
 }
 
-impl Tabs {
-    fn new(fs: usize, block: usize) -> Self {
+impl<'a> Tabs<'a> {
+    fn new(fs: usize, block: usize, gidx: &'a mut [u8]) -> Self {
         let mut sn = [0.0f32; STAB + STAB / 4 + 1];
         for (i, v) in sn.iter_mut().enumerate() {
             *v = (core::f64::consts::TAU * i as f64 / STAB as f64).sin() as f32;
         }
+        for (i, g) in gidx[..block].iter_mut().enumerate() {
+            *g = (i * 128 / block) as u8;
+        }
         Self {
             sn,
-            gidx: (0..block).map(|i| (i * 128 / block) as u8).collect(),
+            gidx,
             block,
             fscale: 4294967296.0 / fs as f32,
         }
@@ -306,24 +310,82 @@ impl Tabs {
     }
 }
 
+/// The memory of the subtraction flow, **owned once** and lent to every pass of every slot ([`SicStorage::scratch`]): the ring (8 192 `f32`, 32 KB), the chunk
+/// buffers (a half symbol: 640 samples at 8 kHz), the symbol-index table and the signals' correlation states. A firmware makes one at boot and keeps it; the
+/// placement is the allocator's (the ring is 32 KB, so above the board's 2 KB internal-DRAM threshold: PSRAM unless the firmware routes it).
+pub struct SicStorage {
+    ring: Vec<f32>,
+    rd: Vec<f32>,
+    raw: Vec<i16>,
+    gidx: Vec<u8>,
+    st: Vec<SigState>,
+}
+
+/// [`SicStorage`] lent for one flow ([`sic_passes`]).
+pub struct SicScratch<'a> {
+    ring: &'a mut [f32],
+    rd: &'a mut [f32],
+    raw: &'a mut [i16],
+    gidx: &'a mut [u8],
+    st: &'a mut [SigState],
+}
+
+/// Signals a flow of `passes` passes with `max_cand` candidates decodes at most (`SicStorage` must hold that many): the first pass's candidates and each later
+/// pass's cap.
+pub const fn sic_signal_capacity(max_cand: usize, passes: usize) -> usize {
+    let later = if (max_cand / PASS_CAND_DIV) > PASS_CAND_MIN {
+        max_cand / PASS_CAND_DIV
+    } else {
+        PASS_CAND_MIN
+    };
+    let later = if later < max_cand { later } else { max_cand };
+    max_cand + passes.saturating_sub(1) * later
+}
+
+impl SicStorage {
+    /// Storage for flows at `rate` over at most `max_signals` signals (`sic_signal_capacity`).
+    pub fn new(rate: Ft8Rate, max_signals: usize) -> Self {
+        let (block, sub) = (rate.nsps(), rate.nsps() / 2);
+        Self {
+            ring: vec![0.0; RING],
+            rd: vec![0.0; sub],
+            raw: vec![0i16; sub],
+            gidx: vec![0u8; block],
+            st: vec![SigState::default(); max_signals],
+        }
+    }
+
+    /// The memory, lent.
+    pub fn scratch(&mut self) -> SicScratch<'_> {
+        SicScratch {
+            ring: &mut self.ring,
+            rd: &mut self.rd,
+            raw: &mut self.raw,
+            gidx: &mut self.gidx,
+            st: &mut self.st,
+        }
+    }
+}
+
 /// The audio minus the signals, read forward (`build_wf`'s streaming loop, 321-379). The input is pulled from `inner` in chunks of half a
 /// symbol and correlated with every signal; the output chunk 1.5 symbols behind has each signal's reference subtracted and is final.
-/// `read` serves only final samples; a read behind the ring (8192 samples) is an error.
+/// `read` serves only final samples; a read behind the ring (8192 samples) is an error. **Over the caller's memory**: the signals (corrected in place by
+/// [`finish`](Self::finish)) and the [`SicScratch`] are borrowed, nothing is allocated.
 pub(super) struct ResidualSource<'a, A: PcmSource> {
     inner: &'a mut A,
-    sigs: Vec<SubSig>,
-    st: Vec<SigState>,
-    tabs: Tabs,
+    sigs: &'a mut [SubSig],
+    st: &'a mut [SigState],
+    tabs: Tabs<'a>,
     sub: usize,
     lag: usize,
     fs: usize,
-    ring: Vec<f32>,
+    ring: &'a mut [f32],
     mask: usize,
     /// Next input sample (all before it are in the ring and correlated) and next output sample (all before it are final).
     n: i64,
     m: i64,
-    rd: Vec<f32>,
-    raw: Vec<i16>,
+    rd: &'a mut [f32],
+    raw: &'a mut [i16],
 }
 
 /// Ring samples: a power of two above a demux read (3 072 samples: three blocks of the forward window) plus the lag, a half symbol of
@@ -331,23 +393,40 @@ pub(super) struct ResidualSource<'a, A: PcmSource> {
 const RING: usize = 8192;
 
 impl<'a, A: PcmSource> ResidualSource<'a, A> {
-    pub(super) fn new(inner: &'a mut A, rate: Ft8Rate, sigs: &[SubSig]) -> Self {
+    pub(super) fn new(
+        inner: &'a mut A,
+        rate: Ft8Rate,
+        sigs: &'a mut [SubSig],
+        mem: &'a mut SicScratch<'_>,
+    ) -> Self {
         let (fs, block) = (rate.hz() as usize, rate.nsps());
         let sub = block / 2;
+        assert!(
+            mem.ring.len() == RING
+                && mem.rd.len() >= sub
+                && mem.raw.len() >= sub
+                && mem.gidx.len() >= block
+                && mem.st.len() >= sigs.len(),
+            "the SicScratch is too small for {} signals at {rate:?}",
+            sigs.len()
+        );
+        // a fresh flow starts from what a fresh allocation was: a zero ring, default states
+        mem.ring.fill(0.0);
+        mem.st[..sigs.len()].fill(SigState::default());
         Self {
             inner,
-            sigs: sigs.to_vec(),
-            st: vec![SigState::default(); sigs.len()],
-            tabs: Tabs::new(fs, block),
+            sigs,
+            st: &mut mem.st[..],
+            tabs: Tabs::new(fs, block, &mut mem.gidx[..]),
             sub,
             lag: 3 * sub,
             fs,
-            ring: vec![0.0; RING],
+            ring: &mut mem.ring[..],
             mask: RING - 1,
             n: 0,
             m: 0,
-            rd: vec![0.0; sub],
-            raw: vec![0i16; sub],
+            rd: &mut mem.rd[..sub],
+            raw: &mut mem.raw[..sub],
         }
     }
 
@@ -361,32 +440,26 @@ impl<'a, A: PcmSource> ResidualSource<'a, A> {
             self.ring[(self.n as usize + j) & self.mask] = r as f32;
         }
         for (s, t) in self.sigs.iter().zip(self.st.iter_mut()) {
-            self.tabs.sig_corr(s, t, self.n, &self.rd);
+            self.tabs.sig_corr(s, t, self.n, self.rd);
         }
         self.n += sub as i64;
         if self.n - self.m >= (self.lag + sub) as i64 {
             for (s, t) in self.sigs.iter().zip(self.st.iter_mut()) {
-                self.tabs
-                    .sig_sub(s, t, self.m, &mut self.ring, self.mask, sub);
+                self.tabs.sig_sub(s, t, self.m, self.ring, self.mask, sub);
             }
             self.m += sub as i64;
         }
     }
 
-    /// The signals with the frequency corrected from the symbol phase steps (`build_wf` 373-377): `f0 += (pi / pr) fs / (2 pi block)` when the steps
+    /// Correct the signals in place from the symbol phase steps (`build_wf` 373-377): `f0 += (pi / pr) fs / (2 pi block)` when the steps
     /// agree (`pr > 0`, `|pi| < pr`). Call after the whole slot has been read.
-    pub(super) fn into_signals(self) -> Vec<SubSig> {
+    pub(super) fn finish(self) {
         let block = self.tabs.block as f32;
-        self.sigs
-            .into_iter()
-            .zip(self.st)
-            .map(|(mut s, t)| {
-                if t.pr > 0.0 && t.pi.abs() < t.pr {
-                    s.f0 += (t.pi / t.pr) * self.fs as f32 / (core::f32::consts::TAU * block);
-                }
-                s
-            })
-            .collect()
+        for (s, t) in self.sigs.iter_mut().zip(self.st.iter()) {
+            if t.pr > 0.0 && t.pi.abs() < t.pr {
+                s.f0 += (t.pi / t.pr) * self.fs as f32 / (core::f32::consts::TAU * block);
+            }
+        }
     }
 }
 
@@ -453,27 +526,66 @@ pub fn decode_block_cells_sic<S: AudioSample>(
 ) -> Option<Vec<DecodeResult>> {
     // `cells` is the one store of the slot: every later pass writes its residual's cells into it (`search_near_into`)
     let (cands, mut cells) = coarse_sync_gated_cells(&mut SliceSource(audio), rate, search, 1)?;
-    let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
-    let (nstep, fs) = (rate.nstep() as i64, rate.hz() as f32);
     let tables = CellTables::new();
-    let mut known: Vec<Found> = Vec::new();
-    let mut sigs: Vec<SubSig> = Vec::new();
-    // one worker for every pass: its staging block and BP scratch are made once (on a board they are the caller's, `CellsWorker::new`)
+    // one worker and one scratch for every pass: made once (on a board they are the caller's: `CellsWorker::new`, `SicStorage`)
     let mut cs: alloc::boxed::Box<[[Cmplx<f32>; 8]; 79]> = vec![[Cmplx::<f32>::default(); 8]; 79]
         .try_into()
         .expect("79 x 8");
     let mut bp = alloc::boxed::Box::new(Ft8BpScratch::new());
     let mut worker = CellsWorker::new(&mut cs, &mut bp, &tables);
+    let mut storage = SicStorage::new(rate, sic_signal_capacity(max_cand, passes));
+    Some(sic_passes(
+        &mut SliceSource(audio),
+        rate,
+        search,
+        max_cand,
+        depth,
+        passes,
+        &cands,
+        &mut cells,
+        &tables,
+        &mut worker,
+        &mut storage.scratch(),
+    ))
+}
+
+/// The passes of [`decode_block_cells_sic`] **over the caller's memory**, for a firmware whose producer has already made the first pass's candidates and cells
+/// (`cands`, `cells`: [`coarse_sync_gated_cells`]'s, or the board's own: [`HalfDbCells::row_mut`](super::HalfDbCells::row_mut) and the search of the rows): the
+/// `worker` (its staging block and BP scratch, [`CellsWorker::new`]), the `tables`, the `scratch` ([`SicStorage::scratch`], held for
+/// [`sic_signal_capacity`] signals) and `cells` (rewritten by every later pass) are the caller's and are reused; `src` serves the slot's audio (read once for its gain
+/// and once a pass). What it still allocates: the lists of candidates and signals (a few KB), the LLR step's small buffers (see
+/// [`process_candidate_with_scratch`](super::process_candidate_with_scratch)) and `band_best`'s scores (about 56 KB a search). Panics if `scratch` is too small.
+#[allow(clippy::too_many_arguments)]
+pub fn sic_passes<A: PcmSource>(
+    src: &mut A,
+    rate: Ft8Rate,
+    search: &GatedSearch,
+    max_cand: usize,
+    depth: DecodeDepth,
+    passes: usize,
+    cands: &[(SyncCandidate, u8)],
+    cells: &mut HalfDbCells,
+    tables: &CellTables,
+    worker: &mut CellsWorker<'_>,
+    scratch: &mut SicScratch<'_>,
+) -> Vec<DecodeResult> {
+    assert!(
+        scratch.st.len() >= sic_signal_capacity(max_cand, passes),
+        "the SicScratch holds {} signals, this flow can decode {}",
+        scratch.st.len(),
+        sic_signal_capacity(max_cand, passes)
+    );
+    let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
+    let (nstep, fs) = (rate.nstep() as i64, rate.hz() as f32);
+    let mut known: Vec<Found> = Vec::new();
+    let mut sigs: Vec<SubSig> = Vec::new();
 
     // pass 0
-    worker.decode_round(&cells, &cands, max_cand, depth, RETRY_MIN_SHIFT, &mut known);
+    worker.decode_round(cells, cands, max_cand, depth, RETRY_MIN_SHIFT, &mut known);
     add_signals(
         &mut known,
         0,
-        &View {
-            cells: &cells,
-            t: &tables,
-        },
+        &View { cells, t: tables },
         &mut sigs,
         df,
         nstep,
@@ -481,7 +593,7 @@ pub fn decode_block_cells_sic<S: AudioSample>(
     );
 
     // the slot's gain, from the audio (read only if a later pass needs it): the residual's peak is not above it, and a residual is not read for it
-    let gain = (passes > 1).then(|| spectrogram_gain(&mut SliceSource(audio)));
+    let gain = (passes > 1).then(|| spectrogram_gain(src));
     let mut new_from = 0usize;
     for _ in 1..passes {
         if sigs.len() == new_from {
@@ -489,8 +601,7 @@ pub fn decode_block_cells_sic<S: AudioSample>(
         }
         let near: Vec<f32> = sigs[new_from..].iter().map(|s| s.f0).collect();
         let before = sigs.len();
-        let mut inner = SliceSource(audio);
-        let mut residual = ResidualSource::new(&mut inner, rate, &sigs);
+        let mut residual = ResidualSource::new(src, rate, &mut sigs, scratch);
         let cands = search_near_into(
             &mut residual,
             rate,
@@ -498,9 +609,9 @@ pub fn decode_block_cells_sic<S: AudioSample>(
             gain.expect("passes > 1"),
             &near,
             NEAR_CELLS,
-            &mut cells,
+            cells,
         );
-        sigs = residual.into_signals();
+        residual.finish();
         // `ft8dec.c` 857-862: a candidate farther than 9 bins (56.25 Hz) from every new signal is skipped, with the frequencies as corrected by the pass: the
         // mask of `search_near` is made before the correction (under 0.78 Hz) and keeps the +-18 cells inclusive, which can reach 57.8 Hz
         let cands: Vec<_> = cands
@@ -511,14 +622,11 @@ pub fn decode_block_cells_sic<S: AudioSample>(
                     .any(|s| (c.freq_hz - s.f0).abs() < 9.0 * TONE_HZ)
             })
             .collect();
-        let view = View {
-            cells: &cells,
-            t: &tables,
-        };
+        let view = View { cells, t: tables };
         let first_new = known.len();
         let cands: Vec<_> = cands.into_iter().filter(|c| c.1 >= PASS_MIN_HS).collect();
         worker.decode_round(
-            &cells,
+            cells,
             &cands,
             (max_cand / PASS_CAND_DIV).max(PASS_CAND_MIN).min(max_cand),
             depth,
@@ -528,7 +636,7 @@ pub fn decode_block_cells_sic<S: AudioSample>(
         add_signals(&mut known, first_new, &view, &mut sigs, df, nstep, fs);
         new_from = before;
     }
-    Some(known.into_iter().map(|f| f.res).collect())
+    known.into_iter().map(|f| f.res).collect()
 }
 
 /// For each decode from `from` on: its place by [`View::refine`] (the decode reports it) and a [`SubSig`] for the next pass's subtraction.
@@ -587,7 +695,10 @@ mod tests {
 
     fn residual(audio: &[i16], sigs: &[SubSig], chunk: usize) -> Vec<i16> {
         let mut src = SliceSource(audio);
-        let mut r = ResidualSource::new(&mut src, Ft8Rate::Hz8000, sigs);
+        let mut sigs = sigs.to_vec();
+        let mut storage = SicStorage::new(Ft8Rate::Hz8000, sigs.len());
+        let mut mem = storage.scratch();
+        let mut r = ResidualSource::new(&mut src, Ft8Rate::Hz8000, &mut sigs, &mut mem);
         let mut out = vec![0i16; audio.len()];
         for (i, c) in out.chunks_mut(chunk).enumerate() {
             r.read((i * chunk) as i64, c);
@@ -659,15 +770,17 @@ mod tests {
     fn the_phase_steps_correct_the_frequency() {
         let (a, sigs) = slot(&[("CQ", "K1ABC", "FN42", 1500.0, 0.3, 8000)]);
         for off in [0.6f32, -0.6] {
-            let mut s = sigs.clone();
-            s[0].f0 += off;
+            let mut fixed = sigs.clone();
+            fixed[0].f0 += off;
             let mut src = SliceSource(&a);
-            let mut r = ResidualSource::new(&mut src, Ft8Rate::Hz8000, &s);
+            let mut storage = SicStorage::new(Ft8Rate::Hz8000, fixed.len());
+            let mut mem = storage.scratch();
+            let mut r = ResidualSource::new(&mut src, Ft8Rate::Hz8000, &mut fixed, &mut mem);
             let mut out = vec![0i16; a.len()];
             for (i, c) in out.chunks_mut(3072).enumerate() {
                 r.read((i * 3072) as i64, c);
             }
-            let fixed = r.into_signals();
+            r.finish();
             assert!(
                 (fixed[0].f0 - 1500.0).abs() < 0.2,
                 "{} Hz after correcting {} Hz",
