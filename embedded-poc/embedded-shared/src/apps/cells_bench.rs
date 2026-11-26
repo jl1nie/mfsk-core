@@ -139,6 +139,16 @@ fn produce_pair(
 fn free_internal() -> usize {
     unsafe { esp_idf_svc::sys::heap_caps_get_free_size((1 << 11) | (1 << 2)) }
 }
+fn min_free_internal() -> usize {
+    unsafe { esp_idf_svc::sys::heap_caps_get_minimum_free_size((1 << 11) | (1 << 2)) }
+}
+fn min_free_psram() -> usize {
+    unsafe { esp_idf_svc::sys::heap_caps_get_minimum_free_size(1 << 10) }
+}
+/// Bytes of this task's stack never used so far (FreeRTOS reports words).
+fn stack_free() -> usize {
+    unsafe { esp_idf_svc::sys::uxTaskGetStackHighWaterMark(core::ptr::null_mut()) as usize * 4 }
+}
 fn free_psram() -> usize {
     unsafe { esp_idf_svc::sys::heap_caps_get_free_size(1 << 10) }
 }
@@ -335,7 +345,7 @@ fn vec_row() -> Vec<u8> {
 fn wav_replay(wavs: &'static [(&'static str, &'static [u8])]) {
     use mfsk_core::engine::dsp::resample::resample_to_8k;
     use mfsk_core::ft8::decode::DecodeDepth;
-    use mfsk_core::ft8::decode_block::{GatedSearch, decode_block_cells};
+    use mfsk_core::ft8::decode_block::{GatedSearch, decode_block_cells, decode_block_cells_sic};
     use mfsk_core::msg::wsjt77::unpack77;
 
     for (label, wav) in wavs {
@@ -370,6 +380,31 @@ fn wav_replay(wavs: &'static [(&'static str, &'static [u8])]) {
             );
             for t in &texts {
                 log::info!("cells-bench: wav {label}: {max_cand}| {t}");
+            }
+        }
+        // S0 of the SIC-on-ESP32 work: the library's `decode_block_cells_sic` as it is, 30 candidates, OSD off, 2 and 3 passes
+        for passes in [2usize, 3] {
+            let mut texts: Vec<alloc::string::String> = Vec::new();
+            let mut t_run = 0i64;
+            for pass in 0..2 {
+                let t2 = now_us();
+                let out = decode_block_cells_sic(&a8, Ft8Rate::Hz8000, &search, 30, DecodeDepth::EMBEDDED, passes)
+                    .expect("Hz8000 sic");
+                t_run = now_us() - t2;
+                if pass == 1 {
+                    texts = out.iter().filter_map(|d| unpack77(d.message77())).collect();
+                    texts.sort();
+                }
+            }
+            log::info!(
+                "cells-bench: wav {label}: sic passes {passes}: decode_block_cells_sic {t_run} us, {} decodes, min free internal {} B, PSRAM {} B, stack high-water free {} B",
+                texts.len(),
+                min_free_internal(),
+                min_free_psram(),
+                stack_free()
+            );
+            for t in &texts {
+                log::info!("cells-bench: wav {label}: sic{passes}| {t}");
             }
         }
         log::info!(
