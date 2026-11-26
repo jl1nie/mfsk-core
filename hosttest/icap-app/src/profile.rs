@@ -617,6 +617,9 @@ pub const UNMEASURED_ROWS: usize = 10;
 /// Candidates kept by the gate before the pass-2 re-rank: `pass1_limit` of the ESP32 driver.
 pub const GATE_KEEP: usize = 30;
 
+/// `icap-profile --no-osd`: the S3 flows (`run_slot_s3`, `_sic`, `_cells`) run without the OSD fallback, as the board ships (`S3_GATE_OSD_ABLATION.md`).
+pub static NO_OSD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// The S3's own flow (`V9`: `S3_GATE_OSD_ABLATION.md`) on audio at `rate`: the gate from the audio (candidates by hard sync, the first
 /// `max_cand`), `fine_sync_at`, block-0 refine, stage 3 with OSD, all in the fixed-point numeric path and the f32 Goertzel
 /// the boards run (no FIR baseband). `Hz8000` reads the radio's 8 kHz as it is. Fixed-point build only.
@@ -630,7 +633,7 @@ pub fn run_slot_s3(slot: &[i16], rate: Ft8Rate, max_cand: usize) -> Run {
     let base = heap::reset_peak();
     let t = Instant::now();
     let osd_on = DecodeDepth {
-        osd: true,
+        osd: !NO_OSD.load(core::sync::atomic::Ordering::Relaxed),
         ..DecodeDepth::EMBEDDED
     };
     let keep = GATE_KEEP.max(max_cand);
@@ -681,7 +684,7 @@ pub fn run_slot_s3_sic(slot: &[i16], rate: Ft8Rate, max_cand: usize, passes: usi
     let base = heap::reset_peak();
     let t = Instant::now();
     let osd_on = DecodeDepth {
-        osd: true,
+        osd: !NO_OSD.load(core::sync::atomic::Ordering::Relaxed),
         ..DecodeDepth::EMBEDDED
     };
     let keep = GATE_KEEP.max(max_cand);
@@ -716,7 +719,7 @@ pub fn run_slot_s3_cells(slot: &[i16], rate: Ft8Rate, max_cand: usize) -> Run {
     let base = heap::reset_peak();
     let t = Instant::now();
     let osd_on = DecodeDepth {
-        osd: true,
+        osd: !NO_OSD.load(core::sync::atomic::Ordering::Relaxed),
         ..DecodeDepth::EMBEDDED
     };
     let keep = GATE_KEEP.max(max_cand);

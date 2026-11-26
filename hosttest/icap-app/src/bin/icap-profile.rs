@@ -60,6 +60,10 @@ fn main() {
                 s3 = true;
                 i += 1;
             }
+            "--no-osd" => {
+                profile::NO_OSD.store(true, std::sync::atomic::Ordering::Relaxed);
+                i += 1;
+            }
             "--native" => {
                 native = true;
                 i += 1;
