@@ -481,3 +481,25 @@ the histogram cut and the per-band / merge truncation never bind in `search` at 
 their invariance is tested one stage lower (`the_merged_bands_are_the_best_positions_of_the_whole_range`, with mutations for the threshold, the merge and the
 per-band truncation; the tie-break order is an equivalent mutant: the stable sort and the arrival order give the same list). 8 kHz banding on real audio is untested
 (the S3 flow runs one band). `websdr_test3`'s `EY8MM YB1BZV OI33` is **not** attested: `band_baseband.rs` already counts it as a chance match, and it is pinned as debt (`S3_DEBT`).
+
+## 13. 5.3 the position choice: measured, not landed (2026-11-26)
+
+`choose_position_at(audio, rate, grid, fine)`: per candidate the grid place or `fine_sync_at`'s, whichever has the higher energy of the 21 Costas symbols' expected
+tones (one Goertzel tone a symbol, the stage-3 Hann window of two symbols), only where the two differ by 0.02 s or more in time; between `fine_sync_at` and the block-0
+refine in the S3 flow. 60 slots, 8 kHz, fixed-point, S3 flow, after 5.2 (`da758a11`); hits of `jt9`'s 1 338, extras, those of `ft8dec`'s 1 026 (1 pass) found, instructions
+per slot (12 slots, host):
+
+| candidates | without | with the choice | cost |
+|---:|---|---|---:|
+| 15 | 761 / 11 / 754, 295 M | 761 / 12 / 755, 312 M | +17 M |
+| 30 | 1 009 / 36 / 1 001, 552 M | 1 011 / 39 / 1 006, 589 M | +36 M |
+| 60 | 1 011 / 37 / 1 001, 1 012 M | 1 013 / 40 / 1 006, 1 110 M | +98 M |
+
+Comparing at every candidate (no 0.02 s limit) was no better, on the 38 `20m_busy` slots alone at 60 candidates: 717 hits / 40 extras, against 717 / 38 with the limit.
+
+**Gate (plan): `ft8dec`'s 1 026 at 60 >= the 5.2 state + 5 (met, exactly: 1 001 -> 1 006); no regression at 15 / 30 (met); instructions at most +60 M at 60 candidates
+(failed: +98 M); extras explained (not checked: +3).** Not landed. The plan's experiment gave 999 -> 1 006 (+7) on the `sync8` search's candidates; after 5.2 the
+`ft8_lib` search already places the candidates on the grid the choice would have recovered, and what is left is 5 signals of 1 026 for 5 to 10 % more instructions
+and 3 more unverified extras. For comparison the candidates themselves buy 246 hits for 257 M between 15 and 30, and none between 30 and 60. The code is not in the tree
+(a patch is kept outside it); an energy comparison of this kind could be revisited if a cheaper place test appears (the kernel is 42 transforms of 2 560 samples a differing
+candidate: about 0.4 M).
