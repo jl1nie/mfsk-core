@@ -407,6 +407,20 @@ pub(super) fn gain_for_peak(peak_abs: i32) -> Gain {
     shift
 }
 
+/// The periodic Hann window over `n` samples, `sin^2(pi k / n)`, in Q15 (peak 32767 at `n / 2`, 0 at `k = 0`). Symmetric by
+/// construction (`w[k] == w[n - k]`: the first half is computed, the second mirrors it), so an `f32` `sin` that rounds
+/// differently on another target moves a pair of entries together, never one.
+#[cfg(feature = "fixed-point")]
+fn hann_q15(n: usize) -> Vec<i16> {
+    (0..n)
+        .map(|k| {
+            let k = k.min(n - k);
+            let s = (core::f32::consts::PI * k as f32 / n as f32).sin();
+            (s * s * 32767.0 + 0.5) as i16
+        })
+        .collect()
+}
+
 /// [`compute_spectrogram_bins`] from an [`PcmSource`], with the slot's gain given: the frames are read
 /// forward, one window at a time.
 #[cfg(feature = "fixed-point")]
@@ -435,12 +449,29 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
     let n_freq = hi - lo;
     let n_time = nmax / nstep - 3;
 
+    // The frame's weighting. 12 kHz: rectangular over one symbol (`nsps` samples, zero-padded to the FFT), as it always was
+    // and as `sync8.f90:35-37` does. 8 kHz: **a Hann window over two symbols** (`nfft` samples) centred on the same instant,
+    // `sin^2` in Q15, **a deliberate divergence from WSJT-X** (see `Ft8Rate::coarse_hann_2t` for why, and for what it costs
+    // at 15 candidates). A row's frame starts `nsps / 2` earlier and is `nsps` longer, so its centre is the rectangular
+    // frame's (`row x nstep + nsps / 2`): the rows mean the same time as before.
+    //
+    // Cells against the rectangular frame: a **steady** tone has the same cell (`sum w = nfft / 2 = nsps`), so the gain and
+    // `FP_SPEC_SHIFT` carry over; a tone of **one symbol** centred in the window has amplitude `0.5 + 1/pi` = 0.82 of it (power
+    // 0.67, -1.7 dB: the window's middle half); noise has 0.75 (-1.25 dB: `sum w^2 = 0.375 nfft` against `nsps`). So a
+    // signal's Costas and data cells are about 0.5 dB weaker against the noise than they were, and `xsnr2_db_simple`, which
+    // reads them against a noise baseline and is not rate-aware, would read about 0.5 dB low at 8 kHz (not measured, not
+    // compensated).
+    let hann = rate.coarse_hann_2t();
+    let (flen, lead) = if hann { (nfft, nsps / 2) } else { (nsps, 0) };
+    let win_q15: Vec<i16> = if hann { hann_q15(nfft) } else { Vec::new() };
+
     // The pre-scale gain (`shift`, from `spectrogram_gain`): the slot's peak lands at `2 x NFFT`, so that after
     // `log2(NFFT)` stages of /2 the post-FFT peak still has a usable mantissa of ~2. The scan covers the full
     // slot (the ESP32's `stage1_inc` peaks only the first second, since it cannot wait for the tail; the two
     // agree on real recordings: `qso3_busy.wav`'s peak is in its first 12 k samples). The Hann window and its
     // +1 pre-shift were removed when the spectrogram went to NFFT=3840: at integer tone alignment the
-    // rectangular window's sidelobes do not leak onto adjacent FT8 tones.
+    // rectangular window's sidelobes do not leak onto adjacent FT8 tones. **That holds for a tone on the grid, not for
+    // a real signal**: at 8 kHz the weighting is back, now as a Hann over two symbols (`docs/notes/FT8_WINDOW_AND_COARSE_DESIGN.md`).
 
     let mut planner = default_planner_16();
     let fft = planner.plan_forward(nfft);
@@ -470,21 +501,26 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
     let n_pairs = n_time / 2;
     let n_odd = n_time & 1;
 
-    // **Rectangular window** — matches `embedded-shared::stage1_inc`
-    // verbatim. At NFFT=3840 the FT8 tone spacing falls on integer
+    // **Rectangular window at 12 kHz** — matches `embedded-shared::stage1_inc`
+    // verbatim (at 8 kHz the frame is the Hann above, which `stage1_inc` does not build). At NFFT=3840 the FT8 tone spacing falls on integer
     // bins (`tone_step_bins = 6.25 / (12000/3840) = 2.0`), so the
     // rectangular sidelobes don't leak onto adjacent tones; Hann's
     // coherent gain 0.5 (≈ -6 dB SNR penalty) + 2-bin mainlobe spread
     // would be pure cost.
     let mut win = Window::new(src);
-    let (mut fa, mut fb) = (vec![0i16; nsps], vec![0i16; nsps]);
+    let (mut fa, mut fb) = (vec![0i16; flen], vec![0i16; flen]);
     let mut pack = |buf: &mut [Complex<i16>], ia_a: usize, ia_b: Option<usize>| {
-        win.read_into(ia_a as i64, &mut fa);
+        win.read_into(ia_a as i64 - lead as i64, &mut fa);
         if let Some(ia_b) = ia_b {
-            win.read_into(ia_b as i64, &mut fb);
+            win.read_into(ia_b as i64 - lead as i64, &mut fb);
         }
-        let scale = |raw: i16| {
+        let scale = |raw: i16, k: usize| {
             let v = (raw as i32) << shift;
+            let v = if hann {
+                ((v as i64 * win_q15[k] as i64) >> 15) as i32
+            } else {
+                v
+            };
             // `gain_num == gain_den` at 12 kHz: the sample is as it was
             let v = if gain_num == gain_den {
                 v
@@ -494,9 +530,9 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
             v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
         };
         for (k, c) in buf.iter_mut().enumerate() {
-            let re = if k < nsps { scale(fa[k]) } else { 0 };
+            let re = if k < flen { scale(fa[k], k) } else { 0 };
             let im = match ia_b {
-                Some(_) if k < nsps => scale(fb[k]),
+                Some(_) if k < flen => scale(fb[k], k),
                 _ => 0,
             };
             *c = Complex::new(re, im);
@@ -723,6 +759,105 @@ mod tests_fixed {
         compute_spectrogram_bins_src(&mut src, rate, 0, spectrogram_n_freq(3000.0, rate), gain)
     }
 
+    /// The Q15 table is the periodic Hann: 0 at the first sample, 32767 at the middle, symmetric about it (`w[k] == w[n - k]`),
+    /// `sin^2` to within one LSB, and it sums to half its length (the property the cell scale rests on: `sum w = nfft / 2`).
+    #[test]
+    fn hann_q15_is_the_periodic_hann() {
+        for n in [2560usize, 3840] {
+            let w = hann_q15(n);
+            assert_eq!((w[0], w[n / 2]), (0, 32767), "{n}: ends and peak");
+            for k in 1..n {
+                assert_eq!(w[k], w[n - k], "{n}: symmetric at {k}");
+            }
+            for k in (0..n).step_by(37) {
+                let want = (core::f64::consts::PI * k as f64 / n as f64).sin().powi(2) * 32767.0;
+                assert!((w[k] as f64 - want).abs() <= 1.0, "{n}: sin^2 at {k}");
+            }
+            let sum: f64 = w.iter().map(|&v| v as f64).sum();
+            assert!(
+                (sum / (n as f64 / 2.0 * 32767.0) - 1.0).abs() < 1e-3,
+                "{n}: the window sums to {sum}"
+            );
+        }
+    }
+
+    /// The 8 kHz frame is a Hann window over two symbols (`Ft8Rate::coarse_hann_2t`): a strong tone does not leak into the
+    /// bins around it. A tone of 3 000 (cell about 30 000) at 1 000 Hz leaves the cells 25 Hz and 50 Hz away at 0 at 8 kHz;
+    /// the rectangular frame (12 kHz, 260 of 30 000 at 25 Hz: -21 dB in power) leaves 260 and 57, on the grid and half a bin off it. Fails if the
+    /// 8 kHz frame is rectangular again (the cells at 25 Hz are then about 260); the window's shape is pinned by `hann_q15_is_the_periodic_hann`
+    /// and the cell tests (a half-sine passes this one).
+    #[test]
+    fn the_8_khz_frame_does_not_leak_a_strong_tone_into_the_bins_around_it() {
+        for off in [0.0f32, 1.5625] {
+            let f = 1000.0 + off;
+            let pk = (f / 3.125) as usize;
+            let mid = 92;
+            let a = build(Ft8Rate::Hz12000, &tone(Ft8Rate::Hz12000, f, 3000.0));
+            let b = build(Ft8Rate::Hz8000, &tone(Ft8Rate::Hz8000, f, 3000.0));
+            let band = |s: &Spectrogram, from: usize| {
+                *s.data[mid * s.n_freq..][..s.n_freq][pk + from..pk + from + 4]
+                    .iter()
+                    .max()
+                    .unwrap()
+            };
+            let peak = |s: &Spectrogram| {
+                *s.data[mid * s.n_freq..][..s.n_freq][pk.saturating_sub(1)..pk + 3]
+                    .iter()
+                    .max()
+                    .unwrap()
+            };
+            assert!(
+                peak(&b) > 20_000 && peak(&a) > 20_000,
+                "{off}: peaks {} {}",
+                peak(&b),
+                peak(&a)
+            );
+            for from in [8usize, 16, 32] {
+                assert!(
+                    band(&a, from) >= if from == 32 { 4 } else { 20 },
+                    "{off} +{from} bins: the rectangular frame leaks {} (the premise of this test)",
+                    band(&a, from)
+                );
+                assert!(
+                    band(&b, from) <= 1,
+                    "{off} +{from} bins: the 8 kHz frame leaks {} of {}",
+                    band(&b, from),
+                    peak(&b)
+                );
+            }
+        }
+    }
+
+    /// The 8 kHz row means the same time as the rectangular one's: a burst of one symbol that starts on a row's first sample
+    /// is strongest in **that** row (the Hann frame is `nsps / 2` earlier and `nsps` longer, so its centre is the rectangular
+    /// frame's). Fails if the frame is not shifted by `nsps / 2` (the burst is then strongest a row early) or the window is
+    /// not symmetric about its centre.
+    #[test]
+    fn the_8_khz_rows_keep_the_time_of_the_rectangular_ones() {
+        let rate = Ft8Rate::Hz8000;
+        let (nsps, nstep) = (rate.nsps(), rate.nstep());
+        for row in [40usize, 61, 100] {
+            let mut v = vec![0i16; rate.nmax()];
+            let f = 1500.0f32;
+            for n in 0..nsps {
+                let t = (row * nstep + n) as f32;
+                v[row * nstep + n] =
+                    (3000.0 * (core::f32::consts::TAU * f * t / 8000.0).cos()) as i16;
+            }
+            v[5] = 20_000;
+            let sp = build(rate, &v);
+            let bin = (f / 3.125) as usize;
+            let cell = |j: usize| sp.data[j * sp.n_freq + bin];
+            let best = (0..sp.n_time).max_by_key(|&j| cell(j)).unwrap();
+            assert_eq!(
+                best,
+                row,
+                "burst at row {row}: rows around it {:?}",
+                (row - 2..row + 3).map(cell).collect::<Vec<_>>()
+            );
+        }
+    }
+
     /// The fixed-point spectrogram at 8 kHz is the 12 kHz one's grid **and cells**: the same bins and rows, a tone in the same
     /// bin, and the same u16 value in it (to the rounding of the 15-bit pre-scale and the `>> FP_SPEC_SHIFT`), because the
     /// input is scaled by 12000 / rate. Fails if the 2560-point plan's gain is not `1/256`, the frame, FFT or step is not the
@@ -763,8 +898,11 @@ mod tests_fixed {
         }
     }
 
-    /// The same noise **density** gives the same noise cells at either rate (the rate's `sqrt(rate / 12000)` on the sample
-    /// deviation): the mean cell of a noise-only slot within 5 %. Fails if the input gain is not `12000 / rate`.
+    /// The same noise **density** gives the noise cells of the frame's own bandwidth at either rate (the rate's
+    /// `sqrt(rate / 12000)` on the sample deviation): 12 kHz's rectangular frame is the reference; the 8 kHz Hann frame over two
+    /// symbols has `sum w^2 = 0.375 nfft` against the rectangular `nsps`, i.e. **0.75 of it (-1.25 dB)** while a steady tone's cell is
+    /// the same (`sum w = nsps`, the test above; a one-symbol tone's is 0.67). Fails if the input gain is not `12000 / rate`, or the 8 kHz frame is
+    /// rectangular again (the ratio is then 1.0).
     #[test]
     fn noise_of_the_same_density_gives_the_same_cells() {
         let noise = |rate: Ft8Rate| -> Vec<i16> {
@@ -790,8 +928,8 @@ mod tests_fixed {
         let (a, b) = (mean(Ft8Rate::Hz12000), mean(Ft8Rate::Hz8000));
         assert!(a > 50.0, "12 kHz mean cell {a}");
         assert!(
-            (b / a - 1.0).abs() < 0.05,
-            "8 kHz mean cell {b} against 12 kHz {a}"
+            (b / a - 0.75).abs() < 0.04,
+            "8 kHz mean cell {b} against 12 kHz {a} (expected 0.75 of it)"
         );
     }
 }

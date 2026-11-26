@@ -164,6 +164,27 @@ impl Ft8Rate {
         2 * self.nsps()
     }
 
+    /// Whether the **fixed-point** coarse spectrogram weights its frames with a Hann window over two symbols (`nfft` samples
+    /// centred on the frame's instant) instead of leaving them rectangular over one symbol.
+    ///
+    /// **A deliberate divergence from WSJT-X** (`sync8.f90:35-37`: `x(1:NSPS)=fac*dd(ia:ib); x(NSPS+1:)=0`, one symbol,
+    /// rectangular, zero-padded to `NFFT1`), at `Hz8000` only: the rate it was measured at. 60 real slots (the 38 of
+    /// `ft8_lib/test/wav/20m_busy` and 22 recordings, 1 338 `jt9` decodes; `ft8dec`'s 1 026 messages as the yardstick), the S3
+    /// flow, 8 kHz, fixed-point, host: at **60 candidates** 879 -> 905 of `ft8dec`'s (hits 896 -> 922, extras 19 -> 15), at
+    /// **30** 877 -> 905 (hits 893 -> 921), **at 15 candidates -10 hits (710 -> 700) and at 10 -13**: the window changes the order
+    /// of the first candidates by hard sync before it improves the rest, so it pays from about 20 candidates and not below.
+    /// Instructions per slot (12 slots): +0.4 M at 60 candidates (607.4 -> 607.8 M), +25 M at 30, +17 M at 15. Why it helps:
+    /// the hard-sync count at `ft8dec`'s own place for the signals the shipped frame loses is 10 of 21 rectangular, 17 Hann,
+    /// because the rectangular frame's sidelobes bury the Costas array of a signal that is not on the bin grid (a strong tone
+    /// leaves 260 of 30 000 in the cell 25 Hz away, a Hann frame 0). `docs/notes/FT8_WINDOW_AND_COARSE_DESIGN.md`. It also moves
+    /// the public `decode_block_low_mem` / `coarse_sync_gated` at `Hz8000` in this build (22 recordings, 30 candidates: 280 ->
+    /// 284 of 402, one more decode `jt9` lacks and nothing attests, `icap_profile.rs`). `Hz12000` and the f32 build are
+    /// not measured and keep the rectangular frame.
+    #[cfg(feature = "fixed-point")]
+    pub(super) const fn coarse_hann_2t(self) -> bool {
+        matches!(self, Ft8Rate::Hz8000)
+    }
+
     /// The spectrogram's step between frames, samples (`NSPS / 4`, or `NSPS / 2` under `nstep-half`).
     pub(super) const fn nstep(self) -> usize {
         #[cfg(not(feature = "nstep-half"))]

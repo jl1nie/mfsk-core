@@ -8,7 +8,8 @@
 //! stage-1 decimation, cutoff or group delay (a signal's dt or tones are off: the decode is lost, not just a few dB
 //! down), the mixer at the wrong rate (every frequency is off by 1.5x).
 //!
-//! The `fixed-point` build has no 8 kHz spectrogram (no 2560-point 16-bit plan): it panics, and says so.
+//! The `fixed-point` build has the 2560-point 16-bit plan (`Plan2560Sc16`): its 8 kHz tests are `an_8k_fixed_point_s3_flow_decodes_its_signals`
+//! below and `icap_profile.rs`'s floors.
 #![cfg(feature = "fft-rustfft")]
 
 use mfsk_core::engine::source::SliceSource;

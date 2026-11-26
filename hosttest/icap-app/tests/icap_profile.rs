@@ -19,7 +19,6 @@
 use std::collections::BTreeMap;
 
 use icap_app_hosttest::{fft_shim, profile, resample::resample, wav};
-#[cfg(not(feature = "fixed-point"))]
 use mfsk_core::ft8::decode_block::Ft8Rate;
 
 /// Measured 2026-11-24 (`icap-profile --rate 8000 --max-cand 15`): f32 143 of 402, fixed-point 131 of 402
@@ -104,16 +103,27 @@ fn the_low_memory_profile_meets_its_floor() {
 }
 
 /// The same, at 8 kHz **read as it is** (`Ft8Rate::Hz8000`): the recordings are resampled to 8 kHz once and nothing
-/// converts them back. Measured 2026-11-26 (f32): 224 and 273 of 402 against the round trip's 225 and 274, no extras;
-/// one signal is lost at 30 candidates (`websdr_test6`, `OM7AZA SV8EUB -11`, 348.5 Hz); at 45 and 60 the two recalls are equal
-/// (277 and 277, 278 and 278): a candidate on the edge of the list. No extras, as for the round trip. Not in the `fixed-point` build (no 8 kHz spectrogram there).
+/// converts them back. Measured 2026-11-26. **f32**: 224 and 273 of 402 against the round trip's 225 and 274, no extras; one
+/// signal is lost at 30 candidates (`websdr_test6`, `OM7AZA SV8EUB -11`, 348.5 Hz); at 45 and 60 the two recalls are equal
+/// (277 and 277, 278 and 278): a candidate on the edge of the list. **Fixed-point** (the coarse spectrogram's frame is a Hann
+/// window over two symbols at 8 kHz, `Ft8Rate::coarse_hann_2t`): 221 and 284 of 402 with the window, 221 and 280 without; with
+/// the window **one decode `jt9` lacks and nothing attests** (`websdr_test6`, `SM2EKA UT7IS -06` at 1615.6 Hz, which `jt9` has at
+/// 1716 Hz: 100 Hz away, an alias of the 200 Hz baseband, so a real message reported at the wrong frequency), which the profile
+/// counts as an extra; it is pinned by identity below (debt, not a count), as `band_baseband.rs` pins its own. The S3 flow
+/// (`the_s3_flow_at_native_8khz_meets_its_floor`) gives the same message without the window, at 30 candidates.
 #[cfg(not(feature = "fixed-point"))]
+const NATIVE_8K_FLOORS: [(usize, usize); 2] = [(15, 224), (30, 273)];
+#[cfg(feature = "fixed-point")]
+const NATIVE_8K_FLOORS: [(usize, usize); 2] = [(15, 221), (30, 284)];
+/// The decodes `jt9` lacks and nothing attests at 8 kHz native, by identity (see above).
+#[cfg(not(feature = "fixed-point"))]
+const NATIVE_8K_DEBT: [(&str, &str); 0] = [];
+#[cfg(feature = "fixed-point")]
+const NATIVE_8K_DEBT: [(&str, &str); 1] = [("websdr_test6", "SM2EKA UT7IS -06")];
+
 #[test]
 fn the_low_memory_profile_at_native_8khz_meets_its_floor() {
-    for (max_cand, floor, round_trip_floor) in [
-        (15usize, 224usize, LOW_MEM_FLOOR_15),
-        (30, 273, LOW_MEM_FLOOR_30),
-    ] {
+    for (max_cand, floor) in NATIVE_8K_FLOORS {
         let mut runs = BTreeMap::new();
         for stem in profile::stems() {
             let slot12 = wav::load_i16(profile::asset_path(&stem));
@@ -126,23 +136,35 @@ fn the_low_memory_profile_at_native_8khz_meets_its_floor() {
         assert_embedded_path();
         let s = profile::score(&runs);
         println!(
-            "native 8 kHz max_cand {max_cand}: recall {}/{} extras {} (unexplained {})",
-            s.hits, s.reference, s.extras, s.unexplained
+            "native 8 kHz max_cand {max_cand}: recall {}/{} extras {} (unexplained {:?})",
+            s.hits, s.reference, s.extras, s.unexplained_list
         );
         assert!(
             s.hits >= floor,
             "max_cand {max_cand}: recall {} < floor {floor}",
             s.hits
         );
-        // not meaningfully below what the resample to 12 kHz and back gets
-        assert!(
-            s.hits + 3 >= round_trip_floor,
-            "max_cand {max_cand}: {} against the round trip's floor {round_trip_floor}",
-            s.hits
-        );
+        #[cfg(not(feature = "fixed-point"))]
+        {
+            // not meaningfully below what the resample to 12 kHz and back gets
+            let round_trip_floor = if max_cand == 15 {
+                LOW_MEM_FLOOR_15
+            } else {
+                LOW_MEM_FLOOR_30
+            };
+            assert!(
+                s.hits + 3 >= round_trip_floor,
+                "max_cand {max_cand}: {} against the round trip's floor {round_trip_floor}",
+                s.hits
+            );
+        }
+        let debt: Vec<(String, String)> = NATIVE_8K_DEBT
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
         assert_eq!(
-            s.unexplained, 0,
-            "max_cand {max_cand}: a decode jt9 lacks that is not attested"
+            s.unexplained_list, debt,
+            "max_cand {max_cand}: the decodes jt9 lacks that nothing attests are the pinned debt, no others"
         );
     }
 }
@@ -153,3 +175,58 @@ fn the_low_memory_profile_at_native_8khz_meets_its_floor() {
 fn banding_the_low_memory_profile_changes_no_decode() {
     assert_eq!(decode_all(Some(1), 15), decode_all(Some(4), 15));
 }
+
+/// The S3's own flow (`profile::run_slot_s3`: the gate by hard sync, `fine_sync_at`, block-0 refine, stage 3 with OSD, in the
+/// fixed-point numeric path the boards run, no FIR baseband) on the same 22 recordings **read at 8 kHz as they are**
+/// (`Ft8Rate::Hz8000`): what the 8 kHz coarse spectrogram's Hann window over two symbols
+/// (`Ft8Rate::coarse_hann_2t`, `docs/notes/FT8_WINDOW_AND_COARSE_DESIGN.md`) is worth where it is on.
+///
+/// Measured 2026-11-26 against `jt9`'s 402, the same tree with the window on and off: **15 candidates 216 / 216, 30 candidates
+/// 272 / 268** (extras 2 / 1 and 3 / 4; with the window off one of the four is unexplained, `websdr_test6`'s
+/// `SM2EKA UT7IS -06`). On these 22 recordings the window is a small gain; on the 60 slots of the design note (the 38 busy
+/// ones of `ft8_lib/test/wav/20m_busy` added) it is +28 hits at 30 candidates and **-10 at 15**: the recall at 15 is the order of
+/// the first 15 by hard sync, which the window changes before it improves the rest. The floors are the measured figures
+/// with the window on; every extra must be attested (`profile::ATTESTED_EXTRAS`) or it is a phantom.
+#[cfg(feature = "fixed-point")]
+#[test]
+fn the_s3_flow_at_native_8khz_meets_its_floor() {
+    for (max_cand, floor) in [(15usize, S3_FLOOR_15), (30, S3_FLOOR_30)] {
+        let mut runs = BTreeMap::new();
+        for stem in profile::stems() {
+            let slot12 = wav::load_i16(profile::asset_path(&stem));
+            let slot = resample(&slot12, 12_000, 8_000);
+            runs.insert(
+                stem,
+                profile::run_slot_s3(&slot, Ft8Rate::Hz8000, max_cand).decodes,
+            );
+        }
+        assert_embedded_path();
+        let s = profile::score(&runs);
+        println!(
+            "S3 flow, 8 kHz, {max_cand} candidates: recall {}/{} extras {} unexplained {:?}",
+            s.hits, s.reference, s.extras, s.unexplained_list
+        );
+        assert!(
+            s.hits >= floor,
+            "{max_cand} candidates: recall {} < floor {floor}",
+            s.hits
+        );
+        assert!(
+            s.extras <= S3_MAX_EXTRAS,
+            "{max_cand} candidates: {} outputs jt9 lacks, ceiling {S3_MAX_EXTRAS}",
+            s.extras
+        );
+        assert!(
+            s.unexplained_list.is_empty(),
+            "{max_cand} candidates: a decode jt9 lacks that is not attested: {:?}",
+            s.unexplained_list
+        );
+    }
+}
+
+#[cfg(feature = "fixed-point")]
+const S3_FLOOR_15: usize = 216;
+#[cfg(feature = "fixed-point")]
+const S3_FLOOR_30: usize = 272;
+#[cfg(feature = "fixed-point")]
+const S3_MAX_EXTRAS: usize = 3;

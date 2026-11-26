@@ -1550,7 +1550,7 @@ impl Default for LowMem {
 /// `LowMem::coarse_bands` changes memory and time only: the decodes are the same for any number of bands.
 ///
 /// `rate` is the audio's ([`Ft8Rate`]): `Hz8000` reads a radio's 8 kHz as it is, with no resample to 12 kHz in front
-/// (a divergence from WSJT-X, which is 12 kHz only; not in the `fixed-point` build, where it panics).
+/// (a divergence from WSJT-X, which is 12 kHz only; in the `fixed-point` build it runs on the 2560-point 16-bit plan, with the Hann coarse frame of `Ft8Rate::coarse_hann_2t`).
 ///
 /// [`fine_refine_3stage`]: crate::ft8::refine_fine::fine_refine_3stage
 pub fn decode_block_low_mem<A: crate::engine::source::PcmSource>(
