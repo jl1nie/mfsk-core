@@ -22,8 +22,6 @@ use alloc::vec::Vec;
 // needed with no std in the graph; a dep linking std (the dev-only rustfft) makes f32's own methods shadow it
 use num_traits::Float;
 
-const TARGET_RATE: f64 = 12_000.0;
-
 /// `fil4`'s taps (`lib/fil4.f90`, WSJT-X v3.2.0-rc1), designed with ScopeFIR
 /// for 48 kHz: 49 taps, fc 4500 Hz, stop 6000 Hz, 1 dB ripple, 40 dB.
 /// Computed from these taps: +0.5 dB at DC (the gain sums to 1.056, kept
@@ -82,34 +80,36 @@ const FIL4: [f32; 49] = [
     0.000861074040,
 ];
 
-/// The anti-alias low-pass applied at `src_rate` before going down to
-/// 12 kHz: `fil4` at 48 kHz, a Kaiser low-pass to `fil4`'s specification
-/// (pass 4500 Hz, stop 6000 Hz, 40 dB) at any other rate above 12 kHz, and
-/// `None` at or below 12 kHz, where nothing can fold. Causal, like
-/// `fil4_state`: the output lags by `(taps - 1) / 2` source samples
-/// (0.5 ms at 48 kHz, as in WSJT-X).
-fn antialias_taps(src_rate: u32) -> Option<Vec<f32>> {
-    if src_rate <= 12_000 {
+/// The anti-alias low-pass applied at `src_rate` before going down to `target` Hz (12 000 or 8 000): `fil4` at 48 kHz to 12 kHz, a Kaiser low-pass to the target's
+/// specification at any other rate above the target, and `None` at or below it, where nothing can fold. The specification, as `fil4`'s (40 dB):
+/// **12 kHz**: pass 4 500 Hz, stop 6 000 Hz (the target's Nyquist); **8 kHz**: pass 3 200 Hz, stop 4 000 Hz (the target's Nyquist; FT8's band ends at 3 050 Hz).
+/// Causal, like `fil4_state`: the output lags by `(taps - 1) / 2` source samples (0.5 ms at 48 kHz to 12 kHz, as in WSJT-X).
+fn antialias_taps(src_rate: u32, target: u32) -> Option<Vec<f32>> {
+    if src_rate <= target {
         return None;
     }
-    if src_rate == 48_000 {
+    if src_rate == 48_000 && target == 12_000 {
         return Some(FIL4.to_vec());
     }
     let fs = src_rate as f64;
-    let (ntaps, beta) = super::fir_decimate::kaiser_order(40.0, 1_500.0 / fs);
+    let (pass, stop) = match target {
+        8_000 => (3_200.0, 4_000.0),
+        _ => (4_500.0, 6_000.0),
+    };
+    let (ntaps, beta) = super::fir_decimate::kaiser_order(40.0, (stop - pass) / fs);
     Some(super::fir_decimate::design_lowpass_kaiser(
         ntaps,
-        5_250.0 / fs,
+        (pass + stop) / 2.0 / fs,
         beta,
     ))
 }
 
 /// Linear interpolation of `len` source samples at `src_rate` onto the
-/// 12 kHz grid, reading source sample `n` through `x(n)`. The right-hand
+/// `target` grid, reading source sample `n` through `x(n)`. The right-hand
 /// sample is read only when the output falls between two inputs, so an
 /// integer ratio (48 kHz) reads one filtered sample per output.
-fn interp_to_12k(len: usize, src_rate: u32, x: impl Fn(usize) -> f64) -> Vec<f64> {
-    let ratio = TARGET_RATE / src_rate as f64;
+fn interp_to(target: u32, len: usize, src_rate: u32, x: impl Fn(usize) -> f64) -> Vec<f64> {
+    let ratio = target as f64 / src_rate as f64;
     let out_len = (len as f64 * ratio).ceil() as usize;
     let mut out = Vec::with_capacity(out_len);
     for i in 0..out_len {
@@ -130,13 +130,13 @@ fn interp_to_12k(len: usize, src_rate: u32, x: impl Fn(usize) -> f64) -> Vec<f64
     out
 }
 
-/// `interp_to_12k` over `raw`, through the anti-alias low-pass when
+/// `interp_to` over `raw`, through the anti-alias low-pass when
 /// `src_rate` needs one. The filter is evaluated only at the source
 /// samples the interpolation reads.
-fn to_12k(len: usize, src_rate: u32, raw: impl Fn(usize) -> f64) -> Vec<f64> {
-    match antialias_taps(src_rate) {
-        None => interp_to_12k(len, src_rate, raw),
-        Some(h) => interp_to_12k(len, src_rate, |n| {
+fn to_rate(target: u32, len: usize, src_rate: u32, raw: impl Fn(usize) -> f64) -> Vec<f64> {
+    match antialias_taps(src_rate, target) {
+        None => interp_to(target, len, src_rate, raw),
+        Some(h) => interp_to(target, len, src_rate, |n| {
             h.iter()
                 .take(n + 1)
                 .enumerate()
@@ -152,7 +152,7 @@ fn to_12k(len: usize, src_rate: u32, raw: impl Fn(usize) -> f64) -> Vec<f64> {
 /// Returns the resampled buffer.  If `src_rate` is already 12 000, the
 /// input is returned as-is (zero-copy via `Cow` semantics at the call site).
 pub fn resample_to_12k(samples: &[i16], src_rate: u32) -> Vec<i16> {
-    to_12k(samples.len(), src_rate, |n| samples[n] as f64)
+    to_rate(12_000, samples.len(), src_rate, |n| samples[n] as f64)
         .into_iter()
         .map(|v| v.round().clamp(-32_768.0, 32_767.0) as i16)
         .collect()
@@ -186,7 +186,7 @@ pub fn resample_f32_to_12k(samples: &[f32], src_rate: u32) -> Vec<i16> {
         1.0
     };
 
-    to_12k(samples.len(), src_rate, |n| samples[n] as f64)
+    to_rate(12_000, samples.len(), src_rate, |n| samples[n] as f64)
         .into_iter()
         .map(|v| (v * scale * 32767.0).clamp(-32768.0, 32767.0).round() as i16)
         .collect()
@@ -202,7 +202,7 @@ pub fn resample_f32_to_12k_f32(samples: &[f32], src_rate: u32) -> Vec<f32> {
     if src_rate == 12_000 {
         return samples.to_vec();
     }
-    to_12k(samples.len(), src_rate, |n| samples[n] as f64)
+    to_rate(12_000, samples.len(), src_rate, |n| samples[n] as f64)
         .into_iter()
         .map(|v| v as f32)
         .collect()
@@ -221,7 +221,7 @@ pub fn resample_i16_to_12k_f32(samples: &[i16], src_rate: u32) -> Vec<f32> {
         .collect()
 }
 
-/// Stateful chunk-based linear resampler `src_rate → 12 000 Hz`.
+/// Stateful chunk-based linear resampler `src_rate → target_hz` (12 000 or 8 000 Hz); [`LinearResamplerI16To12k`] and [`LinearResamplerI16To8k`] are its two forms.
 ///
 /// The batch [`resample_to_12k`] family allocates a fresh `Vec` per
 /// call and assumes the entire input is in hand. Streaming receivers
@@ -246,8 +246,10 @@ pub fn resample_i16_to_12k_f32(samples: &[i16], src_rate: u32) -> Vec<f32> {
 /// crate was retired in 0.11.0; `mfsk-ffi`'s `mfsk_stream_*` is the
 /// generalised successor, and `embedded-shared`'s own pipeline is what
 /// drives this type on the boards.
-pub struct LinearResamplerI16To12k {
+pub struct LinearResamplerI16 {
     src_rate: u32,
+    /// The output rate, Hz (12 000 or 8 000).
+    target_hz: u32,
     /// Q32 source-sample step per output sample.
     /// `step_q32 = (src_rate << 32) / 12_000`.
     step_q32: u64,
@@ -271,23 +273,25 @@ pub struct LinearResamplerI16To12k {
     hist_pos: usize,
 }
 
-impl core::fmt::Debug for LinearResamplerI16To12k {
+impl core::fmt::Debug for LinearResamplerI16 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("LinearResamplerI16To12k")
+        f.debug_struct("LinearResamplerI16")
             .field("src_rate", &self.src_rate)
+            .field("target_hz", &self.target_hz)
             .field("primed", &self.primed)
             .field("n_taps", &self.taps_q15.len())
             .finish_non_exhaustive()
     }
 }
 
-impl LinearResamplerI16To12k {
-    /// Construct a resampler for `src_rate_hz` → 12 000 Hz.
-    /// Panics if `src_rate_hz == 0`.
-    pub fn new(src_rate_hz: u32) -> Self {
+impl LinearResamplerI16 {
+    /// Construct a resampler for `src_rate_hz` → `target_hz` (12 000 or 8 000: the anti-alias specification of each is in `antialias_taps`).
+    /// Panics if `src_rate_hz == 0` or `target_hz == 0`.
+    pub fn new(src_rate_hz: u32, target_hz: u32) -> Self {
         assert!(src_rate_hz > 0, "src_rate_hz must be > 0");
-        let step_q32 = ((src_rate_hz as u64) << 32) / 12_000;
-        let taps_q15: Vec<i32> = antialias_taps(src_rate_hz)
+        assert!(target_hz > 0, "target_hz must be > 0");
+        let step_q32 = ((src_rate_hz as u64) << 32) / target_hz as u64;
+        let taps_q15: Vec<i32> = antialias_taps(src_rate_hz, target_hz)
             .unwrap_or_default()
             .iter()
             .map(|&h| (h as f64 * 32_768.0).round() as i32)
@@ -295,6 +299,7 @@ impl LinearResamplerI16To12k {
         let hist = alloc::vec![0i16; taps_q15.len()];
         Self {
             src_rate: src_rate_hz,
+            target_hz,
             step_q32,
             phase_q32: 0,
             last_in: 0,
@@ -417,10 +422,71 @@ impl LinearResamplerI16To12k {
     /// phase state). Used by the streaming wrapper to size scratch
     /// buffers.
     pub fn max_output_for(&self, src_len: usize) -> usize {
-        // out ≈ src_len * 12000 / src_rate, plus 1 for boundary
+        // out ≈ src_len * target / src_rate, plus 1 for boundary
         // rounding.
-        ((src_len as u64) * 12_000 / self.src_rate as u64) as usize + 1
+        ((src_len as u64) * self.target_hz as u64 / self.src_rate as u64) as usize + 1
     }
+}
+
+/// `src_rate → 12 000 Hz`: [`LinearResamplerI16`] at the target every mode but FT8's 8 kHz flow uses (`fil4` at 48 kHz).
+#[derive(Debug)]
+pub struct LinearResamplerI16To12k(LinearResamplerI16);
+
+impl LinearResamplerI16To12k {
+    /// Construct a resampler for `src_rate_hz` → 12 000 Hz. Panics if `src_rate_hz == 0`.
+    pub fn new(src_rate_hz: u32) -> Self {
+        Self(LinearResamplerI16::new(src_rate_hz, 12_000))
+    }
+
+    /// Source rate this resampler was constructed with.
+    pub fn src_rate(&self) -> u32 {
+        self.0.src_rate()
+    }
+
+    /// See [`LinearResamplerI16::process`].
+    pub fn process(&mut self, src: &[i16], dst: &mut [i16]) -> (usize, usize) {
+        self.0.process(src, dst)
+    }
+
+    /// See [`LinearResamplerI16::max_output_for`].
+    pub fn max_output_for(&self, src_len: usize) -> usize {
+        self.0.max_output_for(src_len)
+    }
+}
+
+/// `src_rate → 8 000 Hz`: [`LinearResamplerI16`] at the rate of the FT8 flow on the half-dB cells (`Ft8Rate::Hz8000`). At 48 kHz a Kaiser low-pass (pass 3 200 Hz,
+/// stop 4 000 Hz, 40 dB; about 135 taps, evaluated once per output: about 1.1 M MAC/s) then the 6:1 linear interpolation.
+#[derive(Debug)]
+pub struct LinearResamplerI16To8k(LinearResamplerI16);
+
+impl LinearResamplerI16To8k {
+    /// Construct a resampler for `src_rate_hz` → 8 000 Hz. Panics if `src_rate_hz == 0`.
+    pub fn new(src_rate_hz: u32) -> Self {
+        Self(LinearResamplerI16::new(src_rate_hz, 8_000))
+    }
+
+    /// Source rate this resampler was constructed with.
+    pub fn src_rate(&self) -> u32 {
+        self.0.src_rate()
+    }
+
+    /// See [`LinearResamplerI16::process`].
+    pub fn process(&mut self, src: &[i16], dst: &mut [i16]) -> (usize, usize) {
+        self.0.process(src, dst)
+    }
+
+    /// See [`LinearResamplerI16::max_output_for`].
+    pub fn max_output_for(&self, src_len: usize) -> usize {
+        self.0.max_output_for(src_len)
+    }
+}
+
+/// Resample `samples` from `src_rate` Hz to 8 000 Hz: the anti-alias low-pass above 8 kHz (pass 3 200 Hz, stop 4 000 Hz, 40 dB), then linear interpolation.
+pub fn resample_to_8k(samples: &[i16], src_rate: u32) -> Vec<i16> {
+    to_rate(8_000, samples.len(), src_rate, |n| samples[n] as f64)
+        .into_iter()
+        .map(|v| v.round().clamp(-32_768.0, 32_767.0) as i16)
+        .collect()
 }
 
 #[cfg(test)]
@@ -587,4 +653,225 @@ mod tests {
 
     // Integration tests that depend on the FT8 decode pipeline live in
     // `mfsk-core/tests/ft8_resample.rs`.
+
+    // ── The 8 kHz target (step 0c of the CoreS3 plan) ────────────────
+
+    fn synth(n: usize, seed: u64) -> Vec<i16> {
+        let mut st = seed;
+        (0..n)
+            .map(|i| {
+                st = st
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let noise = ((st >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 6000.0;
+                let tone = 8000.0 * (core::f32::consts::TAU * 1500.0 * i as f32 / 48000.0).sin();
+                (noise + tone) as i16
+            })
+            .collect()
+    }
+
+    fn fnv(v: &[i16]) -> u64 {
+        let mut h = 0xcbf29ce484222325u64;
+        for &x in v {
+            for b in x.to_le_bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+        }
+        h
+    }
+
+    /// The 12 kHz outputs are what they were before the target became a parameter: the batch and the streaming resampler at 48 000, 44 100, 24 000 and 16 000 Hz
+    /// give the samples whose FNV hashes were taken from the code as it was (a scratch build of the commit before). **Fails if** the refactor changes one sample
+    /// or one output count of the 12 kHz path (the filter taps, the interpolation, the phase step, the ring).
+    #[test]
+    fn the_12k_outputs_are_what_they_were() {
+        const GOLDEN: [(u32, usize, u64, usize, u64, usize); 4] = [
+            (
+                48_000,
+                96_000,
+                244931166423935021,
+                24000,
+                10208247876593079070,
+                24000,
+            ),
+            (
+                44_100,
+                88_200,
+                1939685733906210040,
+                24001,
+                12972434343827817668,
+                24000,
+            ),
+            (
+                24_000,
+                48_000,
+                17916385077328962935,
+                24000,
+                18275154338166326010,
+                24000,
+            ),
+            (
+                16_000,
+                32_000,
+                13285267916852385764,
+                24000,
+                466958958094099648,
+                24000,
+            ),
+        ];
+        for (rate, n, batch, batch_len, stream, stream_len) in GOLDEN {
+            let x = synth(n, 7);
+            let y = resample_to_12k(&x, rate);
+            assert_eq!((fnv(&y), y.len()), (batch, batch_len), "{rate} Hz batch");
+            let mut r = LinearResamplerI16To12k::new(rate);
+            let mut out = vec![0i16; y.len() + 8];
+            let mut got = Vec::new();
+            for c in x.chunks(777) {
+                let (_, p) = r.process(c, &mut out);
+                got.extend_from_slice(&out[..p]);
+            }
+            assert_eq!(
+                (fnv(&got), got.len()),
+                (stream, stream_len),
+                "{rate} Hz streaming"
+            );
+        }
+    }
+
+    /// `|H(f)|` of the taps at `f` Hz for a signal at `fs`.
+    fn gain(h: &[f32], f: f64, fs: f64) -> f64 {
+        let w = core::f64::consts::TAU * f / fs;
+        let (mut re, mut im) = (0.0, 0.0);
+        for (k, &c) in h.iter().enumerate() {
+            re += c as f64 * (w * k as f64).cos();
+            im -= c as f64 * (w * k as f64).sin();
+        }
+        (re * re + im * im).sqrt()
+    }
+
+    /// The 8 kHz anti-alias at 48 kHz: flat to 3 100 Hz within 1 dB of its gain at DC, and at least 40 dB down from the target's Nyquist (4 000 Hz) up to 24 kHz.
+    /// **Fails if** the pass or stop edge, or the attenuation, of the design is off (the 12 kHz `fil4` would let 4 000-6 000 Hz through and fold it onto 2 000-4 000 Hz).
+    #[test]
+    fn the_8k_antialias_passes_the_band_and_stops_the_alias() {
+        let h = antialias_taps(48_000, 8_000).expect("48 kHz needs a filter for 8 kHz");
+        let dc = gain(&h, 0.0, 48_000.0);
+        for f in (0..=3_100).step_by(50) {
+            let db = 20.0 * (gain(&h, f as f64, 48_000.0) / dc).log10();
+            assert!(db.abs() <= 1.0, "{f} Hz: {db:.2} dB against DC");
+        }
+        for f in (4_000..=24_000).step_by(100) {
+            let db = 20.0 * (gain(&h, f as f64, 48_000.0) / dc).log10();
+            assert!(db <= -40.0 + 0.5, "{f} Hz: {db:.1} dB against DC");
+        }
+        assert!(h.len() < 200, "{} taps", h.len());
+    }
+
+    /// White noise at 48 kHz brought to 8 kHz and to 12 kHz keeps, in 200-3 000 Hz, the power its own filter's passband predicts: no noise folds into the band (the
+    /// in-band power over the in-band mean of `|H|^2`, against the input's, within 0.3 dB, for both targets). **Fails if** the stop band is too shallow or starts too
+    /// high (a filter built for 12 kHz used for 8 kHz leaves 4 000-5 500 Hz noise to fold onto 2 500-4 000 Hz).
+    #[test]
+    fn white_noise_does_not_fold_into_the_band() {
+        let n = 48_000 * 12;
+        let mut st = 99u64;
+        let noise: Vec<i16> = (0..n)
+            .map(|_| {
+                let mut g = 0.0f32;
+                for _ in 0..12 {
+                    st = st
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    g += ((st >> 40) as f32) / (1u64 << 24) as f32;
+                }
+                ((g - 6.0) * 2000.0) as i16
+            })
+            .collect();
+        // band power of `y` at `fs` over 200-3 000 Hz by Welch segments of 1 024 with a Hann window
+        let band_power = |y: &[i16], fs: f64| -> f64 {
+            let seg = 1024usize;
+            let win: Vec<f64> = (0..seg)
+                .map(|i| 0.5 - 0.5 * (core::f64::consts::TAU * i as f64 / seg as f64).cos())
+                .collect();
+            let wsum: f64 = win.iter().map(|w| w * w).sum();
+            let bins: Vec<usize> = ((200.0 * seg as f64 / fs) as usize
+                ..=(3000.0 * seg as f64 / fs) as usize)
+                .collect();
+            let mut total = 0.0;
+            let mut count = 0usize;
+            for chunk in y.chunks_exact(seg).take(40) {
+                for &b in &bins {
+                    let (mut re, mut im) = (0.0, 0.0);
+                    for (i, (&v, w)) in chunk.iter().zip(&win).enumerate() {
+                        let a = core::f64::consts::TAU * (b * i) as f64 / seg as f64;
+                        re += v as f64 * w * a.cos();
+                        im -= v as f64 * w * a.sin();
+                    }
+                    total += (re * re + im * im) / wsum;
+                    count += 1;
+                }
+            }
+            total / count as f64
+        };
+        let p_in = band_power(&noise, 48_000.0);
+        for (target, out) in [
+            (8_000u32, resample_to_8k(&noise, 48_000)),
+            (12_000, resample_to_12k(&noise, 48_000)),
+        ] {
+            let h = antialias_taps(48_000, target).unwrap();
+            let mean_h2: f64 = (200..=3000)
+                .step_by(20)
+                .map(|f| gain(&h, f as f64, 48_000.0).powi(2))
+                .sum::<f64>()
+                / ((3000 - 200) / 20 + 1) as f64;
+            let p_out = band_power(&out, target as f64);
+            // the estimator is the power per sample: white noise of variance v at 48 kHz is the density v / 48 000 a Hz, and at `target` v x target / 48 000
+            let ratio_db = 10.0 * (p_out / (p_in * mean_h2 * target as f64 / 48_000.0)).log10();
+            assert!(
+                ratio_db.abs() <= 0.3,
+                "{target} Hz: {ratio_db:.2} dB against the filter's prediction"
+            );
+        }
+    }
+
+    /// The 8 kHz streaming resampler gives the same samples for any chunking (1, 777 and 4 096 samples: bit for bit) and the batch function's within 2 LSB.
+    /// **Fails if** the ring or the phase carries wrongly across a chunk boundary, or the Q15 taps and the batch's differ.
+    #[test]
+    fn the_8k_streaming_resampler_is_chunking_independent() {
+        let x = synth(48_000 * 2, 5);
+        let batch = resample_to_8k(&x, 48_000);
+        let run = |chunk: usize| {
+            let mut r = LinearResamplerI16To8k::new(48_000);
+            let mut out = vec![0i16; batch.len() + 8];
+            let mut got = Vec::new();
+            for c in x.chunks(chunk) {
+                let (_, p) = r.process(c, &mut out);
+                got.extend_from_slice(&out[..p]);
+            }
+            got
+        };
+        let (a, b, c) = (run(1), run(777), run(4096));
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+        assert_eq!(a.len(), batch.len());
+        let worst = a
+            .iter()
+            .zip(&batch)
+            .map(|(p, q)| (*p as i32 - *q as i32).abs())
+            .max()
+            .unwrap();
+        assert!(worst <= 2, "{worst} LSB against the batch function");
+    }
+
+    /// The output size bound follows the target: 8 000 and 12 000 Hz outputs of a second of 48 kHz. **Fails if** `max_output_for` uses a fixed 12 kHz.
+    #[test]
+    fn the_output_bound_follows_the_target() {
+        assert_eq!(
+            LinearResamplerI16To8k::new(48_000).max_output_for(48_000),
+            8_001
+        );
+        assert_eq!(
+            LinearResamplerI16To12k::new(48_000).max_output_for(48_000),
+            12_001
+        );
+    }
 }

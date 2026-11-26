@@ -41,5 +41,8 @@ pub use analytic::analytic_signal;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use downsample::{DownsampleCfg, build_fft_cache, downsample, downsample_cached};
 pub use gfsk::{GfskCfg, synth_f32, synth_i16};
-pub use resample::{LinearResamplerI16To12k, resample_f32_to_12k, resample_to_12k};
+pub use resample::{
+    LinearResamplerI16, LinearResamplerI16To8k, LinearResamplerI16To12k, resample_f32_to_12k,
+    resample_to_8k, resample_to_12k,
+};
 pub use subtract::{SubtractCfg, subtract_tones};

@@ -849,4 +849,52 @@ mod tests {
         assert_eq!(have, want);
         assert_eq!(have.len(), 3);
     }
+
+    /// Signals synthesised **at 48 kHz** (the radio's USB audio) with white noise decode through the 8 kHz path (the new 6:1 decimator, then the cells flow) and the
+    /// 12 kHz path (4:1, then the host decoder): the same three messages. **Fails if** the 8 kHz decimator loses a signal the 12 kHz one finds (a band edge too low, aliasing,
+    /// a level change).
+    #[test]
+    fn signals_at_48_khz_decode_through_the_8_khz_path_as_through_the_12_khz_path() {
+        use crate::engine::dsp::{resample_to_8k, resample_to_12k};
+        let signals = [
+            ("CQ", "K1ABC", "FN42", 700.0f32, 0.2f32, 6000i16),
+            ("K1ABC", "W9XYZ", "-12", 1500.3, 0.9, 5000),
+            ("CQ", "JA1ABC", "PM95", 2300.7, -0.6, 5000),
+        ];
+        let hz = 48_000u32;
+        let mut v = vec![0f32; 15 * hz as usize];
+        for &(a, b, c, f, dt, amp) in &signals {
+            let tones = message_to_tones::<Ft8>(&pack77(a, b, c).unwrap());
+            let pcm = synthesize_i16::<Ft8>(&tones, hz, f, amp);
+            let at = ((0.5 + dt) * hz as f32).round() as i64;
+            for (i, &x) in pcm.iter().enumerate() {
+                let idx = at + i as i64;
+                if idx >= 0 && (idx as usize) < v.len() {
+                    v[idx as usize] += x as f32;
+                }
+            }
+        }
+        // white noise at 48 kHz with the density of the 8 kHz tests' sd 1 500 (x sqrt 6)
+        let mut st = 77u64;
+        let x48: Vec<i16> = v
+            .iter()
+            .map(|&x| {
+                let mut g = 0.0f32;
+                for _ in 0..12 {
+                    st = st
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    g += ((st >> 40) as f32) / (1u64 << 24) as f32;
+                }
+                (x + (g - 6.0) * 3674.0).round().clamp(-32768.0, 32767.0) as i16
+            })
+            .collect();
+        let want = ["CQ JA1ABC PM95", "CQ K1ABC FN42", "K1ABC W9XYZ -12"];
+        let x8 = resample_to_8k(&x48, hz);
+        let out8 = decode_block_cells(&x8, Ft8Rate::Hz8000, &search(), 15, osd_on()).unwrap();
+        assert_eq!(texts(&out8), want, "the 8 kHz path");
+        let x12 = resample_to_12k(&x48, hz);
+        let out12 = crate::ft8::decode_block::decode_block(&x12, 100.0, 3000.0, 1.0, osd_on(), 30);
+        assert_eq!(texts(&out12), want, "the 12 kHz path");
+    }
 }

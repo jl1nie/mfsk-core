@@ -270,6 +270,39 @@ const CELLS_FLOOR_30: usize = 286;
 #[cfg(feature = "fixed-point")]
 const CELLS_MAX_EXTRAS: usize = 5;
 
+/// The cells flow on the 22 recordings **through the radio's USB path**: a 12 kHz recording up-converted to 48 kHz (the model of the IC-705's 48 kHz audio) and brought to
+/// 8 kHz by the library's new 6:1 decimator (`mfsk_core::engine::dsp::resample_to_8k`), in place of the 12 -> 8 kHz model of `icap-app/src/resample.rs` (the ICAP radio's own 8 kHz).
+/// Measured 2026-11-26: **225 / 285 of `jt9`'s 402 at 15 / 30 candidates, extras 2 and 3, none unexplained**, against the ICAP model's 226 / 286 (extras 3 and 5): one hit less at each, the
+/// difference of two filters (a Kaiser low-pass to 3 200 / 4 000 Hz against the model's windowed sinc), no worse than the margin of a hit. The floors are the measured figures.
+/// **Fails if** the decimator's band, aliasing or level costs recall against the ICAP model.
+#[cfg(feature = "fixed-point")]
+#[test]
+fn the_cells_flow_through_the_48k_to_8k_path_meets_the_floor() {
+    for (max_cand, floor) in [(15usize, 225), (30, 285)] {
+        let mut runs = BTreeMap::new();
+        for stem in profile::stems() {
+            let slot12 = wav::load_i16(profile::asset_path(&stem));
+            let slot48 = resample(&slot12, 12_000, 48_000);
+            let slot = mfsk_core::engine::dsp::resample_to_8k(&slot48, 48_000);
+            runs.insert(
+                stem,
+                profile::run_slot_s3_cells(&slot, Ft8Rate::Hz8000, max_cand).decodes,
+            );
+        }
+        assert_embedded_path();
+        let s = profile::score(&runs);
+        println!(
+            "cells flow through 48 kHz -> 8 kHz, {max_cand} candidates: recall {}/{} extras {} unexplained {:?}",
+            s.hits, s.reference, s.extras, s.unexplained_list
+        );
+        assert!(
+            s.hits >= floor,
+            "{max_cand} candidates: recall {} < floor {floor}",
+            s.hits
+        );
+    }
+}
+
 /// The cells flow with `ft8dec`'s subtraction passes (`profile::run_slot_s3_sic`, 2 passes: `decode_block_cells_sic`) on the same 22 recordings at 8 kHz. The floors
 /// are the measured figures (2026-11-26, `jt9`'s 402: **275 at 15 candidates, 332 at 30**, against the cells flow's 226 and 286; extras 4 and 9); every extra must be
 /// attested (`profile::ATTESTED_EXTRAS`) or pinned debt (`S3_DEBT`, by identity; `EA8PP JH0INP PM96`, which the passes make, is attested).
