@@ -513,6 +513,20 @@ pub(super) fn compute_half_db_bytes_src<A: PcmSource>(
     }
 }
 
+/// [`compute_half_db_bytes_src`] into the caller's buffer (`n_freq x n_time` bytes, row-major: [`HalfDbCells`](super::HalfDbCells)'s storage, which a board owns and
+/// reuses for every pass): the same cells bit for bit. Returns `(n_freq, n_time)`.
+#[cfg(feature = "fixed-point")]
+pub(super) fn compute_half_db_bytes_into<A: PcmSource>(
+    src: &mut A,
+    rate: Ft8Rate,
+    lo: usize,
+    hi: usize,
+    shift: Gain,
+    out: &mut [u8],
+) -> (usize, usize) {
+    spectrogram_cells_into::<A, HalfDb, u8>(src, rate, lo, hi, shift, HalfDb, out)
+}
+
 /// What the demux writes a cell as: a `u16` (the shipped spectrogram: `min(u16::MAX)`) or a byte (the half-dB cells, at most 193).
 #[cfg(feature = "fixed-point")]
 pub(super) trait CellOut: Copy {
@@ -549,14 +563,15 @@ pub(super) struct ByteCells {
 
 /// The demux behind both: `conv` is [`LinearShift`] (`p >> FP_SPEC_SHIFT`, the shipped cell, bit for bit) or [`HalfDb`].
 #[cfg(feature = "fixed-point")]
-fn spectrogram_cells<A: PcmSource, C: Copy, T: CellOut>(
+fn spectrogram_cells_into<A: PcmSource, C: Copy, T: CellOut>(
     src: &mut A,
     rate: Ft8Rate,
     lo: usize,
     hi: usize,
     shift: Gain,
     conv: C,
-) -> (usize, usize, Vec<T>)
+    data: &mut [T],
+) -> (usize, usize)
 where
     u32: core::ops::Shr<C, Output = u32>,
 {
@@ -605,7 +620,12 @@ where
     let mut planner = default_planner_16();
     let fft = planner.plan_forward(nfft);
 
-    let mut data: Vec<T> = vec![T::ZERO; n_freq * n_time];
+    assert_eq!(
+        data.len(),
+        n_freq * n_time,
+        "the cells buffer is n_freq x n_time"
+    );
+    data.fill(T::ZERO); // every cell is written below; the fill makes a reused buffer exactly what a fresh one is
     let mut buf: Vec<Complex<i16>> = vec![Complex::new(0i16, 0i16); nfft];
 
     // **Two-for-one real-FFT trick**. Each frame's audio is real; we
@@ -781,6 +801,25 @@ where
         }
     }
 
+    (n_freq, n_time)
+}
+
+/// [`spectrogram_cells_into`] into a fresh buffer: `(n_freq, n_time, cells)`.
+#[cfg(feature = "fixed-point")]
+fn spectrogram_cells<A: PcmSource, C: Copy, T: CellOut>(
+    src: &mut A,
+    rate: Ft8Rate,
+    lo: usize,
+    hi: usize,
+    shift: Gain,
+    conv: C,
+) -> (usize, usize, Vec<T>)
+where
+    u32: core::ops::Shr<C, Output = u32>,
+{
+    let (n_freq, n_time) = (hi - lo, rate.nmax() / rate.nstep() - 3);
+    let mut data: Vec<T> = vec![T::ZERO; n_freq * n_time];
+    spectrogram_cells_into(src, rate, lo, hi, shift, conv, &mut data);
     (n_freq, n_time, data)
 }
 

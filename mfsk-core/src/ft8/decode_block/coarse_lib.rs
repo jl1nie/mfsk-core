@@ -39,7 +39,8 @@ use num_traits::Float;
 use super::super::params::{COSTAS, NTONES};
 use super::coarse_sync::HARD_SYNC_POOL;
 use super::spectrogram::{
-    ByteCells, Gain, compute_half_db_bytes_src, spectrogram_gain, spectrogram_n_freq,
+    ByteCells, Gain, compute_half_db_bytes_into, compute_half_db_bytes_src, spectrogram_gain,
+    spectrogram_n_freq,
 };
 use super::types::{Ft8Rate, SAMPLE_RATE_HZ};
 use crate::engine::source::PcmSource;
@@ -601,8 +602,50 @@ pub fn candidate_ready(store: &HalfDbCells, cand: &SyncCandidate) -> bool {
 
 /// The search of a **residual** (the audio minus the signals decoded so far: `ft8dec_sic::ResidualSource`) restricted to the carriers within
 /// `radius` cells of one of `near` (Hz): `ft8dec.c` 833-841 (`binok`, +-9 bins of 6.25 Hz = 18 cells of 3.125 Hz) after a subtraction, only where something
-/// changed. One band; `gain` is the slot's (the original audio's), so the residual is not read a second time for its peak. The candidates and the cells of
-/// the residual; the candidates are the best by the ordinary rule among the allowed carriers.
+/// changed. One band; `gain` is the slot's (the original audio's), so the residual is not read a second time for its peak. The candidates are the best by the
+/// ordinary rule among the allowed carriers, and the cells of the residual are written **into the caller's store**: the cells of the residual are written into `store` (the one of the previous pass, which a board keeps: 172 KB, made once)
+/// and the candidates are returned. `store` must be the store [`coarse_sync_gated_cells`] made for the same `rate` and `search` (the same carriers and rows: the band is the
+/// same), whatever it held: the cells are written whole, and `filled_rows` is the slot's. An empty `store` (a search with nothing to score) gives no candidates.
+pub(super) fn search_near_into<A: PcmSource>(
+    src: &mut A,
+    rate: Ft8Rate,
+    search: &super::coarse_sync::GatedSearch,
+    gain: Gain,
+    near: &[f32],
+    radius: usize,
+    store: &mut HalfDbCells,
+) -> Vec<(SyncCandidate, u8)> {
+    let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
+    let centres: Vec<i64> = near.iter().map(|&f| (f / df).round() as i64).collect();
+    let allowed = |k: usize| {
+        centres
+            .iter()
+            .any(|&c| (k as i64 - c).unsigned_abs() as usize <= radius)
+    };
+    // the same band as `search_impl` makes at one band
+    let spec_n_freq = spectrogram_n_freq(search.freq_max, rate);
+    let ia = (search.freq_min / df).round() as usize;
+    let ib =
+        ((search.freq_max / df).round() as usize).min(spec_n_freq.saturating_sub(MAX_TONE_OFF));
+    if ib < ia || search.keep == 0 || store.n_freq == 0 {
+        return Vec::new();
+    }
+    assert!(
+        store.rate == rate && store.first_bin == ia && store.n_freq == ib + MAX_TONE_OFF - ia,
+        "search_near_into: the store is not the one of this search"
+    );
+    let pool = POOL.max(search.keep);
+    let keep_raw = RAW_FACTOR * pool;
+    let (n_freq, n_time) =
+        compute_half_db_bytes_into(src, rate, ia, ib + MAX_TONE_OFF, gain, &mut store.data);
+    debug_assert_eq!((n_freq, n_time), (store.n_freq, store.n_time));
+    store.filled = store.n_time;
+    let all = band_best(&store.view(), ia, ia, ib, keep_raw, Some(&allowed));
+    finish(all, keep_raw, pool, search.keep, ORDER, rate)
+}
+
+/// The allocating form of [`search_near_into`] (candidates and a fresh store), kept for the tests: the reference the in-place one must equal.
+#[cfg(test)]
 pub(super) fn search_near<A: PcmSource>(
     src: &mut A,
     rate: Ft8Rate,
@@ -897,6 +940,57 @@ mod tests {
         );
         assert_eq!(cells.size_bytes(), whole.size_bytes());
         assert_eq!(cells.cell(40, 480), whole.cell(40, 480));
+    }
+
+    /// The in-place search of a pass equals the allocating one: the same candidates and the same cells, **whatever the store held** (a store of the previous pass, here filled
+    /// with a pattern that would show in a cell not written). **Fails if** a cell is left from the previous contents, `filled_rows` is not the slot's, or the candidates differ.
+    #[test]
+    fn search_near_into_a_used_store_equals_search_near() {
+        let signals = [
+            ("CQ", "K1ABC", "FN42", 700.0f32, 0.2f32, 8000i16),
+            ("K1ABC", "W9XYZ", "-12", 1500.3, 0.9, 8000),
+        ];
+        let s = slot(&signals, 11);
+        let gs = super::super::coarse_sync::GatedSearch::new(200.0, 3000.0, 1.3, 30);
+        let gain = spectrogram_gain(&mut SliceSource(&s));
+        let (_, mut store) =
+            coarse_sync_gated_cells(&mut SliceSource(&s), Ft8Rate::Hz8000, &gs, 1).unwrap();
+        store.data.fill(0xA5);
+        store.filled = 3;
+        for near in [&[1500.3f32][..], &[700.0, 1500.3][..], &[][..]] {
+            let (want, want_cells) =
+                search_near(&mut SliceSource(&s), Ft8Rate::Hz8000, &gs, gain, near, 18);
+            let got = search_near_into(
+                &mut SliceSource(&s),
+                Ft8Rate::Hz8000,
+                &gs,
+                gain,
+                near,
+                18,
+                &mut store,
+            );
+            assert_eq!(got.len(), want.len(), "near {near:?}");
+            for (a, b) in got.iter().zip(&want) {
+                assert_eq!(
+                    (
+                        a.0.freq_hz.to_bits(),
+                        a.0.dt_sec.to_bits(),
+                        a.0.score.to_bits(),
+                        a.1
+                    ),
+                    (
+                        b.0.freq_hz.to_bits(),
+                        b.0.dt_sec.to_bits(),
+                        b.0.score.to_bits(),
+                        b.1
+                    ),
+                    "near {near:?}"
+                );
+            }
+            assert_eq!(store.filled_rows(), want_cells.filled_rows());
+            assert_eq!(store.data, want_cells.data, "near {near:?}: the cells");
+            store.data.fill(0x5A); // used again by the next pass
+        }
     }
 
     /// A store written a row at a time is the demux's: the rows of the demux copied into an empty store with `row_mut` and `mark_filled` give the same cells, the same fill and the

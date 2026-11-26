@@ -26,7 +26,7 @@ use num_traits::Float;
 use super::super::decode::{DecodeDepth, DecodeResult};
 use super::super::params::NN;
 use super::cells_flow::{CellTables, CellsWorker, Found, RETRY_MIN_SHIFT, View};
-use super::coarse_lib::{coarse_sync_gated_cells, search_near};
+use super::coarse_lib::{coarse_sync_gated_cells, search_near_into};
 use super::coarse_sync::GatedSearch;
 use super::process_candidates::Ft8BpScratch;
 use super::spectrogram::spectrogram_gain;
@@ -451,7 +451,8 @@ pub fn decode_block_cells_sic<S: AudioSample>(
     depth: DecodeDepth,
     passes: usize,
 ) -> Option<Vec<DecodeResult>> {
-    let (cands, cells) = coarse_sync_gated_cells(&mut SliceSource(audio), rate, search, 1)?;
+    // `cells` is the one store of the slot: every later pass writes its residual's cells into it (`search_near_into`)
+    let (cands, mut cells) = coarse_sync_gated_cells(&mut SliceSource(audio), rate, search, 1)?;
     let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
     let (nstep, fs) = (rate.nstep() as i64, rate.hz() as f32);
     let tables = CellTables::new();
@@ -478,7 +479,6 @@ pub fn decode_block_cells_sic<S: AudioSample>(
         nstep,
         fs,
     );
-    drop(cells);
 
     // the slot's gain, from the audio (read only if a later pass needs it): the residual's peak is not above it, and a residual is not read for it
     let gain = (passes > 1).then(|| spectrogram_gain(&mut SliceSource(audio)));
@@ -491,13 +491,14 @@ pub fn decode_block_cells_sic<S: AudioSample>(
         let before = sigs.len();
         let mut inner = SliceSource(audio);
         let mut residual = ResidualSource::new(&mut inner, rate, &sigs);
-        let (cands, cells) = search_near(
+        let cands = search_near_into(
             &mut residual,
             rate,
             search,
             gain.expect("passes > 1"),
             &near,
             NEAR_CELLS,
+            &mut cells,
         );
         sigs = residual.into_signals();
         // `ft8dec.c` 857-862: a candidate farther than 9 bins (56.25 Hz) from every new signal is skipped, with the frequencies as corrected by the pass: the
