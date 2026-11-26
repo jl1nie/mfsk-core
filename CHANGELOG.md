@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### FT8 at 8 kHz (fixed-point): what the CoreS3 firmware needs of the library (step 0 of `S3_CELLS_IMPLEMENTATION_PLAN.md`)
+
+- **New** `CellsWorker` (+ `CellTables`, `Grid`, `Found`): `decode_block_cells`'s per-candidate step over the caller's memory (staging block, BP scratch, tables), the unit of the board's work-stealing loop; `decode_round` / `decode_block_cells` are built on it, decodes unchanged to the bit. A failing candidate allocates no `Box` / `Vec` of its own (the shared `engine::llr` scratch, <= 696 B, remains). `process_candidate_with_scratch` / `Ft8BpScratch` are `#[doc(hidden)]`.
+- **New** `HalfDbCells::{new, row_mut, mark_filled, filled_rows}`, `search_cells` + `merge_cells_parts` (any split of the carriers gives `coarse_sync_gated_cells`'s list, bit for bit), `candidate_ready` (every row a decode reads is written): a store the board writes a row at a time, searched over the rows written. A complete store's search is unchanged to the instruction.
+- **New** `LinearResamplerI16To8k` / `resample_to_8k` (Kaiser low-pass, pass 3 200 / stop 4 000 Hz, 40 dB, ~135 taps at 48 kHz); the 12 kHz outputs are bit for bit what they were (golden hashes). The 22 recordings through 12 -> 48 -> 8 kHz: 225 / 285 of `jt9`'s 402 at 15 / 30 candidates, the ICAP model 226 / 286.
+- Not measured yet (step 0d): the cells flow without OSD, and the early emit at row pair 87. Nothing here has run on a board.
+
 ### FT8 at 8 kHz (fixed-point): `ft8dec`'s subtraction passes on the cells flow (`decode_block_cells_sic`)
 
 - **New** `decode_block_cells_sic` (`fixed-point`, `Hz8000`): after the first pass, every decoded signal is subtracted **as the audio is read** (a port of `ft8dec.c`'s `sig_corr` / `sig_sub` / `build_wf`: the GFSK reference correlated per symbol, the complex amplitude interpolated between symbol centres, 1.5 symbols of lag, no copy of the slot, a ring of 8 192 samples, no FFT), the cells of the residual are made and only the carriers within +-18 cells of the new signals are searched and decoded; up to `passes` passes. Decodes report a refined place (`ft8dec`'s parabola on the 79 tones and `tcal`). `decode_block_cells` and the other flows are unchanged.

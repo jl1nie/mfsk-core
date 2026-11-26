@@ -2999,6 +2999,15 @@ and differ only in which inner steps they enable:
   the staircase is the library's). Measured on 60 slots, 30 candidates: `jt9` hits 1 001 / 1 192 / 1 206 at 1 / 2 / 3 passes (`ft8dec`: 990 / 1 189 / 1 204),
   host instructions 396 / 881 / 1 443 M (`ft8dec`: 335 / 850 / 1 278 M); a pass after the first decodes at most `max_cand / 2` candidates (8 at least: a divergence from `ft8dec`, which decodes 300 a pass) with `ft8dec`'s hard-sync minimum of 7. `snr_db` not validated; noise-only slots not run; two of the nine new decodes in neither of the
   reference lists read like noise (a subtraction ghost is the risk of any SIC).
+* `CellsWorker` / `CellTables` / `Grid` / `Found`, `HalfDbCells::{new, row_mut, mark_filled, filled_rows}`, `search_cells` / `merge_cells_parts` / `CellsPart` / `candidate_ready`,
+  `engine::dsp::resample_to_8k` / `LinearResamplerI16To8k` (`fixed-point`, `Hz8000`; the cells items are the pieces a firmware builds `decode_block_cells` from, no_std + alloc) — **a
+  worker**: `CellsWorker` borrows the caller's staging block, BP scratch and tables and decodes one candidate (`decode_candidate`: the grid try, then the interpolated retry), what
+  `decode_block_cells` does per candidate, with no `Box` / `Vec` of its own (the shared LLR scratch, at most 696 B, remains); **a store written a row at a time**: `HalfDbCells::new` makes a zeroed store,
+  `row_mut` / `mark_filled` write it as audio arrives, and the search reads **only the rows written** (a row past the fill is off the slot as the slot's end is); `search_cells` scores a range of carriers
+  and `merge_cells_parts` merges the parts into the list `coarse_sync_gated_cells` returns, **bit for bit for any split** (two cores, half each); `candidate_ready` says whether every row a decode of a candidate
+  reads is written (the early / late split of an emit before the slot's tail). **Resampling**: `resample_to_8k` and `LinearResamplerI16To8k` take `src_rate` to 8 kHz with a Kaiser low-pass (pass 3 200 Hz, stop 4 000 Hz, 40 dB;
+  about 135 taps at 48 kHz, evaluated once per output); the 12 kHz functions are unchanged to the sample. Measured: the 22 recordings through 12 -> 48 -> 8 kHz decode 225 / 285 of `jt9`'s 402 at
+  15 / 30 candidates (the 12 -> 8 kHz ICAP model: 226 / 286). Host only; no board has run them.
 * `osd_available()` — whether this build has FT8's OSD fallback. `DecodeDepth::osd` and `Tuning::osd` do something
   only if so (`fft-rustfft`, or the `osd` feature without it); otherwise they are ignored without an error, and an
   application that must have OSD asserts it at compile time.

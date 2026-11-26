@@ -148,7 +148,7 @@ Each step ends with a measurement recorded in this directory and a commit; a ste
 flash and capture (`embedded-poc/CLAUDE.md`: logs only through `scripts/flash-monitor.sh`, never a second `espflash monitor`; a host check is not enough for a runtime-path
 change).
 
-0. **Library, host** (no board). (a) The workspace API: no allocation per call, the `cs` block, the tables and the cells store passed in; a per-candidate step
+0. **Library, host** (no board). **Status 2026-11-26: (a), (b), (c) done (commits `7d14c115`, `d0d39689`, `9f41fe0a`, design note section 25); (d) not done, see section 9.** (a) The workspace API: no allocation per call, the `cs` block, the tables and the cells store passed in; a per-candidate step
    (`decode_round` as a step). (b) `HalfDbCells` written a row at a time with a fill count, and the search over a partially filled store. Public items and what fails
    them: a store filled row by row equals the demux's cells (**fails if** a row lands in the wrong place or the fill count is off by one); the search of a complete store
    equals `coarse_sync_gated_cells`'s list bit for bit, and the search of a store filled to row F returns only candidates whose score and hard-sync count read rows < F
@@ -192,3 +192,28 @@ change).
 ## 8. Not in this plan
 The ICAP radio-resident application (its audio is 8 kHz from the radio and its memory is the radio's), other modes, the embedded `fixed-point` decoders of other protocols,
 the release itself (`docs/notes/RELEASE_PROCEDURE.md`), and the tier C sweep (the Linux box).
+
+## 9. Status and handoff to the machine with the CoreS3 attached (2026-11-26)
+
+**Done on the host (pushed):** the library pieces steps 1-3 need. Nothing here has run on a board.
+
+| firmware need | library item (all `fixed-point`, `Hz8000`, no_std + alloc) |
+|---|---|
+| a candidate decoded over the firmware's own memory | `CellsWorker::new(staging, bp_scratch, tables)` / `decode_candidate` (`cells_flow.rs`); the 5 056 B internal pair is the staging block |
+| the producer writes cells as audio arrives | `HalfDbCells::new`, `row_mut(row)`, `mark_filled(rows)` (`coarse_lib.rs`) |
+| two-core scoring, one half of the carriers each | `search_cells(store, search, carriers)` per core, `merge_cells_parts(parts, search, rate)` on one |
+| emit before the slot's tail | `candidate_ready(store, cand)`: decode the ready ones first, the rest after the fill completes |
+| 48 kHz -> 8 kHz in the UAC reader | `LinearResamplerI16To8k::new(48_000)` / `process` (about 1.1 M MAC/s, ~135 taps); the 12 kHz resampler is unchanged |
+
+**Next work, in this order**
+1. Read `embedded-poc/CLAUDE.md` ("USB host VBUS on CoreS3", "Stacks, heaps, and the space between them"), this plan's sections 3-4, and `CORES3_FT8_SLOT_BUDGET.md`. Logs only through `embedded-poc/scripts/flash-monitor.sh`.
+2. **Step 1, board bench** (needs the board, no library change): the 2 560-point esp-dsp wrapper beside the 3 840 one (`embedded-shared/src/esp_dsp_fft.rs`; `plan_forward(2560)` must stop panicking), the byte demux + `half_db` and the Hann pack on core 1,
+   writing `HalfDbCells` with `row_mut` / `mark_filled`. Measure a row pair against the 80 ms cadence, the internal DRAM / PSRAM used, and the free internal DRAM at the slot boundary against the 15.8 kB floor (`worker_arena`-style reservation at boot, before WiFi).
+   Use the library's `Plan2560Sc16` demux output as the reference: the board's cells must equal it row for row on the same audio (compare, do not assume).
+3. Step 2 (wav replay, one core) then step 3 (dual core), as section 5. Step 2 yields the host-instruction -> ESP32-time ratio no record has; until then no time claim.
+4. **Step 0d can run on either machine** (host measurements, no library item): `icap-profile --no-osd` for the cells flow and the passes next to the OSD-on ledger of design note 23b (decides section 6's OSD question); and `run_slot_s3_cells_early` (a store filled to row 2 x 87 and 2 x 85, `candidate_ready` decodes first, then the rest) against the full-slot flow and the old S3 on the same 60 slots (open question 3).
+5. The `fil4`-style 8 kHz filter is built (section 7 item 6 is answered for the host: pass 3 200 / stop 4 000 Hz). Check on the board that the reader's 6:1 path does not cost the 48 kHz stereo -> mono step more time than the 12 kHz path did.
+
+**Not done, and not to be assumed:** OSD-off numbers, the early-emit numbers, any ESP32 time, PSRAM bandwidth, tier C noise-only slots (the Linux box), `snr_db` calibration, an allocation-free `engine::llr`.
+Release gate before the library items go out: tier C (section 6).
+

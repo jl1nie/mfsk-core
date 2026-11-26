@@ -851,3 +851,16 @@ The CoreS3 side (a 2 560-point esp-dsp plan, the byte producer in `stage1_inc`, 
 passes after the slot boundary, the internal-DRAM / PSRAM placement under `SPIRAM_MALLOC_ALWAYSINTERNAL` = 2048) is planned in `S3_CELLS_IMPLEMENTATION_PLAN.md`: what is established
 (sections 2-3 there), the steps and their gates, the decisions that are the owner's, and what is not known (the ESP32 time of integer / table code, PSRAM bandwidth, the early emit on a partial store,
 OSD on the board, tier C). Nothing there has been run on a board.
+
+## 25. Step 0 of the board plan as built (host, 2026-11-26)
+
+Three commits (`7d14c115`, `d0d39689`, `9f41fe0a`), host only, each with its tier A / B and fixed-point gates and a mutation check of every new test.
+
+* **0a, `CellsWorker`.** The loop body of `process_candidates_with_ap` is `process_candidate_staged`; `CellsWorker` borrows the caller's staging block, BP scratch and tables. Decodes of
+  `decode_block_cells` unchanged to the bit; host instructions within +-0.5 % (a host allocator is cheap: the saving is the board's heap traffic and the PSRAM `Box`, **not measured here**). Counting allocator
+  (`hosttest/icap-app`): a failing attempt allocates no block and no scratch of its own. **Correction to the plan**: "zero allocations" is false, the shared `engine::llr` scratch (<= 696 B, <= 2 KB: internal on the board) is made per attempt; making it allocation-free is a separate change.
+* **0b, a store written a row at a time.** `view_of` borrows the store with `n_time` = the fill, so the scoring needs no new rule. Mutation checks found two gaps in the first tests (the view reading `n_time`; a part dropping its last carrier);
+  the tests now use pseudo-random cells past the fill and a signal on the last carrier, and fail both. The search of a complete store: same instructions.
+* **0c, 48 -> 8 kHz.** `antialias_taps(src, target)`; 8 kHz spec pass 3 200 / stop 4 000 Hz / 40 dB. 12 kHz outputs pinned by FNV hashes taken from the previous commit. 22 recordings via 12 -> 48 -> 8 kHz: 225 / 285 against the ICAP model's 226 / 286 (extras 2 / 3).
+* **Not done: step 0d** (OSD-off ledger of the cells flow and the passes; the early emit at row pair 87 / 85 on a partly filled store). Both are host measurements that need no new library item.
+

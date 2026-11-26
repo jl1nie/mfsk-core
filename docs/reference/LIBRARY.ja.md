@@ -2832,6 +2832,15 @@ FT8 モジュールは共有パイプラインの上に並列のエントリ群�
   (減算とパスは `ft8dec` のもの。LLR 以降の階段はライブラリのもの)。60 スロット、30 候補での測定: `jt9` のヒットは 1/2/3 パスで 1,001 / 1,192 / 1,206
   (`ft8dec`: 990 / 1,189 / 1,204)、ホストの命令数は 396 / 881 / 1,443 M (`ft8dec`: 335 / 850 / 1,278 M)。1 パス目より後のパスは、最大 `max_cand / 2` 個 (最低 8) の候補を、`ft8dec` の hard sync 下限 7 でデコードする (`ft8dec` は毎パス 300 個: そこからの逸脱)。`snr_db` は未検証、ノイズ専用スロットは未実施。
   参照一覧のどちらにもない新しい復号 9 件のうち 2 件はノイズのように読める (減算の幽霊は、どの SIC にもあるリスク)。
+* `CellsWorker` / `CellTables` / `Grid` / `Found`、`HalfDbCells::{new, row_mut, mark_filled, filled_rows}`、`search_cells` / `merge_cells_parts` / `CellsPart` / `candidate_ready`、
+  `engine::dsp::resample_to_8k` / `LinearResamplerI16To8k` (`fixed-point`、`Hz8000`。セル関連は、ファームウェアが `decode_block_cells` を組み立てる部品で、no_std + alloc) — **ワーカー**:
+  `CellsWorker` は呼び出し側の作業ブロック・BP スクラッチ・テーブルを借りて 1 候補を復号する (`decode_candidate`: グリッド上の試行、続いて補間した位置での再試行)。
+  `decode_block_cells` が候補ごとにすることと同じで、自前の `Box` / `Vec` はない (共有の LLR スクラッチ、最大 696 B は残る)。**1 行ずつ書くストア**: `HalfDbCells::new` はゼロのストアを作り、
+  `row_mut` / `mark_filled` で音声が届くたびに書く。探索は**書かれた行だけ**を読む (フィルより先の行は、スロットの終わりの先と同じく範囲外)。`search_cells` はキャリアの範囲を採点し、
+  `merge_cells_parts` が各部分を `coarse_sync_gated_cells` の返す一覧に統合する。**どんな分割でもビット単位で同一** (2 コアで半分ずつ)。`candidate_ready` は、候補の復号が読む行がすべて書かれているかを返す
+  (スロット末尾より前の emit の、早い / 遅いの振り分け)。**リサンプル**: `resample_to_8k` と `LinearResamplerI16To8k` は `src_rate` を 8 kHz にする。Kaiser 低域通過 (通過 3,200 Hz、阻止 4,000 Hz、40 dB。
+  48 kHz で約 135 タップ、出力ごとに 1 回評価)。12 kHz の関数はサンプル単位で変わらない。測定: 22 録音を 12 → 48 → 8 kHz に通すと、15 / 30 候補で `jt9` の 402 件中 225 / 285 を復号する
+  (12 → 8 kHz の ICAP モデルは 226 / 286)。ホストのみ。どのボードでも動かしていない。
 * `osd_available()` — このビルドに FT8 の OSD フォールバックがあるか。`DecodeDepth::osd` と `Tuning::osd` が
   効くのはある場合だけ (`fft-rustfft`、なければ `osd` feature)。ない場合はエラーなしで無視されるので、OSD が必須の
   アプリはコンパイル時に assert する。
