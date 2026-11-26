@@ -69,6 +69,9 @@ const MAX_TONE_OFF: usize = 2 * (NTONES - 1) + 1;
 pub struct HalfDbCells {
     n_freq: usize,
     n_time: usize,
+    /// Rows written so far (a producer that makes the store a row at a time on the way: [`row_mut`](Self::row_mut), [`mark_filled`](Self::mark_filled)); a row at or past it
+    /// is not measured, and neither [`cell`](Self::cell) nor the search reads it.
+    filled: usize,
     first_bin: usize,
     rate: Ft8Rate,
     data: Vec<u8>,
@@ -88,10 +91,52 @@ impl HalfDbCells {
         Self {
             n_freq,
             n_time,
+            filled: n_time,
             first_bin,
             rate,
             data,
         }
+    }
+
+    /// An empty store (zeroed, **no row filled**) for a producer that writes it a row at a time: `n_time` rows of `n_freq` bins of 3.125 Hz from bin `first_bin`
+    /// (172 224 B at 200-3 000 Hz, 184 rows: [`row_len`](Self::row_len) bins from [`carrier_bins`](Self::carrier_bins)'s first to its last plus 14).
+    pub fn new(rate: Ft8Rate, first_bin: usize, n_freq: usize, n_time: usize) -> Self {
+        Self {
+            n_freq,
+            n_time,
+            filled: 0,
+            first_bin,
+            rate,
+            data: alloc::vec![0u8; n_freq * n_time],
+        }
+    }
+
+    /// Bins per row.
+    pub fn row_len(&self) -> usize {
+        self.n_freq
+    }
+
+    /// Row `row` for writing: `n_freq` bytes, the half-dB cells of one frame. Rows are written in order and then [`mark_filled`](Self::mark_filled).
+    pub fn row_mut(&mut self, row: usize) -> &mut [u8] {
+        &mut self.data[row * self.n_freq..(row + 1) * self.n_freq]
+    }
+
+    /// Declare the first `rows` rows written (at most `n_time`): from here the search and [`cell`](Self::cell) read them.
+    pub fn mark_filled(&mut self, rows: usize) {
+        self.filled = rows.min(self.n_time);
+    }
+
+    /// Rows written so far.
+    pub fn filled_rows(&self) -> usize {
+        self.filled
+    }
+
+    /// The carrier bins the store can score: a carrier's tone 7 is 14 bins above it, so the last 14 bins of a row only serve as tones.
+    pub fn carrier_bins(&self) -> core::ops::Range<usize> {
+        self.first_bin
+            ..(self.first_bin + self.n_freq)
+                .saturating_sub(MAX_TONE_OFF - 1)
+                .max(self.first_bin)
     }
 
     /// Bins per row.
@@ -117,7 +162,7 @@ impl HalfDbCells {
     /// The cell of row `row` at the **spectrogram bin** `bin` (the frequency is `bin x 3.125 Hz`), `None` outside the store.
     pub fn cell(&self, row: usize, bin: usize) -> Option<u8> {
         let col = bin.checked_sub(self.first_bin)?;
-        if row >= self.n_time || col >= self.n_freq {
+        if row >= self.filled || col >= self.n_freq {
             return None;
         }
         Some(self.data[row * self.n_freq + col])
@@ -126,6 +171,33 @@ impl HalfDbCells {
     /// Bytes the cells take.
     pub fn size_bytes(&self) -> usize {
         self.data.len()
+    }
+}
+
+/// A borrowed view of cells for the scoring: `n_time` is the number of rows **measured** (a row at or past it is "off the slot": `score` stops at it and `hard_sync`
+/// skips it, as they do at the end of a slot), `data` row-major.
+struct CellsRef<'a> {
+    n_freq: usize,
+    n_time: usize,
+    data: &'a [u8],
+}
+
+fn view_of(cells: &ByteCells) -> CellsRef<'_> {
+    CellsRef {
+        n_freq: cells.n_freq,
+        n_time: cells.n_time,
+        data: &cells.data,
+    }
+}
+
+impl HalfDbCells {
+    /// The rows filled so far, as a view for the scoring.
+    fn view(&self) -> CellsRef<'_> {
+        CellsRef {
+            n_freq: self.n_freq,
+            n_time: self.filled,
+            data: &self.data[..self.filled * self.n_freq],
+        }
     }
 }
 
@@ -167,7 +239,7 @@ fn better(a: &Pos, b: &Pos) -> core::cmp::Ordering {
 /// Costas tone's dB minus the adjacent tones' and the adjacent symbols' (the previous and the next row of the same
 /// tone), integer, divided once by the number of terms (`ft8_lib`'s `num`; a symbol off the slot adds none).
 #[inline]
-fn score(cells: &ByteCells, rel_k: usize, j0: i32) -> i32 {
+fn score(cells: &CellsRef<'_>, rel_k: usize, j0: i32) -> i32 {
     let (nf, rows) = (cells.n_freq, cells.n_time);
     let d = &cells.data;
     let (mut sum, mut num) = (0i32, 0i32);
@@ -206,7 +278,7 @@ fn score(cells: &ByteCells, rel_k: usize, j0: i32) -> i32 {
 
 /// The number of Costas symbols (of 21) whose strongest of the eight tone cells is the Costas tone, on the rows the slot has:
 /// `spec_hard_sync`'s count on these cells.
-fn hard_sync(cells: &ByteCells, rel_k: usize, j0: i32) -> u8 {
+fn hard_sync(cells: &CellsRef<'_>, rel_k: usize, j0: i32) -> u8 {
     let (nf, rows) = (cells.n_freq, cells.n_time);
     let mut ok = 0u8;
     for m in 0..3 {
@@ -234,7 +306,7 @@ fn hard_sync(cells: &ByteCells, rel_k: usize, j0: i32) -> u8 {
 /// return the best `keep_raw` of them by [`better`] (ties at the cut are all kept: the cut is by score, then trimmed by the
 /// total order), each with its hard-sync count.
 fn band_best(
-    cells: &ByteCells,
+    cells: &CellsRef<'_>,
     lo: usize,
     k_first: usize,
     k_last: usize,
@@ -336,6 +408,39 @@ pub(super) fn search<A: PcmSource>(
     .0
 }
 
+/// The best `keep_raw` of the scored positions of every band, suppressed, in `order`, at most `keep`, as candidates of `rate`: what the search returns once the bands are scored. The
+/// same function whether one core scored the whole range or two scored a half each.
+fn finish(
+    all: Vec<Pos>,
+    keep_raw: usize,
+    pool: usize,
+    keep: usize,
+    order: Order,
+    rate: Ft8Rate,
+) -> Vec<(SyncCandidate, u8)> {
+    let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
+    let tstep = rate.nstep() as f32 / rate.hz() as f32;
+    let all = merge(all, keep_raw);
+    let mut kept = suppress(&all, pool);
+    if order == Order::PoolThenHardSync {
+        // stable: equal counts stay in score order
+        kept.sort_by_key(|p| core::cmp::Reverse(p.hs));
+    }
+    kept.truncate(keep);
+    kept.into_iter()
+        .map(|p| {
+            (
+                SyncCandidate {
+                    freq_hz: p.k as f32 * df,
+                    dt_sec: p.j as f32 * tstep - 0.5,
+                    score: p.score as f32,
+                },
+                p.hs,
+            )
+        })
+        .collect()
+}
+
 /// [`search`] with the whole slot's cells kept (`keep_cells`): the same candidates, the cells the search scored in a [`HalfDbCells`].
 #[allow(clippy::too_many_arguments)]
 fn search_impl<A: PcmSource>(
@@ -351,7 +456,6 @@ fn search_impl<A: PcmSource>(
     gain: Option<Gain>,
 ) -> (Vec<(SyncCandidate, u8)>, Option<HalfDbCells>) {
     let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
-    let tstep = rate.nstep() as f32 / rate.hz() as f32;
     let spec_n_freq = spectrogram_n_freq(freq_max, rate);
     let ia = (freq_min / df).round() as usize;
     let ib = ((freq_max / df).round() as usize).min(spec_n_freq.saturating_sub(MAX_TONE_OFF));
@@ -373,7 +477,7 @@ fn search_impl<A: PcmSource>(
         let a = ia + b * n_car / bands;
         let z = ia + (b + 1) * n_car / bands - 1;
         let cells = compute_half_db_bytes_src(src, rate, a, z + MAX_TONE_OFF, gain);
-        all.extend(band_best(&cells, a, a, z, keep_raw, allowed));
+        all.extend(band_best(&view_of(&cells), a, a, z, keep_raw, allowed));
         if keep_cells {
             let total = ib + MAX_TONE_OFF - ia;
             if bands == 1 {
@@ -381,6 +485,7 @@ fn search_impl<A: PcmSource>(
                 store = Some(HalfDbCells {
                     n_freq: cells.n_freq,
                     n_time: cells.n_time,
+                    filled: cells.n_time,
                     first_bin: ia,
                     rate,
                     data: cells.data,
@@ -389,6 +494,7 @@ fn search_impl<A: PcmSource>(
                 let store = store.get_or_insert_with(|| HalfDbCells {
                     n_freq: total,
                     n_time: cells.n_time,
+                    filled: cells.n_time,
                     first_bin: ia,
                     rate,
                     data: alloc::vec![0u8; total * cells.n_time],
@@ -401,26 +507,7 @@ fn search_impl<A: PcmSource>(
             }
         }
     }
-    let all = merge(all, keep_raw);
-    let mut kept = suppress(&all, pool);
-    if order == Order::PoolThenHardSync {
-        // stable: equal counts stay in score order
-        kept.sort_by_key(|p| core::cmp::Reverse(p.hs));
-    }
-    kept.truncate(keep);
-    let found = kept
-        .into_iter()
-        .map(|p| {
-            (
-                SyncCandidate {
-                    freq_hz: p.k as f32 * df,
-                    dt_sec: p.j as f32 * tstep - 0.5,
-                    score: p.score as f32,
-                },
-                p.hs,
-            )
-        })
-        .collect();
+    let found = finish(all, keep_raw, pool, keep, order, rate);
     (found, store)
 }
 
@@ -454,11 +541,62 @@ pub fn coarse_sync_gated_cells<A: PcmSource>(
     let store = store.unwrap_or(HalfDbCells {
         n_freq: 0,
         n_time: 0,
+        filled: 0,
         first_bin: 0,
         rate,
         data: Vec::new(),
     });
     Some((found, store))
+}
+
+/// The scored positions of a range of carriers of a store, to be merged with the other ranges' by [`merge_cells_parts`]: one core scores the lower half of the carriers
+/// and the other the upper half (the old coarse search splits the same way), the merge is the one that makes the list **the same for any split**.
+pub struct CellsPart(Vec<Pos>);
+
+/// Score the carriers `carriers` (absolute bins of 3.125 Hz, clipped to [`HalfDbCells::carrier_bins`]) of `store` **over the rows filled so far**: a row not yet written is
+/// not read (the search of a store that is still being made, at the board's early emit). The scores need `(carriers.len()) x 60` bytes while this runs (56 KB for the whole range).
+pub fn search_cells(
+    store: &HalfDbCells,
+    search: &super::coarse_sync::GatedSearch,
+    carriers: core::ops::Range<usize>,
+) -> CellsPart {
+    let range = store.carrier_bins();
+    let (lo, hi) = (carriers.start.max(range.start), carriers.end.min(range.end));
+    if lo >= hi || store.filled == 0 || search.keep == 0 {
+        return CellsPart(Vec::new());
+    }
+    let keep_raw = RAW_FACTOR * POOL.max(search.keep);
+    CellsPart(band_best(
+        &store.view(),
+        store.first_bin,
+        lo,
+        hi - 1,
+        keep_raw,
+        None,
+    ))
+}
+
+/// The candidates of the parts of one search, in the search's order (`ft8_lib`'s statistic, the hard-sync order over the best pool, at most `search.keep`): **the list
+/// [`coarse_sync_gated_cells`] returns for the same store whatever the number of parts and where they are cut** (a test pins it: 1, 2, 3 and 7 parts).
+pub fn merge_cells_parts(
+    parts: &[CellsPart],
+    search: &super::coarse_sync::GatedSearch,
+    rate: Ft8Rate,
+) -> Vec<(SyncCandidate, u8)> {
+    let pool = POOL.max(search.keep);
+    let all: Vec<Pos> = parts.iter().flat_map(|p| p.0.iter().copied()).collect();
+    finish(all, RAW_FACTOR * pool, pool, search.keep, ORDER, rate)
+}
+
+/// Rows a candidate's decode reads past the row of its first symbol: its 79 symbols are every second row (`2 x 78`) and the retry reads the row after the last.
+const ROWS_READ: i32 = 2 * 78 + 1;
+
+/// Whether every row the decode of `cand` reads is already written in `store` (`j0 + 157 < filled_rows`): the early / late split of the board's emit, which decodes the
+/// candidates whose symbols have all arrived and defers the rest to the slot's end.
+pub fn candidate_ready(store: &HalfDbCells, cand: &SyncCandidate) -> bool {
+    let tstep = store.rate.nstep() as f32 / store.rate.hz() as f32;
+    let j0 = ((cand.dt_sec + 0.5) / tstep).round() as i32;
+    j0 + ROWS_READ < store.filled as i32
 }
 
 /// The search of a **residual** (the audio minus the signals decoded so far: `ft8dec_sic::ResidualSource`) restricted to the carriers within
@@ -495,6 +633,7 @@ pub(super) fn search_near<A: PcmSource>(
     let store = store.unwrap_or(HalfDbCells {
         n_freq: 0,
         n_time: 0,
+        filled: 0,
         first_bin: 0,
         rate,
         data: Vec::new(),
@@ -760,6 +899,211 @@ mod tests {
         assert_eq!(cells.cell(40, 480), whole.cell(40, 480));
     }
 
+    /// A store written a row at a time is the demux's: the rows of the demux copied into an empty store with `row_mut` and `mark_filled` give the same cells, the same fill and the
+    /// same search as the store `coarse_sync_gated_cells` makes; before the last rows are marked a row is not read. **Fails if** a row lands in the wrong place,
+    /// `filled_rows` is off by one, or `cell` reads a row that is not filled.
+    #[test]
+    fn a_store_written_a_row_at_a_time_is_the_demuxs() {
+        let s = slot(&[("CQ", "K1ABC", "FN42", 1500.3, 0.9, 8000)], 11);
+        let gs = super::super::coarse_sync::GatedSearch::new(200.0, 3000.0, 1.3, 20);
+        let (list, whole) =
+            coarse_sync_gated_cells(&mut SliceSource(&s), Ft8Rate::Hz8000, &gs, 1).unwrap();
+        let mut built = HalfDbCells::new(
+            Ft8Rate::Hz8000,
+            whole.first_bin(),
+            whole.n_freq(),
+            whole.n_time(),
+        );
+        assert_eq!(
+            (built.filled_rows(), built.cell(0, whole.first_bin())),
+            (0, None)
+        );
+        for row in 0..whole.n_time() {
+            for (c, bin) in built.row_mut(row).iter_mut().zip(whole.first_bin()..) {
+                *c = whole.cell(row, bin).unwrap();
+            }
+            built.mark_filled(row + 1);
+            assert_eq!(built.filled_rows(), row + 1);
+            assert_eq!(
+                built.cell(row + 1, whole.first_bin()),
+                None,
+                "row {} is not filled",
+                row + 1
+            );
+        }
+        for row in 0..whole.n_time() {
+            for bin in whole.first_bin()..whole.first_bin() + whole.n_freq() {
+                assert_eq!(built.cell(row, bin), whole.cell(row, bin));
+            }
+        }
+        let part = search_cells(&built, &gs, built.carrier_bins());
+        let key = |v: &[(SyncCandidate, u8)]| {
+            v.iter()
+                .map(|(c, h)| {
+                    (
+                        c.freq_hz.to_bits(),
+                        c.dt_sec.to_bits(),
+                        c.score.to_bits(),
+                        *h,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            key(&merge_cells_parts(&[part], &gs, Ft8Rate::Hz8000)),
+            key(&list)
+        );
+    }
+
+    /// The carriers split between any number of parts, scored apart and merged, give `coarse_sync_gated_cells`'s list bit for bit (the two-core split of the board).
+    /// **Fails if** the merge or the cut of a part changes a candidate or the order, or a carrier is scored twice or not at all.
+    #[test]
+    fn a_search_split_between_parts_is_the_whole_search() {
+        let signals = [
+            ("CQ", "K1ABC", "FN42", 700.0f32, 0.2f32, 6000i16),
+            ("K1ABC", "W9XYZ", "-12", 1500.3, 0.9, 5000),
+            ("CQ", "JA1ABC", "PM95", 2300.7, -0.6, 5000),
+            // on the last carrier of the range (3 000 Hz): a part that drops its last carrier loses it
+            ("W9XYZ", "K1ABC", "RR73", 3000.0, 0.5, 8000),
+        ];
+        let s = slot(&signals, 11);
+        let gs = super::super::coarse_sync::GatedSearch::new(200.0, 3000.0, 1.3, 20);
+        let (list, store) =
+            coarse_sync_gated_cells(&mut SliceSource(&s), Ft8Rate::Hz8000, &gs, 1).unwrap();
+        let key = |v: &[(SyncCandidate, u8)]| {
+            v.iter()
+                .map(|(c, h)| {
+                    (
+                        c.freq_hz.to_bits(),
+                        c.dt_sec.to_bits(),
+                        c.score.to_bits(),
+                        *h,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            list.iter().any(|(c, _)| (c.freq_hz - 3000.0).abs() < 1.0),
+            "the signal on the last carrier is a candidate"
+        );
+        let r = store.carrier_bins();
+        for n in [1usize, 2, 3, 7] {
+            let n_car = r.end - r.start;
+            let parts: Vec<CellsPart> = (0..n)
+                .map(|i| {
+                    let (a, b) = (r.start + i * n_car / n, r.start + (i + 1) * n_car / n);
+                    search_cells(&store, &gs, a..b)
+                })
+                .collect();
+            assert_eq!(
+                key(&merge_cells_parts(&parts, &gs, Ft8Rate::Hz8000)),
+                key(&list),
+                "{n} parts"
+            );
+        }
+    }
+
+    /// A search over a store still being made reads only the rows written: two stores filled to the same row, the rest zero in one and **pseudo-random cells** in the other, give the
+    /// same list, and a signal whose rows are all written is found while one that has not arrived is not. **Fails if** a row at or past the fill is read (the scoring
+    /// would use the slot's length, not the fill), or the fill is off by a row.
+    #[test]
+    fn a_partly_written_store_is_searched_over_the_rows_it_has() {
+        // A at DT 0.2 s (its 79 symbols end at row 8 + 156 = 164), B at DT 2.3 s (rows 35 to 191: not all of them written at row 174)
+        let signals = [
+            ("CQ", "K1ABC", "FN42", 700.0f32, 0.2f32, 8000i16),
+            ("K1ABC", "W9XYZ", "-12", 1500.3, 2.3, 8000),
+        ];
+        let s = slot(&signals, 11);
+        let gs = super::super::coarse_sync::GatedSearch::new(200.0, 3000.0, 1.3, 20);
+        let (_, whole) =
+            coarse_sync_gated_cells(&mut SliceSource(&s), Ft8Rate::Hz8000, &gs, 1).unwrap();
+        let fill = 174; // the board's emit: row pair 87
+        // what a store holds past its fill that a search must not read: nothing, or cells that would change every score (random, up to the 193 of a real cell)
+        let make = |garbage: bool| {
+            let mut st = HalfDbCells::new(
+                Ft8Rate::Hz8000,
+                whole.first_bin(),
+                whole.n_freq(),
+                whole.n_time(),
+            );
+            for row in 0..whole.n_time() {
+                for (c, bin) in st.row_mut(row).iter_mut().zip(whole.first_bin()..) {
+                    *c = if row < fill {
+                        whole.cell(row, bin).unwrap()
+                    } else if garbage {
+                        ((row * 31 + bin * 17) % 194) as u8
+                    } else {
+                        0
+                    };
+                }
+            }
+            st.mark_filled(fill);
+            st
+        };
+        let (zero, junk) = (make(false), make(true));
+        let list = |st: &HalfDbCells| {
+            merge_cells_parts(
+                &[search_cells(st, &gs, st.carrier_bins())],
+                &gs,
+                Ft8Rate::Hz8000,
+            )
+        };
+        let key = |v: &[(SyncCandidate, u8)]| {
+            v.iter()
+                .map(|(c, h)| {
+                    (
+                        c.freq_hz.to_bits(),
+                        c.dt_sec.to_bits(),
+                        c.score.to_bits(),
+                        *h,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let (lz, lj) = (list(&zero), list(&junk));
+        assert_eq!(key(&lz), key(&lj), "a row past the fill was read");
+        let near =
+            |l: &[(SyncCandidate, u8)], f: f32| l.iter().any(|(c, _)| (c.freq_hz - f).abs() < 4.0);
+        assert!(
+            near(&lz, 700.0),
+            "the signal whose rows are all written is found"
+        );
+        // the early signal's candidate is ready, the late signal's (its true place, DT 2.3 s) is found from the rows there are and is not ready
+        let place = |l: &[(SyncCandidate, u8)], f: f32, dt: f32| {
+            l.iter()
+                .find(|(c, _)| (c.freq_hz - f).abs() < 4.0 && (c.dt_sec - dt).abs() < 0.15)
+                .map(|(c, _)| candidate_ready(&zero, c))
+        };
+        assert_eq!(
+            place(&lz, 700.0, 0.2),
+            Some(true),
+            "the early signal is ready"
+        );
+        assert_eq!(
+            place(&lz, 1500.3, 2.3),
+            Some(false),
+            "the late signal is found and is not ready at row {fill}"
+        );
+    }
+
+    /// `candidate_ready` is exact: a candidate whose last row read is `fill - 1` is ready, one row later it is not. **Fails if** the rows a decode reads (its 79 symbols and the retry's
+    /// neighbour row) are counted wrong by one either way.
+    #[test]
+    fn a_candidate_is_ready_when_every_row_it_reads_is_written() {
+        let mut st = HalfDbCells::new(Ft8Rate::Hz8000, 64, 960, 184);
+        let at = |j0: i32| SyncCandidate {
+            freq_hz: 700.0,
+            dt_sec: j0 as f32 * 0.08 - 0.5,
+            score: 10.0,
+        };
+        st.mark_filled(174);
+        // rows read: j0 + 2 x 78 + 1 = j0 + 157 must be below 174: j0 <= 16
+        assert!(candidate_ready(&st, &at(16)));
+        assert!(!candidate_ready(&st, &at(17)));
+        st.mark_filled(0);
+        assert!(!candidate_ready(&st, &at(-22)) || false);
+    }
+
     /// The union of the bands' best positions, merged, is the best positions of the whole range, **for cuts that bind**: the same
     /// positions, in the same order, whether the carriers are scored in 1, 2, 4 or 7 bands, for `keep_raw` of 3, 6, 24 and 96
     /// (far fewer than the positions above `MIN_SCORE` of the slot). The list `search` returns only sees the cut when it starves
@@ -788,7 +1132,7 @@ mod tests {
                 let z = ia + (b + 1) * n_car / bands - 1;
                 let cells =
                     compute_half_db_bytes_src(src, Ft8Rate::Hz8000, a, z + MAX_TONE_OFF, gain);
-                all.extend(band_best(&cells, a, a, z, keep_raw, None));
+                all.extend(band_best(&view_of(&cells), a, a, z, keep_raw, None));
             }
             merge(all, keep_raw)
         };
@@ -832,7 +1176,7 @@ mod tests {
         for k in ia..=ib {
             for jj in 0..NJ {
                 let j = J0_MIN + jj as i32;
-                let sc = score(&cells, k - ia, j);
+                let sc = score(&view_of(&cells), k - ia, j);
                 if sc >= MIN_SCORE {
                     every.push(Pos {
                         score: sc.min(127),

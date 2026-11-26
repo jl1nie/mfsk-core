@@ -69,7 +69,10 @@ mod ft8dec_sic;
 #[cfg(feature = "fixed-point")]
 pub use cells_flow::{CellTables, CellsWorker, Found, Grid, decode_block_cells};
 #[cfg(feature = "fixed-point")]
-pub use coarse_lib::{HalfDbCells, coarse_sync_gated_cells};
+pub use coarse_lib::{
+    CellsPart, HalfDbCells, candidate_ready, coarse_sync_gated_cells, merge_cells_parts,
+    search_cells,
+};
 #[cfg(feature = "fixed-point")]
 pub use ft8dec_sic::decode_block_cells_sic;
 mod coarse_sync;
