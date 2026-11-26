@@ -167,7 +167,7 @@ the DIN base on M5Bus so the USB-C port is free, exactly as on WSL.
 | Audio codec | none | ES8311 (mono mic + speaker amp) | ES7210 (dual mic) + AW88298 speaker amp |
 | Buttons / input | none (touch deferred Phase 2.5) | KEY1 / KEY2 GPIO 11/12 | none (touch FT6336U via I2C, Phase 6-Core) |
 | `release.opt-level` | `1` | `1` (shared Xtensa-Rust LLVM regression on `s`/`z` with f32-select patterns — `engine::pipeline` ships an arithmetic-form workaround) | `1` (same) |
-| `SPIRAM_MALLOC_ALWAYSINTERNAL` | n/a | `4096` (mandatory for dual-core; `16384` drains internal DRAM with cs Box × 2 workers → tlsf corruption) | `4096` (same dual-core constraint) |
+| `SPIRAM_MALLOC_ALWAYSINTERNAL` | n/a | `4096` (mandatory for dual-core; `16384` drains internal DRAM with cs Box × 2 workers → tlsf corruption) | `2048` (`m5stack-cores3-app/sdkconfig.defaults`, the source of truth; lowered from `4096`, the boundary free-internal floor went 1 699 B → 15 851 B; an allocation of 2 KB or less stays in internal DRAM, a larger one may go to PSRAM; never raise it) |
 
 ## USB host VBUS on CoreS3
 
