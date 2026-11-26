@@ -150,8 +150,8 @@ scripts/ci-wait.sh --need 'Kotlin|Swift'   # after a push: CI for HEAD, one last
 ## 7. Embedded
 
 Boards: `m5stack-cores3-app` (main: UAC host, FT8/FT4/JTTY/WSPR), `m5stack-s3-app`, `m5stack-core2-app` (wav_sim
-only). The user flashes the boards: a host check is **not enough** for `src/main.rs` or runtime-path changes —
-offer to flash and capture a log. Build with `cargo run --release` (espflash) inside the crate; capture logs only
+only). A host check is **not enough** for `src/main.rs` or runtime-path changes — flash the board and capture a
+log yourself (the board is attached to this machine; the user does not have to be asked first). Build with `cargo run --release` (espflash) inside the crate; capture logs only
 via `embedded-poc/scripts/flash-monitor.sh` (no second `espflash monitor`, no `cat /dev/ttyACM0`; re-flashing an
 unchanged ELF is not a flash). Never run `cargo fmt --all` with the `+esp` toolchain. Read `embedded-poc/CLAUDE.md`
 first ("USB host VBUS on CoreS3", "Stacks, heaps, and the space between them").
