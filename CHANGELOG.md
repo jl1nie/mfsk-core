@@ -4,7 +4,7 @@
 
 ### Cells flow against ft8dec on Apple Silicon: where the BP calls go (measurement only; design note section 26)
 
-- The cells flow is 3.3x `ft8dec`'s instructions (4.4x its wall time) at 30 candidates / OSD off on an M5, the x86 direction, not a reversal. BP is 60 % of the time: 87 candidates reach BP against `ft8dec`'s 35 (68 failed against 16), 2.7 calls against 2.0 on a failed one, 29.6 iterations a call against 24.1. A BP cap of 25 (not applied) keeps every decode on 60 slots and saves 2-3 % of instructions. The x86 record's 179 BP calls (here 63) is unexplained.
+- The cells flow is 3.3x `ft8dec`'s instructions (4.4x its wall time) at 30 candidates / OSD off on an M5, the x86 direction, not a reversal. BP is 60 % of the time: 87 candidates reach BP against `ft8dec`'s 35 (68 failed against 16), 2.7 calls against 2.0 on a failed one, 29.6 iterations a call against 24.1. A BP cap of 25 (not applied) keeps every decode on 60 slots and saves 2-3 % of instructions. The x86 record's 179 BP calls are these 63 plus 116 of the host build's blind-CQ AP pass, which the board does not have, so the 3.3x includes that pass (x86 with it off: 1.54x).
 
 ### CoreS3: the cells flow's first board runs, and the ft8dec comparison (`S3_CELLS_IMPLEMENTATION_PLAN.md` §9, steps 1-2)
 
