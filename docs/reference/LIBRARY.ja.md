@@ -2816,6 +2816,22 @@ FT8 モジュールは共有パイプラインの上に並列のエントリ群�
   `PcmSource` から、または既に持っているスペクトログラム (ボードのストリーミング用: `GatedSearch::fill(SpecFill)`
   が測定済みの行数を伝える) から。どちらも `GatedSearch::new(freq_min, freq_max, sync_min, keep)` を使い、
   `.lag_s()`、`.fill()` がオプション (`bands` はスペクトログラムを何帯域に分けて作るか。1 帯域ごとに音声を 1 回読む)。各関数の doc に、どれを読むかを書いてある。
+* `coarse_sync_gated_cells(src, Ft8Rate, &GatedSearch, bands)` / `decode_block_cells(audio, Ft8Rate, &GatedSearch, max_cand, depth)` / `HalfDbCells`
+  (`fixed-point`、`Hz8000` のみ: ほかのレートでは `None`) — 候補ごとに計算せず、探索が採点した半 dB セルから**シンボルスペクトルを読む** S3 の流れ。
+  探索は `ft8_lib` の統計 (ここでは `coarse_sync_gated` と同じ候補を返す) で、そのセル `HalfDbCells` (1 セル 1 バイト、電力の 0.5 dB 単位、200-3000 Hz で 172 KB) を残す。
+  セルはバイトの demux で 1 帯域に作る。`decode_block_cells` は先頭 `max_cand` 個をグリッド位置 (3.125 Hz、80 ms: fine sync なし) でデコードし、
+  デコードできなかった候補には、Costas トーンが指す位置が 4 分の 1 セル以上ずれていれば 2 回目を試す。**`decode_block` のデコードではない**
+  (WSJT-X からの意図的な逸脱。リトライは `ft8dec` のもの)。60 スロット (`20m_busy` 38 + 22 録音) で、`jt9` と `ft8dec` の一覧の和集合 (1 409) に対して、
+  15 / 30 候補で 765 / 1 035 件を見つける (`fine_sync_at` の流れは 769 / 1 036)。命令数は **165 / 382 M 対 295 / 549 M** (ホスト)、ピークヒープは 258 KB 対 422 KB。
+  `jt9` の一覧だけでは 754 / 1 001 対 761 / 1 009。`snr_db` はセルの振幅から計算し、**検証していない** (`fine_sync_at` の流れより約 1.3 dB 低い)。
+  ノイズ専用スロット (tier C) は未実施。`DecodeResult::sync_score` は探索の整数スコア (0.5 dB 単位)。
+* `decode_block_cells_sic(audio, Ft8Rate, &GatedSearch, max_cand, depth, passes)` (`fixed-point`、`Hz8000` のみ: ほかは `None`) — `decode_block_cells` に
+  **`ft8dec` の減算パス**を付けたもの。0 パス目のあと、復号済みの信号を、音声を読みながら引く (スロットのコピーなし、FFT なし: GFSK の参照をシンボルごとに相関し、
+  その振幅をシンボル中心の間で補間し、1.5 シンボル遅れて引く)。残差のセルを作り、前のパスが加えた信号から ±18 セル (56 Hz) 以内のキャリアだけを探索・復号する。
+  最大 `passes` パス。`passes` 1 は `decode_block_cells` と同じメッセージを、精密化した位置で復号する (396 M 対 382 M)。復号は精密化した位置 (79 トーンのエネルギーの放物線) を報告する。**WSJT-X からの意図的な逸脱**
+  (減算とパスは `ft8dec` のもの。LLR 以降の階段はライブラリのもの)。60 スロット、30 候補での測定: `jt9` のヒットは 1/2/3 パスで 1,001 / 1,192 / 1,206
+  (`ft8dec`: 990 / 1,189 / 1,204)、ホストの命令数は 396 / 881 / 1,443 M (`ft8dec`: 335 / 850 / 1,278 M)。1 パス目より後のパスは、最大 `max_cand / 2` 個 (最低 8) の候補を、`ft8dec` の hard sync 下限 7 でデコードする (`ft8dec` は毎パス 300 個: そこからの逸脱)。`snr_db` は未検証、ノイズ専用スロットは未実施。
+  参照一覧のどちらにもない新しい復号 9 件のうち 2 件はノイズのように読める (減算の幽霊は、どの SIC にもあるリスク)。
 * `osd_available()` — このビルドに FT8 の OSD フォールバックがあるか。`DecodeDepth::osd` と `Tuning::osd` が
   効くのはある場合だけ (`fft-rustfft`、なければ `osd` feature)。ない場合はエラーなしで無視されるので、OSD が必須の
   アプリはコンパイル時に assert する。

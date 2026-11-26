@@ -484,33 +484,79 @@ pub(super) fn compute_spectrogram_bins_src<A: PcmSource>(
     hi: usize,
     shift: Gain,
 ) -> Spectrogram {
-    spectrogram_cells(src, rate, lo, hi, shift, LinearShift)
+    let (n_freq, n_time, data) =
+        spectrogram_cells::<A, LinearShift, u16>(src, rate, lo, hi, shift, LinearShift);
+    Spectrogram {
+        n_freq,
+        n_time,
+        data,
+    }
 }
 
 /// The same frames and FFT as [`compute_spectrogram_bins_src`], the cells in 0.5 dB units of the **32-bit power** ([`half_db`]) instead
 /// of the power right-shifted into a u16, whose `>> FP_SPEC_SHIFT` throws the noise floor away: what `ft8_lib`'s differential score
-/// reads (`coarse_lib::search`). A cell is at most 193: the u16 holds it and the demux's `min(u16::MAX)` leaves it alone.
+/// reads (`coarse_lib::search`). A cell is at most 193, so a byte: the demux writes it as one (no `u16` band in between).
 #[cfg(feature = "fixed-point")]
-pub(super) fn compute_half_db_bins_src<A: PcmSource>(
+pub(super) fn compute_half_db_bytes_src<A: PcmSource>(
     src: &mut A,
     rate: Ft8Rate,
     lo: usize,
     hi: usize,
     shift: Gain,
-) -> Spectrogram {
-    spectrogram_cells(src, rate, lo, hi, shift, HalfDb)
+) -> ByteCells {
+    let (n_freq, n_time, data) =
+        spectrogram_cells::<A, HalfDb, u8>(src, rate, lo, hi, shift, HalfDb);
+    ByteCells {
+        n_freq,
+        n_time,
+        data,
+    }
+}
+
+/// What the demux writes a cell as: a `u16` (the shipped spectrogram: `min(u16::MAX)`) or a byte (the half-dB cells, at most 193).
+#[cfg(feature = "fixed-point")]
+pub(super) trait CellOut: Copy {
+    const ZERO: Self;
+    fn pack(v: u32) -> Self;
+}
+
+#[cfg(feature = "fixed-point")]
+impl CellOut for u16 {
+    const ZERO: Self = 0;
+    #[inline(always)]
+    fn pack(v: u32) -> Self {
+        v.min(u16::MAX as u32) as u16
+    }
+}
+
+#[cfg(feature = "fixed-point")]
+impl CellOut for u8 {
+    const ZERO: Self = 0;
+    #[inline(always)]
+    fn pack(v: u32) -> Self {
+        v.min(u8::MAX as u32) as u8
+    }
+}
+
+/// The half-dB cells of a band of carriers, as bytes (`n_time` rows of `n_freq` bins, row-major): what [`compute_half_db_bytes_src`] makes and
+/// `coarse_lib` scores. The same demux as the shipped `u16` spectrogram's, the cell written as a byte.
+#[cfg(feature = "fixed-point")]
+pub(super) struct ByteCells {
+    pub(super) n_freq: usize,
+    pub(super) n_time: usize,
+    pub(super) data: Vec<u8>,
 }
 
 /// The demux behind both: `conv` is [`LinearShift`] (`p >> FP_SPEC_SHIFT`, the shipped cell, bit for bit) or [`HalfDb`].
 #[cfg(feature = "fixed-point")]
-fn spectrogram_cells<A: PcmSource, C: Copy>(
+fn spectrogram_cells<A: PcmSource, C: Copy, T: CellOut>(
     src: &mut A,
     rate: Ft8Rate,
     lo: usize,
     hi: usize,
     shift: Gain,
     conv: C,
-) -> Spectrogram
+) -> (usize, usize, Vec<T>)
 where
     u32: core::ops::Shr<C, Output = u32>,
 {
@@ -559,7 +605,7 @@ where
     let mut planner = default_planner_16();
     let fft = planner.plan_forward(nfft);
 
-    let mut data: Vec<u16> = vec![0u16; n_freq * n_time];
+    let mut data: Vec<T> = vec![T::ZERO; n_freq * n_time];
     let mut buf: Vec<Complex<i16>> = vec![Complex::new(0i16, 0i16); nfft];
 
     // **Two-for-one real-FFT trick**. Each frame's audio is real; we
@@ -644,8 +690,8 @@ where
         if lo == 0 && hi > 0 {
             let r0 = buf[0].re as i32;
             let i0 = buf[0].im as i32;
-            data[row_a] = ((r0 * r0) as u32 >> conv).min(u16::MAX as u32) as u16;
-            data[row_b] = ((i0 * i0) as u32 >> conv).min(u16::MAX as u32) as u16;
+            data[row_a] = T::pack((r0 * r0) as u32 >> conv);
+            data[row_b] = T::pack((i0 * i0) as u32 >> conv);
         }
 
         let mut k = lo.max(1);
@@ -692,22 +738,14 @@ where
                 (yn3.re as i32 - yk3.re as i32) >> 1,
             );
 
-            data[row_a + (k - lo)] =
-                (((a0r * a0r) as u32 + (a0i * a0i) as u32) >> conv).min(u16::MAX as u32) as u16;
-            data[row_b + (k - lo)] =
-                (((b0r * b0r) as u32 + (b0i * b0i) as u32) >> conv).min(u16::MAX as u32) as u16;
-            data[row_a + (k - lo) + 1] =
-                (((a1r * a1r) as u32 + (a1i * a1i) as u32) >> conv).min(u16::MAX as u32) as u16;
-            data[row_b + (k - lo) + 1] =
-                (((b1r * b1r) as u32 + (b1i * b1i) as u32) >> conv).min(u16::MAX as u32) as u16;
-            data[row_a + (k - lo) + 2] =
-                (((a2r * a2r) as u32 + (a2i * a2i) as u32) >> conv).min(u16::MAX as u32) as u16;
-            data[row_b + (k - lo) + 2] =
-                (((b2r * b2r) as u32 + (b2i * b2i) as u32) >> conv).min(u16::MAX as u32) as u16;
-            data[row_a + (k - lo) + 3] =
-                (((a3r * a3r) as u32 + (a3i * a3i) as u32) >> conv).min(u16::MAX as u32) as u16;
-            data[row_b + (k - lo) + 3] =
-                (((b3r * b3r) as u32 + (b3i * b3i) as u32) >> conv).min(u16::MAX as u32) as u16;
+            data[row_a + (k - lo)] = T::pack(((a0r * a0r) as u32 + (a0i * a0i) as u32) >> conv);
+            data[row_b + (k - lo)] = T::pack(((b0r * b0r) as u32 + (b0i * b0i) as u32) >> conv);
+            data[row_a + (k - lo) + 1] = T::pack(((a1r * a1r) as u32 + (a1i * a1i) as u32) >> conv);
+            data[row_b + (k - lo) + 1] = T::pack(((b1r * b1r) as u32 + (b1i * b1i) as u32) >> conv);
+            data[row_a + (k - lo) + 2] = T::pack(((a2r * a2r) as u32 + (a2i * a2i) as u32) >> conv);
+            data[row_b + (k - lo) + 2] = T::pack(((b2r * b2r) as u32 + (b2i * b2i) as u32) >> conv);
+            data[row_a + (k - lo) + 3] = T::pack(((a3r * a3r) as u32 + (a3i * a3i) as u32) >> conv);
+            data[row_b + (k - lo) + 3] = T::pack(((b3r * b3r) as u32 + (b3i * b3i) as u32) >> conv);
 
             k += 4;
         }
@@ -722,10 +760,8 @@ where
                 (yk.im as i32 + yn.im as i32) >> 1,
                 (yn.re as i32 - yk.re as i32) >> 1,
             );
-            data[row_a + (k - lo)] =
-                (((ar * ar) as u32 + (ai * ai) as u32) >> conv).min(u16::MAX as u32) as u16;
-            data[row_b + (k - lo)] =
-                (((br * br) as u32 + (bi * bi) as u32) >> conv).min(u16::MAX as u32) as u16;
+            data[row_a + (k - lo)] = T::pack(((ar * ar) as u32 + (ai * ai) as u32) >> conv);
+            data[row_b + (k - lo)] = T::pack(((br * br) as u32 + (bi * bi) as u32) >> conv);
             k += 1;
         }
     }
@@ -741,16 +777,11 @@ where
         for i in lo..hi {
             let re = buf[i].re as i32;
             let im = buf[i].im as i32;
-            let mag2 = (((re * re) as u32 + (im * im) as u32) >> conv).min(u16::MAX as u32);
-            data[row_base + (i - lo)] = mag2 as u16;
+            data[row_base + (i - lo)] = T::pack(((re * re) as u32 + (im * im) as u32) >> conv);
         }
     }
 
-    Spectrogram {
-        n_freq,
-        n_time,
-        data,
-    }
+    (n_freq, n_time, data)
 }
 
 #[cfg(all(test, not(feature = "fixed-point")))]
@@ -908,15 +939,16 @@ mod tests_fixed {
         let mut src = SliceSource(&slot);
         let gain = spectrogram_gain(&mut src);
         let lin = compute_spectrogram_bins_src(&mut src, Ft8Rate::Hz8000, 0, nf, gain);
-        let db = compute_half_db_bins_src(&mut src, Ft8Rate::Hz8000, 0, nf, gain);
+        let db = compute_half_db_bytes_src(&mut src, Ft8Rate::Hz8000, 0, nf, gain);
         let bin = (1000.0f32 / 3.125) as usize;
         let at = |s: &Spectrogram| s.data[(s.n_time / 2) * s.n_freq + bin] as f64;
+        let at_db = |s: &ByteCells| s.data[(s.n_time / 2) * s.n_freq + bin] as f64;
         // the linear cell is the power / 4096 (floored, at most 65535): its dB plus 20 log10 4096 is the dB cell, to a cell
         let want = 20.0 * (at(&lin) * 4096.0).log10();
         assert!(
-            (at(&db) - want).abs() <= 8.0,
+            (at_db(&db) - want).abs() <= 8.0,
             "dB cell {} against {want} from the linear cell {}",
-            at(&db),
+            at_db(&db),
             at(&lin)
         );
         // the floor the linear cell loses: powers below 2^12 are all 0 after its `>> 12` and are told apart here (3 dB: 6 units)

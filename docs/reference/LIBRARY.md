@@ -2982,6 +2982,23 @@ and differ only in which inner steps they enable:
   from a `PcmSource` or from a spectrogram you already hold (the boards' streaming one: `GatedSearch::fill(SpecFill)`
   says how many rows are measured). One `GatedSearch::new(freq_min, freq_max, sync_min, keep)` serves both; `.lag_s()`
   and `.fill()` are the options (`bands` is how many bands the spectrogram is built in, one read each), and the doc of each function says which it reads.
+* `coarse_sync_gated_cells(src, Ft8Rate, &GatedSearch, bands)` / `decode_block_cells(audio, Ft8Rate, &GatedSearch, max_cand, depth)` / `HalfDbCells`
+  (`fixed-point`, `Hz8000` only: `None` at any other rate) — the S3's flow with the symbol spectra **read from the half-dB cells** the search scored, not computed per
+  candidate: the search is `ft8_lib`'s statistic (the same candidates `coarse_sync_gated` returns here) and keeps its cells, `HalfDbCells` (a byte each, 0.5 dB of
+  the power, 172 KB at 200-3000 Hz), made in one band by the byte demux; `decode_block_cells` decodes the first `max_cand` of them at their grid place (3.125 Hz, 80 ms: no fine
+  sync) and gives a candidate that did not decode a second try at the place the Costas tones point to, if that is a quarter of a cell or more off. **Not
+  `decode_block`'s decodes** (a deliberate divergence from WSJT-X; the retry is `ft8dec`'s). Measured on 60 slots (38 `20m_busy` + the 22 recordings) against the union of
+  `jt9`'s and `ft8dec`'s lists (1 409): 765 / 1 035 found at 15 / 30 candidates against the `fine_sync_at` flow's 769 / 1 036, **165 / 382 M instructions against 295 / 549 M**
+  (host), peak heap 258 KB against 422 KB; on `jt9`'s list alone 754 / 1 001 against 761 / 1 009. `snr_db` is computed from cell amplitudes and is **not validated**
+  (about 1.3 dB below the `fine_sync_at` flow's); noise-only slots (tier C) have not been run. `DecodeResult::sync_score` is the search's integer score (0.5 dB units).
+* `decode_block_cells_sic(audio, Ft8Rate, &GatedSearch, max_cand, depth, passes)` (`fixed-point`, `Hz8000` only: `None` otherwise) — `decode_block_cells` with
+  **`ft8dec`'s subtraction passes**: after pass 0 every decoded signal is subtracted from the audio as it is read (no copy of the slot, no FFT: the GFSK reference
+  correlated symbol by symbol, its amplitude interpolated between symbol centres, 1.5 symbols behind), the cells of the residual are made, and only the carriers
+  within +-18 cells (56 Hz) of the signals the previous pass added are searched and decoded, up to `passes` in all. `passes` 1 decodes the same messages as `decode_block_cells`, at refined places (396 against 382 M). Decodes
+  report a refined place (the parabola on the energy of the 79 tones). **A deliberate divergence from WSJT-X** (the subtraction and the passes are `ft8dec`'s;
+  the staircase is the library's). Measured on 60 slots, 30 candidates: `jt9` hits 1 001 / 1 192 / 1 206 at 1 / 2 / 3 passes (`ft8dec`: 990 / 1 189 / 1 204),
+  host instructions 396 / 881 / 1 443 M (`ft8dec`: 335 / 850 / 1 278 M); a pass after the first decodes at most `max_cand / 2` candidates (8 at least: a divergence from `ft8dec`, which decodes 300 a pass) with `ft8dec`'s hard-sync minimum of 7. `snr_db` not validated; noise-only slots not run; two of the nine new decodes in neither of the
+  reference lists read like noise (a subtraction ghost is the risk of any SIC).
 * `osd_available()` — whether this build has FT8's OSD fallback. `DecodeDepth::osd` and `Tuning::osd` do something
   only if so (`fft-rustfft`, or the `osd` feature without it); otherwise they are ignored without an error, and an
   application that must have OSD asserts it at compile time.

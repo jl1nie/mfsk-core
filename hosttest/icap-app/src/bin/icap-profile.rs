@@ -7,6 +7,11 @@ use std::collections::BTreeMap;
 use icap_app_hosttest::{fft_shim, heap, profile, resample::resample, wav};
 use mfsk_core::ft8::decode_block::Ft8Rate;
 
+// `cells` is read by the fixed-point `--s3` branches only
+#[cfg_attr(
+    not(feature = "fixed-point"),
+    allow(unused_variables, unused_assignments)
+)]
 fn main() {
     let (mut rate, mut max_cand, mut bands, mut diag, mut sic) =
         (8_000u32, 15usize, None::<usize>, false, 0usize);
@@ -14,6 +19,10 @@ fn main() {
     let mut native = false;
     // `--s3`: the S3's own flow (V9) at the rate (`--native`: 8 kHz as it is), fixed-point build
     let mut s3 = false;
+    // `--cells` (with `--s3`): the cells flow (`decode_block_cells`)
+    let mut cells = false;
+    // `--passes N` (with `--cells`): `ft8dec`'s subtraction passes (`decode_block_cells_sic`), N passes in all
+    let mut sic_passes = 1usize;
     // `--reps N`: decode each `--wav` slot N times (the load and the resample once): the difference of two N is the decode's
     // instructions alone
     let mut reps = 1usize;
@@ -39,6 +48,15 @@ fn main() {
                 i += 2;
             }
             "--s3" => {
+                s3 = true;
+                i += 1;
+            }
+            "--passes" => {
+                sic_passes = a[i + 1].parse().expect("--passes N");
+                i += 2;
+            }
+            "--cells" => {
+                cells = true;
                 s3 = true;
                 i += 1;
             }
@@ -100,7 +118,7 @@ fn main() {
                 i += 2;
             }
             x => panic!(
-                "unknown argument {x} (usage: icap-profile [--rate 8000|12000] [--max-cand N] [--low-mem BANDS] [--native] [--s3] [--reps N] [--stream GROUP] [--sic PASSES] [--dump FILE] [--wav FILE]... [--diag])"
+                "unknown argument {x} (usage: icap-profile [--rate 8000|12000] [--max-cand N] [--low-mem BANDS] [--native] [--s3 [--cells [--passes N]]] [--reps N] [--stream GROUP] [--sic PASSES] [--dump FILE] [--wav FILE]... [--diag])"
             ),
         }
     }
@@ -124,7 +142,16 @@ fn main() {
             if s3 {
                 let mut r = None;
                 for _ in 0..reps {
-                    r = Some(profile::run_slot_s3(
+                    let f = |s: &[i16], r: Ft8Rate, m: usize| {
+                        if cells && sic_passes > 1 {
+                            profile::run_slot_s3_sic(s, r, m, sic_passes)
+                        } else if cells {
+                            profile::run_slot_s3_cells(s, r, m)
+                        } else {
+                            profile::run_slot_s3(s, r, m)
+                        }
+                    };
+                    r = Some(f(
                         &slot,
                         if native {
                             Ft8Rate::Hz8000
@@ -281,15 +308,18 @@ fn main() {
         let r = if s3 {
             #[cfg(feature = "fixed-point")]
             {
-                profile::run_slot_s3(
-                    &slot,
-                    if native {
-                        Ft8Rate::Hz8000
-                    } else {
-                        Ft8Rate::Hz12000
-                    },
-                    max_cand,
-                )
+                let rate_s3 = if native {
+                    Ft8Rate::Hz8000
+                } else {
+                    Ft8Rate::Hz12000
+                };
+                if cells && sic_passes > 1 {
+                    profile::run_slot_s3_sic(&slot, rate_s3, max_cand, sic_passes)
+                } else if cells {
+                    profile::run_slot_s3_cells(&slot, rate_s3, max_cand)
+                } else {
+                    profile::run_slot_s3(&slot, rate_s3, max_cand)
+                }
             }
             #[cfg(not(feature = "fixed-point"))]
             {

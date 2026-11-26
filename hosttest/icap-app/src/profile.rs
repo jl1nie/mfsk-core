@@ -137,6 +137,21 @@ pub fn run_slot_at(
 /// `ATTESTED` list is the full one for the wide-band decoder, these are the ones the embedded path has made).
 pub const ATTESTED_EXTRAS: &[(&str, &str, &str)] = &[
     (
+        "websdr_test7",
+        "EA8PP JH0INP PM96",
+        "`jt9` lists the exact text at 940 Hz, DT -0.6 in `websdr_test5` (the same signal on another capture), and tier B attests it for this file (`ft8_real_recordings_vs_jt9.rs`); `band_baseband.rs` still carries it as by-identity debt for its flow",
+    ),
+    (
+        "191111_110145",
+        "CQ DX Z33Z KN11",
+        "`ft8dec` lists it for the file (2057.6 Hz, 1 and 3 passes), and `jt9` lists the same CQ in the next slot, `191111_110215`, at 2059 Hz",
+    ),
+    (
+        "websdr_test9",
+        "KC8MUE V51MA RRR",
+        "`jt9` lists the same message at 1219 Hz in `websdr_test11` (this one decoded at 1218.8 Hz), and the message's tones read 27 of 79 wrong at the decoded place where a wrong message at the same places reads 45 or more",
+    ),
+    (
         "websdr_test13",
         "EA8BEV LU3DW RR73",
         "in ft8_lib's own list for the file (309 Hz, -4 dB), and a QSO's closing message heard in the neighbouring files",
@@ -644,6 +659,75 @@ pub fn run_slot_s3(slot: &[i16], rate: Ft8Rate, max_cand: usize) -> Run {
             fill_symbol_spectra_goertzel_at(cs, slot, rate, cand.freq_hz, cand.dt_sec, mask)
         },
     );
+    let ms = t.elapsed().as_secs_f64() * 1e3;
+    let peak_heap = heap::peak().saturating_sub(base);
+    let decodes = out
+        .iter()
+        .filter_map(|d| unpack77(d.message77()).map(|m| (norm(&m), d.freq_hz)))
+        .collect();
+    Run {
+        decodes,
+        ms,
+        peak_heap,
+        big: Vec::new(),
+    }
+}
+
+/// [`run_slot_s3_cells`] with `ft8dec`'s subtraction passes (`decode_block_cells_sic`): up to `passes` passes in all, each subtracting what was decoded
+/// as the audio is read and searching only next to the new signals. Fixed-point build, `Hz8000` only.
+#[cfg(feature = "fixed-point")]
+pub fn run_slot_s3_sic(slot: &[i16], rate: Ft8Rate, max_cand: usize, passes: usize) -> Run {
+    use mfsk_core::ft8::decode_block::decode_block_cells_sic;
+    let base = heap::reset_peak();
+    let t = Instant::now();
+    let osd_on = DecodeDepth {
+        osd: true,
+        ..DecodeDepth::EMBEDDED
+    };
+    let keep = GATE_KEEP.max(max_cand);
+    let out = decode_block_cells_sic(
+        slot,
+        rate,
+        &GatedSearch::new(200.0, 3000.0, SYNC_MIN, keep),
+        max_cand,
+        osd_on,
+        passes,
+    )
+    .expect("the cells flow runs at 8 kHz in the fixed-point build");
+    let ms = t.elapsed().as_secs_f64() * 1e3;
+    let peak_heap = heap::peak().saturating_sub(base);
+    let decodes = out
+        .iter()
+        .filter_map(|d| unpack77(d.message77()).map(|m| (norm(&m), d.freq_hz)))
+        .collect();
+    Run {
+        decodes,
+        ms,
+        peak_heap,
+        big: Vec::new(),
+    }
+}
+
+/// The S3's flow with the symbol spectra read from the half-dB cells (`decode_block_cells`): the same candidates, no fine sync, no per-candidate DFT,
+/// the second try at the place the Costas tones point to. Fixed-point build, `Hz8000` only.
+#[cfg(feature = "fixed-point")]
+pub fn run_slot_s3_cells(slot: &[i16], rate: Ft8Rate, max_cand: usize) -> Run {
+    use mfsk_core::ft8::decode_block::decode_block_cells;
+    let base = heap::reset_peak();
+    let t = Instant::now();
+    let osd_on = DecodeDepth {
+        osd: true,
+        ..DecodeDepth::EMBEDDED
+    };
+    let keep = GATE_KEEP.max(max_cand);
+    let out = decode_block_cells(
+        slot,
+        rate,
+        &GatedSearch::new(200.0, 3000.0, SYNC_MIN, keep),
+        max_cand,
+        osd_on,
+    )
+    .expect("the cells flow runs at 8 kHz in the fixed-point build");
     let ms = t.elapsed().as_secs_f64() * 1e3;
     let peak_heap = heap::peak().saturating_sub(base);
     let decodes = out

@@ -61,7 +61,17 @@
 pub(crate) mod band_bb;
 mod cd0_fir;
 #[cfg(feature = "fixed-point")]
+mod cells_flow;
+#[cfg(feature = "fixed-point")]
 mod coarse_lib;
+#[cfg(feature = "fixed-point")]
+mod ft8dec_sic;
+#[cfg(feature = "fixed-point")]
+pub use cells_flow::decode_block_cells;
+#[cfg(feature = "fixed-point")]
+pub use coarse_lib::{HalfDbCells, coarse_sync_gated_cells};
+#[cfg(feature = "fixed-point")]
+pub use ft8dec_sic::decode_block_cells_sic;
 mod coarse_sync;
 mod fill_symbol_spectra;
 mod fine_sync_12k;

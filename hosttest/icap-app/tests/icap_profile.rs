@@ -219,6 +219,105 @@ fn the_s3_flow_at_native_8khz_meets_its_floor() {
     }
 }
 
+/// The cells flow (`profile::run_slot_s3_cells` = `decode_block_cells`: the symbol spectra read from the half-dB cells of the search, no
+/// per-candidate DFT, no fine sync, the second try at the place the Costas tones point to) on the same 22 recordings at 8 kHz as they are.
+/// Measured 2026-11-26 against `jt9`'s 402: **15 candidates 226, 30 candidates 286** (the S3 flow: 230 and 289), extras 3 and 5 (`Z33Z`, `KC8MUE` attested
+/// in `profile::ATTESTED_EXTRAS`, `EY8MM YB1BZV OI33` pinned debt). The floors are the measured figures; every extra must be attested or pinned debt (`S3_DEBT`).
+/// The 22 recordings are the weaker yardstick here: on the 60 slots of the design note, against the union of `jt9`'s and `ft8dec`'s lists, the cells flow finds
+/// 765 / 1 035 at 15 / 30 candidates against the S3 flow's 769 / 1 036.
+#[cfg(feature = "fixed-point")]
+#[test]
+fn the_cells_flow_at_native_8khz_meets_its_floor() {
+    for (max_cand, floor) in [(15usize, CELLS_FLOOR_15), (30, CELLS_FLOOR_30)] {
+        let mut runs = BTreeMap::new();
+        for stem in profile::stems() {
+            let slot12 = wav::load_i16(profile::asset_path(&stem));
+            let slot = resample(&slot12, 12_000, 8_000);
+            runs.insert(
+                stem,
+                profile::run_slot_s3_cells(&slot, Ft8Rate::Hz8000, max_cand).decodes,
+            );
+        }
+        assert_embedded_path();
+        let s = profile::score(&runs);
+        println!(
+            "cells flow, 8 kHz, {max_cand} candidates: recall {}/{} extras {} unexplained {:?}",
+            s.hits, s.reference, s.extras, s.unexplained_list
+        );
+        assert!(
+            s.hits >= floor,
+            "{max_cand} candidates: recall {} < floor {floor}",
+            s.hits
+        );
+        assert!(
+            s.extras <= CELLS_MAX_EXTRAS,
+            "{max_cand} candidates: {} outputs jt9 lacks, ceiling {CELLS_MAX_EXTRAS}",
+            s.extras
+        );
+        for u in &s.unexplained_list {
+            assert!(
+                S3_DEBT.contains(&(u.0.as_str(), u.1.as_str())),
+                "{max_cand} candidates: a decode jt9 lacks that is not attested and not pinned debt: {u:?}"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "fixed-point")]
+const CELLS_FLOOR_15: usize = 226;
+#[cfg(feature = "fixed-point")]
+const CELLS_FLOOR_30: usize = 286;
+#[cfg(feature = "fixed-point")]
+const CELLS_MAX_EXTRAS: usize = 5;
+
+/// The cells flow with `ft8dec`'s subtraction passes (`profile::run_slot_s3_sic`, 2 passes: `decode_block_cells_sic`) on the same 22 recordings at 8 kHz. The floors
+/// are the measured figures (2026-11-26, `jt9`'s 402: **275 at 15 candidates, 332 at 30**, against the cells flow's 226 and 286; extras 4 and 9); every extra must be
+/// attested (`profile::ATTESTED_EXTRAS`) or pinned debt (`S3_DEBT`, by identity; `EA8PP JH0INP PM96`, which the passes make, is attested).
+#[cfg(feature = "fixed-point")]
+#[test]
+fn the_sic_flow_at_native_8khz_meets_its_floor() {
+    for (max_cand, floor) in [(15usize, SIC_FLOOR_15), (30, SIC_FLOOR_30)] {
+        let mut runs = BTreeMap::new();
+        for stem in profile::stems() {
+            let slot12 = wav::load_i16(profile::asset_path(&stem));
+            let slot = resample(&slot12, 12_000, 8_000);
+            runs.insert(
+                stem,
+                profile::run_slot_s3_sic(&slot, Ft8Rate::Hz8000, max_cand, 2).decodes,
+            );
+        }
+        assert_embedded_path();
+        let s = profile::score(&runs);
+        println!(
+            "sic flow, 8 kHz, {max_cand} candidates, 2 passes: recall {}/{} extras {} unexplained {:?}",
+            s.hits, s.reference, s.extras, s.unexplained_list
+        );
+        assert!(
+            s.hits >= floor,
+            "{max_cand} candidates: recall {} < floor {floor}",
+            s.hits
+        );
+        assert!(
+            s.extras <= SIC_MAX_EXTRAS,
+            "{max_cand} candidates: {} outputs jt9 lacks, ceiling {SIC_MAX_EXTRAS}",
+            s.extras
+        );
+        for u in &s.unexplained_list {
+            assert!(
+                S3_DEBT.contains(&(u.0.as_str(), u.1.as_str())),
+                "{max_cand} candidates: a decode jt9 lacks that is not attested and not pinned debt: {u:?}"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "fixed-point")]
+const SIC_FLOOR_15: usize = 275;
+#[cfg(feature = "fixed-point")]
+const SIC_FLOOR_30: usize = 332;
+#[cfg(feature = "fixed-point")]
+const SIC_MAX_EXTRAS: usize = 9;
+
 /// Decodes `jt9` lacks and nothing attests, **by identity** (debt, not a count): `websdr_test3`'s `EY8MM YB1BZV OI33`, which
 /// `band_baseband.rs` already counts as a chance match until shown otherwise (`jt9` hears the station in `websdr_test1` with another
 /// partner, `EY8MM YB1BML 73`; no decoder lists this message in `websdr_test3`). The S3 flow with the `ft8_lib` search decodes it

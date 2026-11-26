@@ -39,7 +39,7 @@ use num_traits::Float;
 use super::super::params::{COSTAS, NTONES};
 use super::coarse_sync::HARD_SYNC_POOL;
 use super::spectrogram::{
-    Spectrogram, compute_half_db_bins_src, spectrogram_gain, spectrogram_n_freq,
+    ByteCells, Gain, compute_half_db_bytes_src, spectrogram_gain, spectrogram_n_freq,
 };
 use super::types::{Ft8Rate, SAMPLE_RATE_HZ};
 use crate::engine::source::PcmSource;
@@ -57,6 +57,77 @@ const MIN_SCORE: i32 = 8;
 const RAW_FACTOR: usize = 12;
 /// Bins a carrier reads above itself: its seventh tone is 14 bins up, so the band's spectrogram runs to `k + 15` exclusive.
 const MAX_TONE_OFF: usize = 2 * (NTONES - 1) + 1;
+
+/// The whole slot's half-dB cells (`spectrogram::half_db`: 0.5 dB units of the 32-bit power, at most 193, so a byte), `n_time` rows of
+/// `n_freq` bins of 3.125 Hz from bin `first_bin`, row-major. What `ft8_lib` and `ft8dec` decode from: the search scores them and the
+/// symbol spectra of a candidate are read from them, with no DFT per candidate (`FT8_WINDOW_AND_COARSE_DESIGN.md`, 14-20).
+///
+/// Made by [`coarse_sync_gated_cells`] as bytes by the demux (no `u16` cell in between): at one band the band **is** the store, 172 KB of cells at the
+/// full 200-3000 Hz band, 184 rows; with several bands each band's bytes are copied into it, and the overlap between two bands (the 14 bins a
+/// carrier's top tone reads above it) is written twice with the same values.
+#[derive(Clone, Debug)]
+pub struct HalfDbCells {
+    n_freq: usize,
+    n_time: usize,
+    first_bin: usize,
+    rate: Ft8Rate,
+    data: Vec<u8>,
+}
+
+impl HalfDbCells {
+    /// Cells made by hand (the tests of `cells_flow` build the cells they read).
+    #[cfg(test)]
+    pub(super) fn from_parts(
+        n_freq: usize,
+        n_time: usize,
+        first_bin: usize,
+        rate: Ft8Rate,
+        data: Vec<u8>,
+    ) -> Self {
+        assert_eq!(data.len(), n_freq * n_time);
+        Self {
+            n_freq,
+            n_time,
+            first_bin,
+            rate,
+            data,
+        }
+    }
+
+    /// Bins per row.
+    pub fn n_freq(&self) -> usize {
+        self.n_freq
+    }
+
+    /// Rows: the symbol that starts at row `j` starts at `j x nstep` samples (`0.08 s` at 8 kHz).
+    pub fn n_time(&self) -> usize {
+        self.n_time
+    }
+
+    /// The spectrogram bin (3.125 Hz) of column 0.
+    pub fn first_bin(&self) -> usize {
+        self.first_bin
+    }
+
+    /// The rate the cells were made at.
+    pub fn rate(&self) -> Ft8Rate {
+        self.rate
+    }
+
+    /// The cell of row `row` at the **spectrogram bin** `bin` (the frequency is `bin x 3.125 Hz`), `None` outside the store.
+    pub fn cell(&self, row: usize, bin: usize) -> Option<u8> {
+        let col = bin.checked_sub(self.first_bin)?;
+        if row >= self.n_time || col >= self.n_freq {
+            return None;
+        }
+        Some(self.data[row * self.n_freq + col])
+    }
+
+    /// Bytes the cells take.
+    pub fn size_bytes(&self) -> usize {
+        self.data.len()
+    }
+}
 
 /// The order candidates are returned in. `Score`: `ft8_lib`'s (best first). `PoolThenHardSync`: the best `HARD_SYNC_POOL`
 /// by score, then by their hard-sync count (the gated search's, `coarse_sync_gated`): see `ORDER`.
@@ -96,7 +167,7 @@ fn better(a: &Pos, b: &Pos) -> core::cmp::Ordering {
 /// Costas tone's dB minus the adjacent tones' and the adjacent symbols' (the previous and the next row of the same
 /// tone), integer, divided once by the number of terms (`ft8_lib`'s `num`; a symbol off the slot adds none).
 #[inline]
-fn score(cells: &Spectrogram, rel_k: usize, j0: i32) -> i32 {
+fn score(cells: &ByteCells, rel_k: usize, j0: i32) -> i32 {
     let (nf, rows) = (cells.n_freq, cells.n_time);
     let d = &cells.data;
     let (mut sum, mut num) = (0i32, 0i32);
@@ -135,7 +206,7 @@ fn score(cells: &Spectrogram, rel_k: usize, j0: i32) -> i32 {
 
 /// The number of Costas symbols (of 21) whose strongest of the eight tone cells is the Costas tone, on the rows the slot has:
 /// `spec_hard_sync`'s count on these cells.
-fn hard_sync(cells: &Spectrogram, rel_k: usize, j0: i32) -> u8 {
+fn hard_sync(cells: &ByteCells, rel_k: usize, j0: i32) -> u8 {
     let (nf, rows) = (cells.n_freq, cells.n_time);
     let mut ok = 0u8;
     for m in 0..3 {
@@ -163,11 +234,12 @@ fn hard_sync(cells: &Spectrogram, rel_k: usize, j0: i32) -> u8 {
 /// return the best `keep_raw` of them by [`better`] (ties at the cut are all kept: the cut is by score, then trimmed by the
 /// total order), each with its hard-sync count.
 fn band_best(
-    cells: &Spectrogram,
+    cells: &ByteCells,
     lo: usize,
     k_first: usize,
     k_last: usize,
     keep_raw: usize,
+    allowed: Option<&dyn Fn(usize) -> bool>,
 ) -> Vec<Pos> {
     let n_car = k_last - k_first + 1;
     // scores above 127 are clamped to 127 (a tie of very strong signals is broken by carrier and row, not by the peak: none is that
@@ -176,6 +248,10 @@ fn band_best(
     // the scores 0..=127 only matter above MIN_SCORE: a histogram finds the cut without sorting every position above the minimum (hundreds a slot)
     let mut hist = [0u32; 128];
     for ci in 0..n_car {
+        // a carrier that is not allowed is not scored (`ft8dec.c` 833-841: after a subtraction only the bins next to a new signal)
+        if allowed.is_some_and(|f| !f(k_first + ci)) {
+            continue;
+        }
         let rel_k = k_first + ci - lo;
         for jj in 0..NJ {
             let s = score(cells, rel_k, J0_MIN + jj as i32);
@@ -254,28 +330,76 @@ pub(super) fn search<A: PcmSource>(
     bands: usize,
     order: Order,
 ) -> Vec<(SyncCandidate, u8)> {
+    search_impl(
+        src, rate, freq_min, freq_max, keep, bands, order, false, None, None,
+    )
+    .0
+}
+
+/// [`search`] with the whole slot's cells kept (`keep_cells`): the same candidates, the cells the search scored in a [`HalfDbCells`].
+#[allow(clippy::too_many_arguments)]
+fn search_impl<A: PcmSource>(
+    src: &mut A,
+    rate: Ft8Rate,
+    freq_min: f32,
+    freq_max: f32,
+    keep: usize,
+    bands: usize,
+    order: Order,
+    keep_cells: bool,
+    allowed: Option<&dyn Fn(usize) -> bool>,
+    gain: Option<Gain>,
+) -> (Vec<(SyncCandidate, u8)>, Option<HalfDbCells>) {
     let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
     let tstep = rate.nstep() as f32 / rate.hz() as f32;
     let spec_n_freq = spectrogram_n_freq(freq_max, rate);
     let ia = (freq_min / df).round() as usize;
     let ib = ((freq_max / df).round() as usize).min(spec_n_freq.saturating_sub(MAX_TONE_OFF));
     if ib < ia || keep == 0 {
-        return Vec::new();
+        return (Vec::new(), None);
     }
     let pool = match order {
         Order::Score => keep,
         Order::PoolThenHardSync => POOL.max(keep),
     };
     let keep_raw = RAW_FACTOR * pool;
-    let gain = spectrogram_gain(src);
+    // the slot's gain: read from the source unless the caller has it (a residual is not read twice, and its peak is the audio's)
+    let gain = gain.unwrap_or_else(|| spectrogram_gain(src));
     let n_car = ib - ia + 1;
     let bands = bands.clamp(1, n_car);
     let mut all: Vec<Pos> = Vec::new();
+    let mut store: Option<HalfDbCells> = None;
     for b in 0..bands {
         let a = ia + b * n_car / bands;
         let z = ia + (b + 1) * n_car / bands - 1;
-        let cells = compute_half_db_bins_src(src, rate, a, z + MAX_TONE_OFF, gain);
-        all.extend(band_best(&cells, a, a, z, keep_raw));
+        let cells = compute_half_db_bytes_src(src, rate, a, z + MAX_TONE_OFF, gain);
+        all.extend(band_best(&cells, a, a, z, keep_raw, allowed));
+        if keep_cells {
+            let total = ib + MAX_TONE_OFF - ia;
+            if bands == 1 {
+                // the band is the whole store: no copy
+                store = Some(HalfDbCells {
+                    n_freq: cells.n_freq,
+                    n_time: cells.n_time,
+                    first_bin: ia,
+                    rate,
+                    data: cells.data,
+                });
+            } else {
+                let store = store.get_or_insert_with(|| HalfDbCells {
+                    n_freq: total,
+                    n_time: cells.n_time,
+                    first_bin: ia,
+                    rate,
+                    data: alloc::vec![0u8; total * cells.n_time],
+                });
+                for r in 0..cells.n_time {
+                    let (from, to) = (r * cells.n_freq, r * total + (a - ia));
+                    store.data[to..to + cells.n_freq]
+                        .copy_from_slice(&cells.data[from..from + cells.n_freq]);
+                }
+            }
+        }
     }
     let all = merge(all, keep_raw);
     let mut kept = suppress(&all, pool);
@@ -284,7 +408,8 @@ pub(super) fn search<A: PcmSource>(
         kept.sort_by_key(|p| core::cmp::Reverse(p.hs));
     }
     kept.truncate(keep);
-    kept.into_iter()
+    let found = kept
+        .into_iter()
         .map(|p| {
             (
                 SyncCandidate {
@@ -295,7 +420,86 @@ pub(super) fn search<A: PcmSource>(
                 p.hs,
             )
         })
-        .collect()
+        .collect();
+    (found, store)
+}
+
+/// [`coarse_sync_gated`](super::coarse_sync_gated)'s candidates at `Hz8000` in the `fixed-point` build (`Ft8Rate::coarse_ft8lib`: the
+/// same list, the same order) **and the cells the search scored**, as a [`HalfDbCells`]: what a flow that reads the symbols from the cells
+/// instead of a per-candidate DFT needs. `None` at any other rate. The audio is read forward `bands` times (the cells are made a band of
+/// carriers at a time) plus once for the slot's peak; the candidates do not depend on `bands`, and neither do the cells.
+pub fn coarse_sync_gated_cells<A: PcmSource>(
+    src: &mut A,
+    rate: Ft8Rate,
+    search: &super::coarse_sync::GatedSearch,
+    bands: usize,
+) -> Option<(Vec<(SyncCandidate, u8)>, HalfDbCells)> {
+    if !rate.coarse_ft8lib() {
+        return None;
+    }
+    let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::CoarseSync);
+    let (found, store) = search_impl(
+        src,
+        rate,
+        search.freq_min,
+        search.freq_max,
+        search.keep,
+        bands,
+        ORDER,
+        true,
+        None,
+        None,
+    );
+    // no cells were made (an empty band, `freq_max` under `freq_min`, or `keep` of 0): an empty store
+    let store = store.unwrap_or(HalfDbCells {
+        n_freq: 0,
+        n_time: 0,
+        first_bin: 0,
+        rate,
+        data: Vec::new(),
+    });
+    Some((found, store))
+}
+
+/// The search of a **residual** (the audio minus the signals decoded so far: `ft8dec_sic::ResidualSource`) restricted to the carriers within
+/// `radius` cells of one of `near` (Hz): `ft8dec.c` 833-841 (`binok`, +-9 bins of 6.25 Hz = 18 cells of 3.125 Hz) after a subtraction, only where something
+/// changed. One band; `gain` is the slot's (the original audio's), so the residual is not read a second time for its peak. The candidates and the cells of
+/// the residual; the candidates are the best by the ordinary rule among the allowed carriers.
+pub(super) fn search_near<A: PcmSource>(
+    src: &mut A,
+    rate: Ft8Rate,
+    search: &super::coarse_sync::GatedSearch,
+    gain: Gain,
+    near: &[f32],
+    radius: usize,
+) -> (Vec<(SyncCandidate, u8)>, HalfDbCells) {
+    let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
+    let centres: Vec<i64> = near.iter().map(|&f| (f / df).round() as i64).collect();
+    let allowed = |k: usize| {
+        centres
+            .iter()
+            .any(|&c| (k as i64 - c).unsigned_abs() as usize <= radius)
+    };
+    let (found, store) = search_impl(
+        src,
+        rate,
+        search.freq_min,
+        search.freq_max,
+        search.keep,
+        1,
+        ORDER,
+        true,
+        Some(&allowed),
+        Some(gain),
+    );
+    let store = store.unwrap_or(HalfDbCells {
+        n_freq: 0,
+        n_time: 0,
+        first_bin: 0,
+        rate,
+        data: Vec::new(),
+    });
+    (found, store)
 }
 
 #[cfg(test)]
@@ -418,6 +622,144 @@ mod tests {
         }
     }
 
+    /// The store holds the demux's cells: every cell of `HalfDbCells`, for 1, 2, 4 and 7 bands, is `half_db` of the whole-range
+    /// demux's cell for the same frame (a band boundary writes the overlap twice with the same values); the largest cell of the slot is above 100
+    /// and at most 193. **Fails if** a band is written at the wrong column or row, the overlap differs, the narrowing clamps below 100 (a
+    /// clamp at 180 would pass: both sides are the same byte demux, only the range check guards it), or the store's `first_bin` / `cell` indexing is off by one.
+    #[test]
+    fn the_store_holds_the_demuxs_cells_for_any_number_of_bands() {
+        let signals = [
+            ("CQ", "K1ABC", "FN42", 700.0f32, 0.2f32, 6000i16),
+            ("K1ABC", "W9XYZ", "-12", 1500.3, 0.9, 5000),
+            ("CQ", "JA1ABC", "PM95", 2300.7, -0.6, 5000),
+        ];
+        let s = slot(&signals, 11);
+        let df = SAMPLE_RATE_HZ / super::super::types::NFFT_SPEC as f32;
+        let n_freq = spectrogram_n_freq(3000.0, Ft8Rate::Hz8000);
+        let ia = (200.0f32 / df).round() as usize;
+        let ib = ((3000.0f32 / df).round() as usize).min(n_freq - MAX_TONE_OFF);
+        let mut src = SliceSource(&s);
+        let gain = spectrogram_gain(&mut src);
+        let whole =
+            compute_half_db_bytes_src(&mut src, Ft8Rate::Hz8000, ia, ib + MAX_TONE_OFF, gain);
+        let mut most = 0u8;
+        for bands in [1usize, 2, 4, 7] {
+            let (found, store) = coarse_sync_gated_cells(
+                &mut SliceSource(&s),
+                Ft8Rate::Hz8000,
+                &super::super::coarse_sync::GatedSearch::new(200.0, 3000.0, 1.3, 20),
+                bands,
+            )
+            .expect("8 kHz fixed-point");
+            assert!(!found.is_empty());
+            assert_eq!(store.first_bin(), ia);
+            assert_eq!(store.n_time(), whole.n_time);
+            assert_eq!(store.n_freq(), whole.n_freq);
+            assert_eq!(store.size_bytes(), whole.data.len());
+            for row in 0..whole.n_time {
+                for bin in ia..ib + MAX_TONE_OFF {
+                    let want = whole.data[row * whole.n_freq + (bin - ia)];
+                    most = most.max(want);
+                    assert_eq!(
+                        store.cell(row, bin),
+                        Some(want as u8),
+                        "{bands} bands, row {row}, bin {bin}"
+                    );
+                }
+            }
+            assert_eq!(store.cell(whole.n_time, ia), None);
+            assert_eq!(store.cell(0, ia - 1), None);
+            assert_eq!(store.cell(0, ib + MAX_TONE_OFF), None);
+        }
+        assert!(most > 100 && most <= 193, "largest cell {most}");
+    }
+
+    /// `coarse_sync_gated_cells` returns `coarse_sync_gated`'s list at 8 kHz fixed-point, bit for bit (frequency, DT, score, hard-sync
+    /// count, order), whatever the number of bands, and `None` at 12 kHz. **Fails if** the cells-keeping path changes a candidate, or
+    /// the rate gate is dropped.
+    #[test]
+    fn the_cells_search_returns_the_gated_candidates() {
+        let signals = [
+            ("CQ", "K1ABC", "FN42", 700.0f32, 0.2f32, 6000i16),
+            ("K1ABC", "W9XYZ", "-12", 1500.3, 0.9, 5000),
+        ];
+        let s = slot(&signals, 5);
+        let gs = super::super::coarse_sync::GatedSearch::new(200.0, 3000.0, 1.3, 15);
+        let key = |v: &[(SyncCandidate, u8)]| {
+            v.iter()
+                .map(|(c, h)| {
+                    (
+                        c.freq_hz.to_bits(),
+                        c.dt_sec.to_bits(),
+                        c.score.to_bits(),
+                        *h,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for bands in [1usize, 4] {
+            let gated = super::super::coarse_sync::coarse_sync_gated(
+                &mut SliceSource(&s),
+                Ft8Rate::Hz8000,
+                &gs,
+                bands,
+            );
+            let (cells_found, _) =
+                coarse_sync_gated_cells(&mut SliceSource(&s), Ft8Rate::Hz8000, &gs, bands).unwrap();
+            assert_eq!(key(&gated), key(&cells_found), "{bands} bands");
+        }
+        assert!(
+            coarse_sync_gated_cells(&mut SliceSource(&s), Ft8Rate::Hz12000, &gs, 1).is_none(),
+            "no cells at 12 kHz"
+        );
+    }
+
+    /// The restricted search of a pass after a subtraction: with `near` at one signal's frequency every candidate is within `radius` cells of it and that
+    /// signal is among them; with no `near` there is none; the cells are the same as the unrestricted search's. **Fails if** a carrier outside the radius is
+    /// scored, one inside is dropped (a strong signal 200 Hz away is the test of both), or the gain argument is ignored.
+    #[test]
+    fn the_search_near_a_signal_returns_only_candidates_near_it() {
+        let signals = [
+            ("CQ", "K1ABC", "FN42", 700.0f32, 0.2f32, 8000i16),
+            ("K1ABC", "W9XYZ", "-12", 1500.3, 0.9, 8000),
+        ];
+        let s = slot(&signals, 11);
+        let df = SAMPLE_RATE_HZ / super::super::types::NFFT_SPEC as f32;
+        let gs = super::super::coarse_sync::GatedSearch::new(200.0, 3000.0, 1.3, 30);
+        let gain = spectrogram_gain(&mut SliceSource(&s));
+        let (c, cells) = search_near(
+            &mut SliceSource(&s),
+            Ft8Rate::Hz8000,
+            &gs,
+            gain,
+            &[1500.3],
+            18,
+        );
+        assert!(!c.is_empty());
+        for (cand, _) in &c {
+            assert!(
+                ((cand.freq_hz - 1500.3) / df).abs() <= 18.5,
+                "candidate at {} Hz is outside 18 cells of 1500.3 Hz",
+                cand.freq_hz
+            );
+        }
+        assert!(
+            c.iter()
+                .any(|(cand, _)| (cand.freq_hz - 1500.3).abs() < 4.0),
+            "the signal itself is among the candidates"
+        );
+        let (none, _) = search_near(&mut SliceSource(&s), Ft8Rate::Hz8000, &gs, gain, &[], 18);
+        assert!(none.is_empty());
+        let (all, whole) =
+            coarse_sync_gated_cells(&mut SliceSource(&s), Ft8Rate::Hz8000, &gs, 1).unwrap();
+        assert!(
+            all.iter()
+                .any(|(cand, _)| (cand.freq_hz - 700.0).abs() < 4.0)
+        );
+        assert_eq!(cells.size_bytes(), whole.size_bytes());
+        assert_eq!(cells.cell(40, 480), whole.cell(40, 480));
+    }
+
     /// The union of the bands' best positions, merged, is the best positions of the whole range, **for cuts that bind**: the same
     /// positions, in the same order, whether the carriers are scored in 1, 2, 4 or 7 bands, for `keep_raw` of 3, 6, 24 and 96
     /// (far fewer than the positions above `MIN_SCORE` of the slot). The list `search` returns only sees the cut when it starves
@@ -445,8 +787,8 @@ mod tests {
                 let a = ia + b * n_car / bands;
                 let z = ia + (b + 1) * n_car / bands - 1;
                 let cells =
-                    compute_half_db_bins_src(src, Ft8Rate::Hz8000, a, z + MAX_TONE_OFF, gain);
-                all.extend(band_best(&cells, a, a, z, keep_raw));
+                    compute_half_db_bytes_src(src, Ft8Rate::Hz8000, a, z + MAX_TONE_OFF, gain);
+                all.extend(band_best(&cells, a, a, z, keep_raw, None));
             }
             merge(all, keep_raw)
         };
@@ -485,7 +827,7 @@ mod tests {
         let mut src = SliceSource(&s);
         let gain = spectrogram_gain(&mut src);
         let cells =
-            compute_half_db_bins_src(&mut src, Ft8Rate::Hz8000, ia, ib + MAX_TONE_OFF, gain);
+            compute_half_db_bytes_src(&mut src, Ft8Rate::Hz8000, ia, ib + MAX_TONE_OFF, gain);
         let mut every = Vec::new();
         for k in ia..=ib {
             for jj in 0..NJ {

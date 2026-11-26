@@ -503,3 +503,344 @@ Comparing at every candidate (no 0.02 s limit) was no better, on the 38 `20m_bus
 and 3 more unverified extras. For comparison the candidates themselves buy 246 hits for 257 M between 15 and 30, and none between 30 and 60. The code is not in the tree
 (a patch is kept outside it); an energy comparison of this kind could be revisited if a cheaper place test appears (the kernel is 42 transforms of 2 560 samples a differing
 candidate: about 0.4 M).
+
+## 14. 5.4 experiment: the LLRs from the half-dB cells, no per-candidate DFT (2026-11-26, host, not built)
+
+**What was run** (temporary code, not in the tree; a patch is kept outside it): the S3 flow's stage 3 (BP, OSD, the same `process_candidates_into_with_cs_scratch_tuned_with_fill`) with the
+79 x 8 symbol spectra read from the half-dB cells of 5.2 at the candidate's **grid place** (`rows j0 + 2 s`, bins `k + 2 t`, amplitude `10^(h/40)`, no phase), no `fine_sync_at`, the candidates
+ranked by `sync_quality_block0` of those cells. **Control**: the same flow with the Goertzel at the same grid place and no fine sync, to separate what the cells change from what leaving
+out the fine sync changes. 60 slots, 8 kHz, fixed-point, after 5.2: hits of `jt9`'s 1 338 / extras / `ft8dec`'s 1 026 found.
+
+| candidates | current (fine sync, Goertzel) | control: Goertzel at the grid place | cells at the grid place |
+|---:|---|---|---|
+| 15 | 761 / 11 / 754 | 754 / 12 / 756 | 753 / 12 / 755 |
+| 30 | 1 009 / 36 / 1 001 | 989 / 39 / 1 001 | 987 / 41 / 1 000 |
+| 60 | 1 011 / 37 / 1 001 | 991 / 41 / 1 001 | 989 / 42 / 1 000 |
+
+**Reading.** The cells cost nothing against the Goertzel at the same place (753 against 754, 987 against 989, 989 against 991 `jt9` hits; `ft8dec`'s found 1 000 against 1 001): the DFT's per-candidate
+extraction is not needed for the recall, as the phase experiment (section 12) already suggested. What the grid place costs is the fine sync: **-20 of `jt9`'s 1 338** at 30 and 60 candidates (the weak
+signals `jt9` finds whose place the grid has off), none of `ft8dec`'s (1 001 -> 1 001 / 1 000), which is the yardstick this thread has used and is a different thing from `jt9`'s list. 5.3's place choice
+(section 13) recovered 2 of those 20.
+
+**Cost** (instructions per slot, 12 slots, host): **corrected in section 15**. The figures first written here (385 / 531 / 930 M as run, "+5 % / -18 % / -18 %" shared) were wrong: the harness ran the
+gated search twice (the flow's own, then the experiment's) and built the cells a third time. Without the duplicate search the experiment is 248 / 393 / 790 M, and with the cells shared with the search
+(one demux less, 76.7 M measured) **171 / 316 / 713 M against the current 298 / 558 / 1 022 M: -43 % / -43 % / -30 %** (an estimate: the sharing is not built).
+
+**Memory (not measured here)**: the whole slot's cells are 173 KB as u8 (the cell is at most 193) or 345 KB as u16 on the host, against the banded flow's one band; the board's heap budget is the open question.
+
+**Not done**: the search at the same time as the cells (no second demux), `ft8dec`'s retry at a place interpolated from the Costas tones (what would recover the 20 `jt9`-only signals without the fine sync's
+cost), the cost of a fine sync on the cells alone, tier C, a board. Whether 5.4 is worth building turns on the `jt9`-only 20 (1.5 % of the reference list, the weaker signals) against -43 % instructions at 30
+candidates (section 15) and the memory.
+
+## 15. Where the instructions go (S3 flow, 8 kHz, fixed-point, host; 2026-11-26)
+
+**Method.** Instructions retired (`/usr/bin/time -l`, `--reps 6` minus `--reps 1`, 12 `20m_busy` slots), by **difference between runs of the same flow cut short or with a stage left out**
+(temporary switches, not in the tree; a patch is kept outside it): stop after the search, after `fine_sync_at`, after the block-0 refine; OSD off (`DecodeDepth::osd = false`); and extra
+72-symbol Goertzel fills (`SymMask::NotBlock0`) per candidate, 1 against 3, for the cost of one fill. Wall-time shares from `MFSK_TRACE_STAGE_FT8` were taken too and **disagree** with the instruction shares
+(symbol spectra 50 % of the time at 15 and 30 candidates, the search 37 % / 19 %): the Goertzel recursion is latency-bound (low IPC), so time overstates it. Instructions are used here; neither is ESP32 cycles.
+
+| M instr / slot | 15 candidates | 30 | 60 |
+|---|---:|---:|---:|
+| search (`coarse_sync_gated`, includes the demux, 76.7 M) | 137 | 137 | 137 |
+| `fine_sync_at` | 11 | 22 | 43 |
+| block-0 refine (7 symbols, 0.78 M a candidate) | 12 | 23 | 46 |
+| stage 3 in all (full - refine) | 138 | 376 | 796 |
+| of which OSD (full - OSD off) | 13 | 102 | 291 |
+| of which the symbol fill (one 72-symbol fill 7.8 M a candidate, 2 per candidate fill the whole spectrum) | about 117 | about 234 | about 410-470 |
+| of which BP, LLRs, the rest (by difference) | about 8 | about 40 | about 40-90 |
+| **total** | **298** | **558** | **1 022** |
+
+OSD ran about 1 / 11 / 29 times a slot (trace calls) at about 10 M a run. Per candidate, the symbol fill is the largest part at 15 and 30 candidates (39 % / 42 %), OSD at 60 (28 %, fill 40-46 %); the search is
+46 % of the total at 15 candidates and 13 % at 60.
+BP, LLRs and the rest together are the smallest part (the difference, with the error of the number of fills, which is taken from the trace's call counts); BP's own instructions were not isolated (its wall-time share is 4-15 %).
+
+**What this says about 5.4.** The per-candidate DFT is the cost 5.4 removes (7.8 M a candidate plus 0.8 M for block 0 and 0.7 M of fine sync: about 9 M of the 12-17 M a candidate). The cells experiment (section 14), with the duplicate search taken out
+of its harness: 248 / 393 / 790 M, and 171 / 316 / 713 M with the cells shared (one demux less): **-43 % / -43 % / -30 %** against the current flow, at ft8dec-yardstick recall unchanged and `jt9`'s hits -20 (section 14). What stays is
+the search (137 M, 46-80 % of the 5.4 flow at 15 candidates) and OSD (10 M a run, which does not depend on where the LLRs come from). OSD at about 10 M a run, run for candidates that mostly do not decode, is the next
+cost after the fill: its success rate per run was **not measured** here.
+
+**Not done**: instruction counts of the stages on the ESP32 (the mix differs: the FPU Goertzel against integer demux), BP separately by difference (the BP-off switch changes which candidates reach OSD), OSD successes
+per run, the stage costs at 12 kHz.
+
+## 16. OSD: how often it is tried and how often it decodes (S3 flow, 8 kHz, fixed-point; 60 slots; 2026-11-26)
+
+**Method.** Counters (temporary, not in the tree; a patch is kept outside it) in `process_one_candidate_inner` and `osd_strategy::try_fallback`: candidates that reach the staircase, those BP decodes
+(`bp_ok`), those that reach OSD (`q > 6`, BP failed: **one try is one `try_fallback`**, up to 8-9 `osd174_91` runs inside it: four LLR variants x two BP snapshots, and `llre`), those OSD returns a codeword for
+(`some`), and the decodes finally emitted by pass id (OSD 13-22, BP 0-4) against `jt9`'s list (hit) or not (extra). All 60 slots, counts summed.
+
+| candidates | reach the staircase | BP decodes | OSD tries | OSD returns | rate | `osd174_91` runs a try | emitted by OSD (hits / extras) | emitted by BP (hits / extras) |
+|---:|---:|---:|---:|---:|---:|---:|---|---|
+| 15 | 885 | 761 | 124 | 22 | 17.7 % | 8.8 | 18 / 4 | 743 / 7 |
+| 30 | 1 678 | 1 005 | 673 | 66 | 9.8 % | 9.3 | 52 / 12 | 957 / 24 |
+| 60 | 2 674 | 1 006 | 1 668 | 69 | 4.1 % | 9.7 | 54 / 13 | 957 / 24 |
+
+(The OSD returns that are not emitted, 2 and 2 at 30 and 60 candidates, were refused by the plausibility policy or were duplicates.)
+
+**Reading.**
+* **Beyond 30 candidates the list is nearly empty of decodable signals**: 31 to 60 add 996 candidates, 1 BP decode and 3 OSD returns (2 hits, 1 extra) for 995 more OSD tries, that is +464 M instructions a slot (section 15)
+  for +2 of `jt9`'s hits. 15 to 30 add 549 tries and 44 returns (34 hits, 8 extras) for +260 M.
+* At 30 candidates 673 OSD tries a 60 slots (11 a slot, about 9 M each by section 15's totals) return a codeword 9.8 % of the time, **and 90 % of the tries fail** (607 of 673; the instructions are counted per run, not per outcome, so "90 % of the OSD instructions" assumes a failing try costs what a returning one does): OSD's 102 M a slot over 60 slots
+  is about 93 M per returned codeword and 118 M per `jt9` hit.
+* **By `q`** (sync quality of the candidate as the staircase reads it, 30 candidates, tries / returns): `q` 7: 75 / 0; 8: 81 / 0; 9: 65 / 2; 10: 57 / 1; 11: 52 / 4; 12: 58 / 3; 13: 56 / 6; 14: 77 / 13; 15: 55 / 13; 16: 33 / 7;
+  17: 25 / 10; 18..21: 39 / 7. A gate at `q >= 9` would have cost no decode on this corpus and saved 156 of 673 tries (23 % of the OSD instructions); at `q >= 11`, 278 tries (41 %) for 3 returns.
+  **That gate is WSJT-X's** (`nsync > 6`: `ft8b.f90`; the comment in `osd_strategy.rs` records a real signal, `K1BZM DK8NE -10`, at `q` 11 that a stricter gate had refused); raising it would be a divergence to be
+  justified on more than 60 slots with no noise-only run, and the extras it would remove are not separated from the hits in these counts.
+
+**Not done**: successes by `q` split into hits and extras; the cost of a successful try against a failing one (the runs per try are counted, the instructions are not); a stop after fewer than 8 runs for a candidate whose first runs
+come nowhere near a codeword (`osd174_91`'s `hard_errors` of the best candidate would say); the cost of the other flows' OSD; noise-only slots.
+
+## 17. OSD early stop: where the 8-10 runs of a try succeed (30 candidates; 60 slots; 2026-11-26)
+
+**Method.** Temporary logging (not in the tree; a patch is kept outside it) of every `osd174_91` run inside `try_fallback`: the winner's hard errors `he` (taken before the CRC check, so a failing run has one too), whether
+the CRC passed, and the run's index in the fixed order **variant a, b, c, d, e (`llra`..`llrd`, `llre`) x BP snapshot 1, 2 = runs 0..9**. 673 tries, 6 286 runs, 66 returns (52 `jt9` hits, 12 extras, 2 not emitted); a return is a CRC pass with
+`he <= 36` (`DecodeStrictness::Normal`).
+
+**Where the successes are** (run index: hits / extras): 0: 27 / 6; 1: 5 / 2 (+1 not emitted); 2: 0 / 1; 3: 1 / 0 (+1); **6: 18 / 3**; 8: 1 / 0; **runs 4, 5, 7, 9: none**. Run 6 is variant `d`, snapshot 1. 41 of the 66 returns are in the first two runs (variant `a`).
+Runs reaching each index: 673 at 0, about 630 at 2 to 6, 608 at 7 to 9.
+
+**Skipping runs that never succeeded** (on this corpus): runs 4 and 5 (variant `c`): 20 % of the runs, no return lost; 4, 5, 7: 30 %; 4, 5, 7, 9: **39 %** (2 473 of 6 286 runs), no return lost. Also skipping 2 and 3 (variant `b`): 59 %, loses 3 returns
+(1 hit, 1 extra, 1 not emitted). If a run costs the same (not measured: a run is the BP snapshot, the OSD, and a share of the LLR), 39 % of the OSD's 102 M a slot at 30 candidates (section 15) is about **40 M of 558 M (7 %)**.
+This is a corpus fact, not a reason: variants `b` and `c` are `ft8b.f90`'s `ipass` 2 and 3, and WSJT-X runs the whole staircase. Dropping them is a divergence to be marked and measured on more than these slots (tier C, the
+noise-only slots, the other corpora) before it is considered; AP passes and other strictness levels would use them differently.
+
+**A stop on `he`** (stop a try after `k` runs if the best `he` so far exceeds a threshold): the failing tries' `he` overlaps the returns' (the best `he` of the first four runs: returns 17-33, median 23; failing tries mostly 22-30), so
+the rule saves little for what it loses: after 2 runs, threshold 30: 16 % of the runs, 1 hit and 1 extra lost; after 4 runs, threshold 30: 6 % of the runs, 1 extra lost; after 4 runs, threshold 28: 11 %, 1 hit and 2 extras lost; threshold 26 after 2 runs:
+38 %, 5 hits and 2 extras lost. `he` is not a good early signal: the CRC is what separates a codeword from a nearest-neighbour.
+
+**Not done**: instructions per run (the saving above is by count of runs); the same on other corpora and noise; the order of the variants (a, then d) as a rule; a stop on the weighted distance `dmin / sum|llr|` (logged, not analysed).
+
+## 18. 5.4 on the cells, with fine sync replaced by `ft8dec`'s interpolation (host experiment; 2026-11-26)
+
+**Variants** (temporary code, not in the tree; a patch is kept outside it; the cells are built once and shared by the search and the symbols, so the instructions below are **measured**, not estimated):
+V0 the grid place; **V1** `ft8dec`'s retry: for a candidate that failed at the grid place (BP and OSD), the shift is estimated by the parabola on the 3 x 3 energy of the 21 Costas tones (rows +-1, cells +-1),
+the four cells are mixed linearly in power and BP and OSD run again; V2 one attempt at the interpolated place; V3 the retry of V1 with BP only. No `fine_sync_at`, no Goertzel. 60 slots, 8 kHz, fixed-point.
+
+| | 15 candidates: hits / extras / `ft8dec` found, M instr | 30 candidates | 60 candidates (M instr) |
+|---|---|---|---:|
+| current flow (fine sync, Goertzel) | 761 / 11 / 754, **298** | 1 009 / 36 / 1 001, **558** | **1 022** |
+| V0 grid | 753 / 12 / 755, 171 | 987 / 41 / 1 000, 316 | 714 |
+| **V1 retry, BP + OSD** | 754 / 15 / **758**, 187 (-37 %) | 1 002 / 46 / **1 016**, 451 (-19 %) | 1 130 (+11 %) |
+| V2 interpolate, one attempt | 750 / 15 / 755, 177 (-40 %) | 990 / 38 / 1 008, 310 (-44 %) | 597 (-42 %) |
+| V3 retry, BP only | 753 / 12 / 755, 176 | 991 / 41 / 1 004, 355 (-36 %) | 833 (-18 %) |
+
+**Gates of the plan (per variant, 15 / 30 candidates)**: `ft8dec` found >= current - 2 (754 / 1 001): **V1, V2, V3 pass** (V1 clearly: +4 / +15); `jt9` hits >= current - 5 (761 / 1 009, that is 756 / 1 004): **none passes**
+(V1 754 / 1 002: short by 2 and 2; V2 750 / 990; V3 753 / 991); extras <= current + 3 (11 / 36): **V1 15 / 46 fails, V2 15 / 38 fails at 15 and passes at 30, V3 12 / 41 passes at 15 and fails at 30**; instructions
+<= the current 298 / 558: **all pass** at 15 and 30 (V1 187 / 451); at 60 candidates only V1 is above the current flow.
+
+**Extras of V1 at 30 candidates**: 46, of which 34 are in `ft8dec`'s 3-pass list; 11 are not among the current flow's 36, 7 of those in `ft8dec`'s list; the 4 not listed by it are `CQ OR18OSB` (test_01), `CQ RW6PA LN23` (test_03), `<...> ZY50Y 73`
+(test_38), `KC8MUE V51MA RRR` (websdr_test9): callsigns that read as real, **not checked** by a wrong-tone count or a second recording (no noise-only slot run). V1 loses 19 of the current flow's `jt9` hits and gains 12 others (net -7).
+
+**Reading.** The cells path removes 37-44 % of the instructions at 15 and 30 candidates for the variants that keep one decode attempt (V2) or one cheap retry (V1 at 15), and **V1 finds more of `ft8dec`'s decodes than the
+current flow does** (1 016 against 1 001 at 30 candidates) while finding 7 fewer of `jt9`'s: `jt9`'s list and `ft8dec`'s differ in the weak signals they hear, and the cells with `ft8dec`'s retry sit on `ft8dec`'s side. Against the strict
+`jt9`-based gate V1 misses by two hits and by extras, narrowly; V1's cost at 30 candidates (451 M) is the retry's second BP and OSD for the candidates that fail (+135 M over V0); V3 shows BP alone recovers little of it.
+The OSD stays the dearest part (section 16: 90 % of its tries fail), so a retry that spends it only where it pays is the next thing to look at.
+
+**Not done**: the wrong-tone scan and a second look at V1's 4 unlisted extras; a retry limited by `q` or by the first attempt's best `hard_errors` (the OSD's runs are logged in section 17: the first attempt's `he` is not a good signal);
+V4 (the choice between the grid and the interpolated place by Costas energy); the ESP32 instruction counts (the cells path replaces the f32 Goertzel by table lookups, integer cell reads and a `sqrt` of the mixed power: the host ratio need not hold);
+the memory of the whole-slot cells (173 KB as u8); noise-only slots (tier C). Nothing here is built: it is the evidence for a decision.
+
+## 19. 5.4: restricting V1's retry, and a fairer yardstick (host experiment; 2026-11-26)
+
+**What was tried** (temporary code, not in the tree; a patch is kept outside it): V1's retry (section 18) only for candidates whose estimated shift `max(|ta|, |fb|)` is at least a threshold; only for those with
+hard-sync count `hs` of at least 10 / 12 / 14 / 16 of 21; or with OSD only above an `hs`. 60 slots, 8 kHz, fixed-point; hits of `jt9`'s 1 338 / extras / `ft8dec` 1-pass found of 1 026, then instructions (12 slots).
+
+| 30 candidates | hits / extras / `ft8dec` found | M instr | 15 candidates | hits / extras / `ft8dec` found | M instr |
+|---|---|---:|---|---|---:|
+| current flow | 1 009 / 36 / 1 001 | 558 | current flow | 761 / 11 / 754 | 298 |
+| V1 full | 1 002 / 46 / 1 016 | 451 | V1 full | 754 / 15 / 758 | 187 |
+| V1, shift >= 0.15 | 1 002 / 46 / 1 016 | (as full) | | | |
+| **V1, shift >= 0.25** | 1 001 / 45 / 1 015 | **400** | V1, shift >= 0.25 and `hs` >= 10 | 754 / 12 / 756 | 180 |
+| V1, shift >= 0.25 and `hs` >= 10 | 1 000 / 43 / 1 013 | 387 | | | |
+| V1, `hs` >= 10 / 12 / 14 / 16 | 1 001 / 1 000 / 995 / 989; extras 44 / 44 / 43 / 42 | 432 / 406 / - / - | | | |
+| V1, OSD in the retry only `hs` >= 12 | 1 001 / 44 / 1 014 | 419 | | | |
+| V1, shift >= 0.35 | 996 / 45 / 1 011 | - | | | |
+
+A shift under 0.15 never gains anything (the same list as the full retry); under 0.25 almost nothing (1 hit of 1 338, 1 of `ft8dec`'s); the retry's cost falls with the threshold because the interpolation, the second LLRs and the second BP and OSD
+are skipped for the candidates it would not change.
+
+**A fairer yardstick.** `jt9` and `ft8dec` hear different weak signals, so a gate on `jt9`'s list alone punishes a flow that sits on `ft8dec`'s side. The union of `jt9`'s list and `ft8dec`'s 3-pass list is **1 409** decodes on these slots
+(1 338 of them `jt9`'s). Found of the union, and decodes in neither list (30 candidates / 15 candidates):
+
+| | 30: found, in neither list | 15: found, in neither list |
+|---|---|---|
+| current flow | 1 036, 9 | 769, 3 |
+| V0 (grid, no retry) | 1 018, 10 | 762, 3 |
+| V1 full | **1 036**, 12 | 765, 4 |
+| V1, shift >= 0.25 | 1 035, 11 | 765, 3 |
+| V1, shift >= 0.25 and `hs` >= 10 | 1 032, 11 | 763, 3 |
+| V2 (one attempt) | 1 020, 8 | 761, 4 |
+
+**Reading.** On the union, V1 with the shift threshold of 0.25 finds **as many as the current flow at 30 candidates (1 035 against 1 036) for 28 % fewer instructions (400 against 558 M)**, and at 15 candidates 4 fewer
+(765 against 769, 0.5 %) for 40 % fewer (180 against 298 M). Decodes in neither list: +2 at 30 candidates (11 against 9), +0 at 15; those are not verified (no wrong-tone scan, no noise-only run); they are the price to look at before this is believed.
+On `jt9`'s list alone the gate of the plan (current - 5) is still missed (1 001 against 1 009 at 30; 754 against 761 at 15). **The plan's gate was set on `jt9` only; whether the union is the right yardstick is the owner's call**,
+not this note's. The `hs` and OSD-above-`hs` restrictions save a little more instructions (387-419 M) for 1-4 decodes; the shift threshold is the one with the best exchange.
+
+**Not done**: the wrong-tone scan of the 11 and 3 decodes in neither list (the 4 of section 18 among them); the shift threshold on other corpora; the ESP32 counts; the memory; noise-only slots (tier C).
+
+## 20. The decodes in neither list: wrong-tone scan (V1, shift >= 0.25; 15 and 30 candidates; 2026-11-26)
+
+**What.** The decodes of V1 with the shift threshold of 0.25 (section 19) that are in neither `jt9`'s list nor `ft8dec`'s 3-pass list: **11** in all (the 3 of the 15-candidate run are among the 11 of the 30-candidate run; section 19 counted them
+per run). For each, the temporary scan of the earlier sections: the message re-packed to its 79 tones, the symbol error of the strongest-of-eight tone decision (Hann window of two symbols, 8 kHz) against those true tones, at the decoded frequency
++-0.5 Hz and every DT from -2.2 to +2.6 s in 40 ms steps, the best taken. **Control**: the same scan for 38 trials with a *wrong* standard message at the same slots and frequencies: best 45, median 53, maximum 60 wrong of 79
+(the frequencies are occupied by real signals, which share some tones by chance, so the control is, if anything, lenient). A cross-slot count of how many other slots' reference decodes (`jt9` or `ft8dec`) carry each callsign.
+
+| slot | decode | wrong of 79 | callsign in other slots |
+|---|---|---:|---|
+| test_37 | R1CBP UV5IW -16 | **4** | 4 / 4 |
+| test_27 | RV6ARS E75C -11 | **8** | 12 / 27 |
+| test_01 | CQ OZ5VO JO45 | 16 | 5 |
+| test_03 | CQ RW6PA LN23 | 16 | 5 |
+| test_14 | UR7HN UA3NFG LO28 | 19 | 17 / 8 |
+| websdr_test3 | EY8MM YB1BZV OI33 | 23 | 1 / 0 |
+| websdr_test9 | KC8MUE V51MA RRR | 27 | 1 / 1 |
+| test_34 | IZ7NLM `<...>` R-14 | 38 (not reliable) | 12 |
+| test_31 | `<...>` 4U1A -20 | 40 (not reliable) | 20 |
+| test_23 | `<...>` IV3KVC JN65 | 48 (not reliable) | 4 |
+| test_38 | `<...>` ZY50Y 73 | not packable | 8 |
+
+**Reading.** Seven decodes read **4 to 27 wrong tones of 79, against 45 or more for a wrong message at the same places**, and six of them carry callsigns heard in other slots of the corpus: these are real signals that neither reference decoder listed.
+`EY8MM YB1BZV OI33` (23) is the one the repository already counts as debt (`band_baseband.rs`, `S3_DEBT`): the tones say it is a signal, its partner appears nowhere else, so the debt stays a debt. The four messages with a hashed call `<...>` cannot be
+checked this way (the scan packs `<...>` as a hash, not the true callsign: the field's symbols read wrong by construction), so their 38-48 mean nothing; their other callsign is heard in 4 to 20 other slots, which is support, not proof.
+**None of the 11 reads like noise**; the decodes in neither list, the price named in section 19 (+2 at 30 candidates), are mostly real signals the two references missed. What is **not** shown: that no noise-only slot yields such a decode
+(tier C), and the four `<...>` ones by tone.
+
+## 21. 5.4 as built: `decode_block_cells` (2026-11-26)
+
+**What was added** (all `fixed-point`, `Hz8000`; `ft8::decode_block`): `HalfDbCells` (the whole slot's half-dB cells, a byte each: 172 KB at 200-3000 Hz, 184 rows), `coarse_sync_gated_cells` (the 5.2 search with its cells kept: the same candidates as
+`coarse_sync_gated`, a test pins it), `decode_block_cells` (the flow of section 18's V1 with the shift threshold of section 19: first try at the grid place, a second at the place the Costas tones point to when the estimate is a quarter cell or more off),
+and in the `icap-app` host harness `run_slot_s3_cells` (`icap-profile --s3 --cells`). Nothing existing changed: the u16 spectrogram is bit for bit what it was (the checksum test), `Hz12000` and f32 are untouched, and the S3 flow stays.
+
+**Deviations from the plan.** (1) **The demux writes bytes**: `spectrogram_cells` is generic over the cell it writes (`CellOut`: `u16` as before, `u8` for the half-dB cells), so the half-dB band is made as bytes and, at one band, *is* the store.
+The plan kept a `u16` band and packed it; that gave a host peak heap of 509 KB against the S3 flow's 422 KB (a gate failure), the byte demux 258 KB. (2) `coarse_sync_gated_cells` returns `Option` (`None` at another rate) and takes `bands`
+like `coarse_sync_gated`; `decode_block_cells` runs one band (more bands read the audio again and cost more: 4 bands 362 M for the search against 152 M). (3) The flow decodes **one candidate at a time**
+(`process_candidates_into_with_cs_scratch_tuned_with_fill` on a list of one) so the retry knows which candidate failed, without the experiment's score-as-index trick. (4) The fill and the estimator are not public.
+
+**Ledger** (60 slots, 8 kHz, fixed-point; hits of `jt9`'s 1 338 / extras / `ft8dec` found of 1 026 / found of the union of 1 409 and decodes in neither list; host instructions a slot over 12 busy slots; peak heap the largest of a slot):
+
+| | current S3 flow | step 2: cells, no retry | **cells flow (landed)** |
+|---|---|---|---|
+| 15 candidates | 761 / 11 / 754 / 769 / 3, 295 M, 422 KB | 753 / 12 / 755 / 762 / 3, 157 M, 258 KB | 754 / 14 / 758 / **765** / 3, **165 M**, 258 KB |
+| 30 candidates | 1 009 / 36 / 1 001 / 1 036 / 9, 549 M | 987 / 41 / 1 000 / 1 018 / 10, 300 M | 1 001 / 45 / 1 015 / **1 035** / 11, **382 M** |
+| 60 candidates | 1 011 / 37 / 1 001 / 1 039 / 9, 1 003 M | 989 / 42 / 1 000 / 1 021 / 10, 691 M | 1 003 / 46 / 1 015 / 1 038 / 11, 971 M |
+
+Gates of the plan (step 3): instructions at 15 <= 190 M (165) and at 30 <= 410 M (382): **met**; found of the union >= current - 4 at 15 (765 against 769: met, exactly) and - 2 at 30 (1 035 against 1 036): **met**; decodes in neither list <= current + 3
+(3 against 3, 11 against 9): **met**; peak heap <= the S3 flow's: **met** (258 against 422 KB). The 22 recordings against `jt9`'s 402: 226 / 286 at 15 / 30 candidates (the S3 flow 230 / 289), extras 3 and 5, all attested or pinned debt
+(`Z33Z` and `KC8MUE` attested with their evidence; `EY8MM YB1BZV OI33` stays by-identity debt). The decodes in neither list were checked in section 20.
+
+**Tests** (tier A, mutation-checked; after the `reviewer`'s pass): the store equals the demux's cells for 1, 2, 4 and 7 bands (band column, `first_bin`, and a clamp under 100 caught; a clamp at 180 would not: both sides are the same byte demux, only the range check guards it);
+the cells search returns the gated candidates and `None` at 12 kHz (rate gate caught); a clean signal decodes (a fill one **row** off breaks it; one **bin** off does not); the fill reads the transmitted tone at 76 or more of 79 symbols of a clean on-grid signal (a one-row or one-bin shift of the
+fill caught); the estimator lands within 0.25 cell of a signal 0.4 cell off in time and frequency (shifts inside `place`, either direction flipped, caught); the retry decodes more than the grid place alone on 80 seeded weak off-grid slots (54 against 46; a flipped `dc` and the threshold caught,
+a flipped `dr` only by the estimator test); the retry's mix is the square root of the mixed **powers**, and a place off the slot has no power (no-sqrt and amplitude-mix, and an outside cell read as amplitude 1, caught); the reported frequency and DT of a decode move towards the estimate (the frequency
+sign caught at the decode level, both signs by the unit test of `Place::moved`); the tables; the parabola; a retry needs a quarter cell. **The planned noise-only guard was deleted**: 40 seeded noise-only slots decoded nothing under every loosening tried (`q_thresh` 0, a retry threshold of 0), so it
+could not fail (CLAUDE.md 4); the precision guard of this flow is the floor test's extras ceiling with the by-identity debt in `icap_profile.rs`, and tier C is still to be run. The clamp in `parab` is redundant (the vertex of a parabola with the centre above both neighbours is within 0.5).
+
+**Findings of the `reviewer` and what was done.** (1) The amplitude differs from `ft8dec`'s: `ft8dec` (`llr = 2`) feeds its max-log LLRs the fourth root of the power (`10^(h / 80)`), this flow gives the staircase the amplitude (`10^(h / 40)`); and `ft8dec`'s `tcal` calibration of the reported DT is not
+ported: both now said in the module doc, neither measured against the alternative. (2) The memory text of two public docs described the plan's `u16` band, not the byte demux: corrected (258 KB measured). (3) Test docs that claimed mutations they do not catch were corrected and tests added where a gap was found (above). (4) Experiment figures in code
+comments replaced by the landed ones. The "current S3 flow" baseline of the ledger is **295 / 549 / 1 003 M**, measured on the same binary as the cells flow; sections 15-19 have 298 / 558 / 1 022 M from earlier builds (the differences are the builds', not a change of the flow). (5) A cell outside the slot or the
+store now has no power (`ft8dec`'s `cellp`: 0), it read as amplitude 1; re-measured: the ledger is unchanged to the decode. (6) Dead work removed (the block-0 `q` computed and dropped); **the plan's block-0 re-rank was not built** (candidates are taken in the search's hard-sync order; the S3 flow goes through `refine_candidates_into_at`),
+which only changes which duplicate is reported. (7) The two attested extras (`Z33Z`, `KC8MUE`) are in the list `score()` uses for **every** flow, not only the cells flow: the other flows' guards are loosened by those two messages. (8) The floors (226 / 286, extras <= 5) are the Mac measurement with no margin,
+as the S3 floors are (`Tables` use `exp` of the `no_std` build's libm, deterministic across platforms); none of the 5.x floors has run in Linux CI yet.
+
+**`snr_db` is not validated**: on the 22 recordings at 30 candidates it is 11.1 dB below `jt9`'s on average (sd 9.2) for the cells flow and 9.8 dB (sd 8.9) for the S3 flow: neither flow's `compute_snr_db` is calibrated to WSJT-X's, and the cells flow's is about 1.3 dB lower than the S3 flow's.
+
+**Not done**: noise-only slots (tier C); an ESP32 build or instruction count (the cells path replaces the f32 Goertzel by table lookups, integer cell reads, and a `sqrt` of the mixed power on the retry); a board-side producer of the half-dB cells (`stage1_inc`) and the CoreS3's heap budget for 172 KB;
+the 60-slot numbers outside the repo (the 38 `20m_busy` slots and `ft8dec` are not vendored, as in section 9); `reviewer` and `scripts/verify.sh` (below, if done).
+
+## 22. A second pass after subtraction on the cells flow: the upside and its cost (host experiment, 2026-11-26)
+
+**What was run** (temporary example in a scratch worktree, not in the tree; kept outside it as `tmp_sic_example.rs`): pass 1 = `decode_block_cells`; each decode's waveform subtracted from a copy of the 8 kHz audio by the repository's exact subtraction
+(`subtract_tones_lpf`, `subtractft8.f90`'s algorithm: GFSK reference, low-pass-filtered complex amplitude, FFT-based; an 8 kHz `SubtractCfg`, `lpf_half` 1333); pass 2 (and 3) = `decode_block_cells` on the residual, decodes not already found added. Three ways to subtract:
+**a** `subtract_tones_lpf_refine_dt` (probes DT) at the reported place, **b** the frequency refined first (`refine_freq`, +-2 Hz in 0.25 Hz steps) then `refine_dt`, **c** plain `subtract_tones_lpf` at the reported place (the place of the cells flow: 3.125 Hz, 80 ms grid, or the retry's estimate).
+60 slots, 8 kHz. **This harness is `mfsk-core` with the `std` build** (the host 16-bit planner), not the `icap-app` build: its pass 1 is **not** the ledger's (union found 767 / 1 050 at 15 / 30 candidates against section 21's 765 / 1 035, and 200 / 584 M instructions against 165 / 382 M; the difference is not explained here),
+so only the ratios inside the harness are used. jt9 hits / extras / union found of 1 409 / in neither list; host instructions a slot over 12 busy slots:
+
+| flow (candidates per pass) | jt9 hits | extras | union found | in neither | M instr |
+|---|---:|---:|---:|---:|---:|
+| 15, pass 1 only | 756 | 15 | 767 | 4 | 200 |
+| 15, subtract **c**, 2 passes | **936** | 25 | **952** | 9 | 784 |
+| 15, subtract **c**, 3 passes | (not run) | | | | 1 244 |
+| 15, subtract a, 2 / 3 passes | 844 / 850 | 20 / 23 | 859 / 868 | 5 / 5 | 1 223 (2 passes) |
+| 15, subtract b, 2 passes | 850 | 22 | 865 | 7 | 2 288 |
+| 30, pass 1 only | 1 016 | 48 | 1 050 | 14 | 585 |
+| 30, pass 1 only, 60 candidates | 1 018 | 50 | 1 053 | 15 | 1 693 |
+| 30, subtract **c**, 2 passes | **1 090** | 60 | **1 129** | 21 | 1 812 |
+| 30, subtract c, 3 passes | (not run) | | | | 2 813 |
+| 30, subtract a, 2 / 3 passes | 1 051 / 1 053 | 59 / 59 | 1 092 / 1 094 | 18 / 18 | |
+| 30, subtract b, 2 passes | 1 055 | 63 | 1 096 | 22 | 3 920 |
+
+For reference, `ft8dec` on the same slots: 990 `jt9` hits in one pass, 1 189 in two, 1 204 in three, at 335 / 850 / 1 278 M instructions.
+
+**Where the instructions go (subtract c, host build)**: at 30 candidates pass 1 584 M, the subtraction of its decodes **321 M** (about 18 M a decoded signal: the exact subtraction is two full-length FFTs and a synthesis per signal), the second pass's search and decode **906 M** (more than pass 1: the residual is full of
+borderline candidates that reach OSD); at 15 candidates 200 / 226 / 358 M.
+
+**Reading.**
+* **The simple subtraction (c) is the best of the three**; refining the DT (a) or the frequency too (b) made the residual *worse* (why is not established: the refinements were written for the 12 kHz decode's places, and nothing here separates a wrong probe from a wrong 8 kHz configuration), and b costs 4-6 times more.
+* **At 30 candidates one extra pass buys +74 of `jt9`'s hits (+79 of the union) for 3.1 times the instructions** (584 -> 1 812 M), and 7 more decodes in neither list (14 -> 21, unchecked). `ft8dec`'s second pass buys +199 for 2.5 times. Against the plan's bar (+100 of the union for at most +300 M instructions): **not met**.
+* **At 15 candidates the second pass mostly doubles the candidates**: 15 + one pass of 15 gives 936 hits for 784 M, while 30 candidates in one pass give 1 016 for 585 M. At equal cost, more candidates beat a second pass; the second pass only pays once the first is already deep.
+* What would have to be true for a board's SIC to pay: a subtraction an order of magnitude cheaper than the exact one (about 2 M a signal: a per-symbol complex amplitude from the Goertzel of the known tones, a synthesised reference removed in a pass over the signal's span, no FFT) *and* a second pass that decodes only the candidates near what was subtracted
+(the remaining 906 M is not subtraction's). Neither is built or measured here; with both, a second pass would cost about the cells' demux (76 M) plus a few candidates' decodes, an **estimate**, not a measurement. The subtraction is also where `ft8dec` is more careful (its place comes from the interpolated parabola and its time calibration), which this
+experiment's places (the grid's) are not.
+
+**Not done**: a cheap subtraction; a restricted second pass; three-pass numbers (the third pass added 6-9 hits in mode a); the decodes in neither list of the second pass checked (21 at 30 candidates, +7 over pass 1); the board's heap for a residual copy (240 KB at 8 kHz) or a read-while-subtracting design; why this harness's pass 1 differs from the `icap-app` build's; tier C.
+
+## 23. `ft8dec`'s subtraction passes on the cells flow, as built (2026-11-26)
+
+**What this is.** Section 22 measured the repository's WSJT-X-style subtraction by mistake; this section is the port that was asked for: `ft8dec.c` (icap-sdk 1ca9f04, MIT) `sig_corr` (243-290), `sig_sub` (291-330),
+`ph_inc` / `ph_at`, `build_wf` (333-380) in `ft8dec_sic.rs` (`ResidualSource`: a `PcmSource` serving the audio minus the signals, which the byte demux reads unchanged, a ring of 8 192 `f32`, the lag of 1 920 samples, no FFT), `parab` / `tcal` and
+the place refinement (874-882) in `cells_flow.rs` (`View::refine`), the restricted search (`round_` 826-870: `binok`) in `coarse_lib.rs` (`search_near`, `band_best`'s `allowed`), and the pass loop (984-1010) in `decode_block_cells_sic`.
+`decode_block_cells` is `decode_round` over the first pass; nothing existing changed (the u16 demux, the other flows).
+**Deviations from `ft8dec`:** the staircase after the spectra is the library's; the search is 5.2's; one band; the slot's gain is read from the audio, not the residual; a pass after the first decodes at most `max_cand / 2` candidates (8 at least), where `ft8dec` decodes `max_cand` (300) every pass (section 23a).
+
+**Ledger** (60 slots, 8 kHz, fixed-point; jt9 hits of 1 338 / extras / found of the union of 1 409 / in neither list; host instructions a slot over 12 busy slots; heap the largest of a slot):
+
+| | 15 candidates | 30 candidates |
+|---|---|---|
+| 1 pass (the cells flow) | 754 / 14 / 765 / 3, 180 M, 258 KB | 1 001 / 45 / 1 035 / 11, 396 M, 258 KB |
+| 2 passes | 959 / 33 / 982 / 10, 595 M, 295 KB | **1 197** / 78 / 1 254 / 21, **1 195 M**, 299 KB |
+| 3 passes | 981 / 38 / 1 007 / 12, 1 116 M, 299 KB | 1 209 / 80 / 1 267 / 22, 1 891 M, 302 KB |
+(the table above is the **first** build, every candidate decoded in every pass; 23a is the landed one)
+| `ft8dec` (its own list, 1 / 2 / 3 passes, 335 / 850 / 1 278 M) | | 990 / 1 189 / 1 204 jt9 hits |
+
+**The plan's bar** (found of the union >= +80 at 30 candidates for <= +250 M, total <= 650 M): **recall met by far (+219), cost not met (+800 M)**; equal to `ft8dec` in recall for 1.4 times its instructions at 2 passes (1 195 against 850 M), 1.5 times at 3 (1 891 against 1 278 M).
+**Where the second pass's 800 M goes** (30 candidates; temporary probes): the streaming subtraction and the residual's demux 287 M (the demux about 76, the subtraction about 210: 8 M a signal, no FFT but about 80 instructions a sample for the correlation and the subtraction together),
+the restricted scoring 46 M, **decoding the new candidates 466 M**. Cuts measured: the second pass decoding 20 / 15 / 12 / 10 of its candidates: 1 196 / 1 192 / 1 185 / 1 175 hits at 991 / 876 / 824 / 791 M; a hard-sync minimum of 9 / 11: 1 197 / 1 194 hits at 1 089 / 972 M;
+**not subtracting the weak signals does not pay** (a floor of -15 dB on the flow's `snr_db` saves 64 M and loses 33 hits, -10 dB loses 127; every decoded signal is worth subtracting). At 15 candidates the second pass takes 15 of its own: 959 hits at 595 M, 922 at 476 M with 8.
+Not tried: a cheaper subtraction loop (the sine table's interpolation and the transition zone's per-sample `ph_inc` are the large part), the decode of fewer candidates by a better gate, a pass cap proportional to `max_cand`.
+
+**The 10 new decodes in neither list** (2 passes, 30 candidates; wrong tones of 79 against 45-60 for a wrong message at the same place, section 20's tool; callsigns heard in other slots): `CQ OR18OSB` 9 (11 slots), `CQ 2E0LDW IO70` 13 (17), `F5CCX F4AGZ JN38` 34 (24 / 12): **real**;
+`JO1COV PD0MNO JO22` 41, `MM0IMC 4U1A -06` 43: probably real; `EA8PP JH0INP PM96` 44: the message `band_baseband.rs` already keeps as by-identity debt; **`LU5HA UA9TK R-13` 60 and `LU5HA UA9TK R-20` 50 read like noise**
+(two slots, one pair of callsigns, different reports: a subtraction ghost is the likely reading, **not established**); `<...> F6DEO/QRP`, `<...> E77VM R-11` not checkable (hashed call). Noise-only slots (tier C) not run: a SIC's risk is exactly such a decode.
+
+**Tests** (tier A, mutation-checked; 8 new: 7 in `ft8dec_sic.rs` after the review's fading test, and 1 in `coarse_lib.rs`): the subtraction removes a clean synthetic signal (the reference: the library's own GFSK synthesis, known tones and place) to under -25 dB and a misplaced one (1.5 Hz, 40 ms) by more than half, two signals 60 Hz apart both, the residual
+is the same for read sizes 100 / 777 / 3 072, the phase-step correction pulls 0.6 Hz off to within 0.2 Hz (the GFSK transition, the sine phase, the amplitude interpolation, the lag, serving a sample before it is final, the amplitude scale and the sign of the correction caught);
+a strong station hides a weak one 12.5 Hz away that two passes decode and one does not (the `tcal`, either sign of the refined place, `NEAR_CELLS` and no-subtraction mutations caught); one pass decodes `decode_block_cells`'s messages; a decode reports the refined place
+(a frequency or DT sign flip caught); the restricted search returns only candidates within the radius, the signal among them, none with no `near` (ignoring `allowed` caught).
+**Not done**: noise-only slots; ESP32; a board's ring and the demux fed the residual (`stage1_inc`); the cheap loop; the pass cap; `reviewer`, `scripts/verify.sh`.
+
+### 23a. After the cut: a pass decodes fewer candidates (same day)
+
+(The table below was measured with a hard-sync minimum of 9 next to the cap; the landed code uses `ft8dec`'s 7, which changes the figures by a few hits and instructions: the landed ledger is in 23b.)
+
+**What changed**: a pass after the first decodes at most `max_cand / 2` candidates (8 at least), and only those with a hard-sync count of 9 or more of the 21 Costas symbols (`PASS_CAND_DIV`, `PASS_CAND_MIN`, `PASS_MIN_HS`; the measurements above chose them). The number of passes is the caller's (`passes`; `icap-profile --passes N`).
+
+| | 15 candidates | 20 | 24 | 30 |
+|---|---|---|---|---|
+| 1 pass: jt9 hits, M instr | 754, 180 | 912, 233 | 979, 280 | 1 001, 396 |
+| 2 passes | 922, 488 | 1 099, 593 | 1 162, 701 | **1 192**, **881** |
+| 3 passes | 940, 849 | 1 114, 1 043 | 1 175, 1 200 | 1 206, 1 405 |
+
+(union found of 1 409: 30 candidates 1 035 / 1 247 / 1 262; in neither list 11 / 21 / 22; `ft8dec`: 990 / 1 189 / 1 204 hits at 335 / 850 / 1 278 M.) Against the plan's bar the second pass now costs +485 M at 30 candidates (was +800): the recall bar is met (+212 of the union), the +250 M is not;
+at 2 passes the flow is 1.04 times `ft8dec`'s instructions for 1 192 against 1 189 hits, at 3 passes 1.10 times for 1 206 against 1 204. **To pass `ft8dec`'s single pass (990 hits, 1 026 in its own list) the cheapest of these is 24 to 30 candidates in one pass (979 / 1 001 hits at 280 / 396 M), or 20 candidates in two (1 099 at 593 M)**; at the CoreS3's 15 candidates
+no number of passes gets there (940 at three): the first pass is limited by the candidates it can afford, and a later pass only takes what its subtraction uncovers. The 22 recordings: 275 / 332 of `jt9`'s 402 at 15 / 30 candidates and 2 passes.
+
+### 23b. After the `reviewer`'s pass on the port (same day)
+
+The port was found faithful line for line (`sig_corr`, `sig_sub`, `ph_inc`, `ph_at`, `psc`, `GSTEP`, the lag, the frequency correction, the pass loop, `refine`, the ring against the demux's reads). What was found and done:
+* **The amplitude interpolation was less pinned than its docs said**: a ramp removed (`dar = 0`), no recompute at `wi == half` and `k1 = ks` left every test green (a clean constant-amplitude signal makes every correlation alike). A fading-signal test was added (a ramp from 1 to 5, a 0.78 Hz swell of 80 %, a start off the half-symbol grid): it catches `k1` (-20.2 dB against -27.8) and **not** the ramp slope (1.1 dB) or the recompute at the half (no change: the interpolation is not what limits the depth here). Stated in the test.
+* **`PASS_MIN_HS` of 9 was measured without the cap**; with the cap it changes the cost by 5 M and the hits by 0. It is now `ft8dec`'s own 7 (`nsync_min`), which rejects nothing here. The cap (`PASS_CAND_DIV`, `PASS_CAND_MIN`) is marked as a divergence from `ft8dec` in the code.
+* **Line pointers** into `ft8dec.c` corrected (`sig_corr` 243-279, `sig_sub` 280-319, `build_wf` 321-379, `binok` 833-841, `round_` 830-911).
+* **The restricted search's edge**: `ft8dec` skips a candidate not strictly within 9 bins (56.25 Hz) of a new signal, with the frequencies corrected by the pass; the mask of `search_near` is made before the correction and is inclusive (up to 57.8 Hz). A post-check with the corrected frequencies and the strict limit was added (the 22 recordings and the ledger unchanged to the decode).
+* **`passes` 1 is not `decode_block_cells` bit for bit**: the same messages, at refined places, 396 against 382 M at 30 candidates (180 against 165 at 15: the place refinement and the signal bookkeeping; the split is not measured). The gain is no longer read from the audio when `passes` is 1. The docs say so.
+* **The new decodes in neither list, re-checked on the landed configuration** (2 passes, 30 candidates: **9 new**, 20 in neither list in all): `2E0LDW` 13 and `F5CCX F4AGZ` 34 wrong tones real; `JO1COV PD0MNO` 41 and `MM0IMC 4U1A` 43 probably real; **`LU5HA UA9TK R-13` 60 and `R-20` 50 read like noise**; `F6DEO/QRP` and `E77VM` (hashed calls) not checkable; `EA8PP JH0INP PM96` 44: **attested** now (below). The earlier count of "5 real" was too strong: 2 real, 2 probable.
+* **`EA8PP JH0INP PM96`** was classified two ways: tier B (`ft8_real_recordings_vs_jt9.rs`) attests it for `websdr_test7` (`jt9`'s exact text, same 940 Hz and DT -0.6, in `websdr_test5`), `band_baseband.rs` kept it as by-identity debt. It is in `profile::ATTESTED_EXTRAS` with that evidence and out of the SIC floor test's debt; `band_baseband.rs`'s list is left as it is (a message that stops being unexplained is allowed to leave it).
+* Landed ledger (60 slots, jt9 hits / union found / in neither, host M instr): 15 candidates 754 / 765 / 3, 180 M; 922 / 941 / 8, 488 M; 939 / 960 / 10, 859 M (1, 2, 3 passes). 20: 912, 233; 1 097, 594; 1 111, 1 055. 24: 979, 280; 1 161, 699; 1 174, 1 218. 30: 1 001 / 1 035 / 11, 396 M; 1 192 / 1 247 / 20, 881 M; 1 206 / 1 262 / 21, 1 443 M.
