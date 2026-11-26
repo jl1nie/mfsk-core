@@ -69,6 +69,13 @@ path = "src/bin/ft8_gate_bench.rs"
 harness = false
 required-features = ["ft8-gate-bench"]
 
+# FT8 half-dB cell producer bench (S3 cells plan step 1). Build: `cargo build --release --features ft8-cells-bench --bin ft8-cells-bench`.
+[[bin]]
+name = "ft8-cells-bench"
+path = "src/bin/ft8_cells_bench.rs"
+harness = false
+required-features = ["ft8-cells-bench"]
+
 # The FT4 receiver's desk demo: replays the vendored golden at 12 kHz
 # and runs the shipping slot pipeline over it. No USB host, so the
 # serial console survives and the board stays flashable.
@@ -236,6 +243,7 @@ ft8-osd = ["mfsk-core/osd"]
 # shipped pipeline, stage by stage, with the stack and heap figures. Also turns on `mfsk-core/osd` through
 # `embedded-shared`; the `ft8-bench` bin does not have OSD and is the reference to run beside it on the same board.
 ft8-gate-bench = ["embedded-shared/gate-bench"]
+ft8-cells-bench = ["embedded-shared/cells-bench"]
 
 [dependencies]
 log = "0.4"

@@ -50,7 +50,7 @@ pub fn fft_10(x: &mut [Complex32; 10]) {
 }
 
 /// The inter-stage twiddles: `t[n2 * 256 + k1] = exp(-j 2 pi n2 k1 / 2560)`.
-fn build_twiddles() -> Box<[Complex32; N]> {
+pub fn build_twiddles() -> Box<[Complex32; N]> {
     let mut t = vec![Complex32::new(0.0, 0.0); N].into_boxed_slice();
     for n2 in 0..N2 {
         for k1 in 0..N1 {

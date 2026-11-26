@@ -33,6 +33,8 @@ name = "embedded_shared"
 # (`docs/notes/S3_GATE_OSD_ABLATION.md`). `mfsk-core/osd` is the OSD fallback in a build without `fft-rustfft`; without
 # it `DecodeDepth::osd` is a silent no-op. Off by default: only the CoreS3 app's `ft8-gate-bench` bin turns it on.
 gate-bench = ["mfsk-core/osd"]
+# `apps::cells_bench`: the 2 560-point esp-dsp transform and the half-dB cell producer (S3 cells plan, step 1).
+cells-bench = []
 
 # Enable LX7 PIE _aes3_ esp-dsp kernels (fc32 + sc16 radix-2 FFT).
 # Default-off so LX6 (Core2, xtensa-esp32-espidf) keeps the _ae32_ path.

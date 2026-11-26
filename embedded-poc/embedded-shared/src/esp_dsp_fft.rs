@@ -385,7 +385,7 @@ pub fn prewarm(len: usize) {
     // them to the inner radix-2 size before initialising the table.
     let radix2_len = if len.is_power_of_two() {
         len
-    } else if len == 3840 {
+    } else if len == 3840 || len == 2560 {
         256
     } else {
         panic!("prewarm: unsupported len {len}");
@@ -1369,9 +1369,14 @@ impl FftPlanner16 for EspDspPlanner16 {
             self.ensure_table(256);
             return Box::new(MixedRadix3840Sc16Fft::new());
         }
+        // 2560 = 256 x 10 (FT8 at 8 kHz): the same 256-point kernel and table.
+        if len == 2560 {
+            self.ensure_table(256);
+            return Box::new(MixedRadix2560Sc16Fft::new());
+        }
         assert!(
             len.is_power_of_two() && len >= 4,
-            "esp-dsp i16 FFT: unsupported length {len} (need power-of-2 ≥ 4 or 3840)"
+            "esp-dsp i16 FFT: unsupported length {len} (need power-of-2 ≥ 4, 2560 or 3840)"
         );
         self.ensure_table(len);
         Box::new(EspDspFft16 { len, forward: true })
@@ -1482,6 +1487,99 @@ impl Fft16 for MixedRadix3840Sc16Fft {
 
     fn len(&self) -> usize {
         mfsk_core::engine::dsp::fft_mixed_3840::N
+    }
+}
+
+/// 2560-pt sc16 forward FFT, 256 x 10: the twin of [`MixedRadix3840Sc16Fft`] for FT8 at 8 kHz
+/// (`mfsk_core::engine::dsp::fft_mixed_2560_sc16::Plan2560Sc16` is the host reference; the
+/// board's output must equal it to a few LSB, to be compared on the board, not assumed).
+///
+/// Unlike the 3840 wrapper this allocates nothing per call: the ten rows are a 16-byte aligned
+/// array inside the plan and the f32 workspace is the shared internal-DRAM scratch
+/// (`reserve_mixed_scratch`, 30 720 B, sliced to 20 480), taken under [`Fc32Guard`] as every
+/// other mixed-radix user. Without the reservation it falls back to a plan-owned PSRAM buffer.
+struct MixedRadix2560Sc16Fft {
+    twiddles: Box<[Complex32; mfsk_core::engine::dsp::fft_mixed_2560_sc16::N]>,
+    rows: core::cell::UnsafeCell<Box<Aligned2560>>,
+    fallback: core::cell::UnsafeCell<alloc::vec::Vec<Complex32>>,
+}
+
+#[repr(C, align(16))]
+struct Aligned2560([Complex<i16>; mfsk_core::engine::dsp::fft_mixed_2560_sc16::N]);
+
+impl MixedRadix2560Sc16Fft {
+    fn new() -> Self {
+        const N: usize = mfsk_core::engine::dsp::fft_mixed_2560_sc16::N;
+        let rows: Box<Aligned2560> = unsafe {
+            let layout = alloc::alloc::Layout::new::<Aligned2560>();
+            let ptr = alloc::alloc::alloc_zeroed(layout) as *mut Aligned2560;
+            if ptr.is_null() {
+                alloc::alloc::handle_alloc_error(layout);
+            }
+            Box::from_raw(ptr)
+        };
+        Self {
+            twiddles: mfsk_core::engine::dsp::fft_mixed_2560_sc16::build_twiddles(),
+            rows: core::cell::UnsafeCell::new(rows),
+            fallback: core::cell::UnsafeCell::new(alloc::vec![Complex32::new(0.0, 0.0); N]),
+        }
+    }
+}
+
+impl Fft16 for MixedRadix2560Sc16Fft {
+    fn process(&self, buf: &mut [Complex<i16>]) {
+        const N: usize = mfsk_core::engine::dsp::fft_mixed_2560_sc16::N;
+        const N1: usize = 256;
+        const N2: usize = 10;
+        assert_eq!(buf.len(), N, "2560 sc16 FFT input length mismatch");
+        let _guard = Fc32Guard::acquire();
+        // SAFETY: `dyn Fft16` carries no `Sync` bound; a plan is owned by one caller.
+        let rows: &mut [Complex<i16>] = unsafe { &mut (*self.rows.get()).0 };
+        for n1 in 0..N1 {
+            for n2 in 0..N2 {
+                rows[n2 * N1 + n1] = buf[N2 * n1 + n2];
+            }
+        }
+        for n2 in 0..N2 {
+            let row_ptr = rows[n2 * N1..(n2 + 1) * N1].as_mut_ptr() as *mut i16;
+            unsafe {
+                #[cfg(not(feature = "aes3"))]
+                dsps_fft2r_sc16_ae32_(row_ptr, N1 as i32, dsps_fft_w_table_sc16);
+                #[cfg(feature = "aes3")]
+                dsps_fft2r_sc16_aes3_(row_ptr, N1 as i32, dsps_fft_w_table_sc16);
+                dsps_bit_rev_sc16_ansi(row_ptr, N1 as i32);
+            }
+        }
+        // SAFETY: `_guard` is held for the rest of the function.
+        let m: &mut [Complex32] = match unsafe { mixed_scratch(N) } {
+            Some(s) => s,
+            None => unsafe { &mut *self.fallback.get() }.as_mut_slice(),
+        };
+        for (i, c) in rows.iter().enumerate() {
+            m[i] = Complex32::new(c.re as f32, c.im as f32) * self.twiddles[i];
+        }
+        let mut col = [Complex32::new(0.0, 0.0); N2];
+        for k1 in 0..N1 {
+            for k2 in 0..N2 {
+                col[k2] = m[k2 * N1 + k1];
+            }
+            mfsk_core::engine::dsp::fft_mixed_2560_sc16::fft_10(&mut col);
+            for k2 in 0..N2 {
+                m[k2 * N1 + k1] = col[k2];
+            }
+        }
+        for k2 in 0..N2 {
+            for k1 in 0..N1 {
+                let c = m[k2 * N1 + k1];
+                let re = c.re.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                let im = c.im.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                buf[N1 * k2 + k1] = Complex::new(re, im);
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        mfsk_core::engine::dsp::fft_mixed_2560_sc16::N
     }
 }
 
