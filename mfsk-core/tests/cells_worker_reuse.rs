@@ -1034,6 +1034,16 @@ fn the_presets_are_the_chains_they_stand_for() {
         CELLS_GATE_OSD, CellsOptions, OsdOptions, OsdSeeds, SicStorage, SnrBaseline,
         decode_block_cells, decode_block_cells_with, sic_passes_osd, sic_signal_capacity,
     };
+    // the builders are the presets' own fields: p0_late is p0_window with two SIC passes, and a candidate count / floor override lands
+    use mfsk_core::ft8::decode_block::SicOptions;
+    assert_eq!(
+        CellsOptions::p0_window().with_sic(Some(SicOptions::new(2))),
+        CellsOptions::p0_late()
+    );
+    let o = CellsOptions::p0_window()
+        .with_max_cand(20)
+        .with_d_min_score(0.0);
+    assert!(o.max_cand == 20 && o.d_min_score == 0.0 && o.gate.is_some());
     let search = GatedSearch::new(200.0, 3000.0, 1.3, 30);
     let tables = CellTables::new();
     for name in ["qso3_busy", "qso1", "qso2"] {
@@ -1093,13 +1103,11 @@ fn the_presets_are_the_chains_they_stand_for() {
             base.apply(&cells, &tables, f);
         }
         let want: Vec<_> = known.into_iter().map(|f| f.res).collect();
-        let opts = CellsOptions {
-            gate: None,
-            osd: OsdOptions::Inline {
+        let opts = CellsOptions::PLAIN
+            .with_gate(None)
+            .with_osd(OsdOptions::Inline {
                 seeds: OsdSeeds::AD,
-            },
-            ..CellsOptions::PLAIN
-        };
+            });
         let got = decode_block_cells_with(&a, Ft8Rate::Hz8000, &search, &opts).unwrap();
         assert_eq!(full_keys(&got), full_keys(&want), "{name}: an inline OSD");
 

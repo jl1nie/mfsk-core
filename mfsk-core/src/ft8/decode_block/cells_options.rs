@@ -28,6 +28,7 @@ use super::types::{Ft8Rate, OsdSeeds};
 
 /// The OSD fallback of a configuration.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum OsdOptions {
     /// No OSD: the BP staircase only.
     Off,
@@ -39,6 +40,7 @@ pub enum OsdOptions {
 
 /// The subtraction passes of a configuration.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct SicOptions {
     /// Passes in all (the first is the plain one; 2 is one subtraction pass after it).
     pub passes: usize,
@@ -46,6 +48,7 @@ pub struct SicOptions {
 
 /// A cells-flow configuration. See the module doc.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct CellsOptions {
     /// Candidates decoded in a round (30 on the CoreS3).
     pub max_cand: usize,
@@ -57,7 +60,44 @@ pub struct CellsOptions {
     pub sic: Option<SicOptions>,
 }
 
+impl SicOptions {
+    /// `passes` in all (the first is the plain one).
+    pub const fn new(passes: usize) -> Self {
+        Self { passes }
+    }
+}
+
 impl CellsOptions {
+    /// This configuration with `max_cand` candidates a round.
+    pub const fn with_max_cand(mut self, max_cand: usize) -> Self {
+        self.max_cand = max_cand;
+        self
+    }
+
+    /// This configuration with the variant `d` floor `d_min_score`.
+    pub const fn with_d_min_score(mut self, d_min_score: f32) -> Self {
+        self.d_min_score = d_min_score;
+        self
+    }
+
+    /// This configuration with the pre-BP `gate` (or none).
+    pub const fn with_gate(mut self, gate: Option<&'static BpGate>) -> Self {
+        self.gate = gate;
+        self
+    }
+
+    /// This configuration with the OSD fallback `osd`.
+    pub const fn with_osd(mut self, osd: OsdOptions) -> Self {
+        self.osd = osd;
+        self
+    }
+
+    /// This configuration with the subtraction passes `sic` (or none).
+    pub const fn with_sic(mut self, sic: Option<SicOptions>) -> Self {
+        self.sic = sic;
+        self
+    }
+
     /// What [`decode_block_cells`](super::decode_block_cells) does: 30 candidates, the `d` floor, no gate, no OSD, no SIC.
     pub const PLAIN: Self = Self {
         max_cand: 30,
@@ -84,7 +124,7 @@ impl CellsOptions {
     /// The CoreS3's **late path** (after the window): the same, with two SIC passes, the OSD capped at 6 in each round and its decodes subtracted for the next pass.
     pub const fn p0_late() -> Self {
         Self {
-            sic: Some(SicOptions { passes: 2 }),
+            sic: Some(SicOptions::new(2)),
             ..Self::p0_window()
         }
     }
