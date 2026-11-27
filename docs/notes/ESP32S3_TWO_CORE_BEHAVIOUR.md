@@ -58,8 +58,11 @@ to internal DRAM changed the two-core pass by 5-6 % only: the cost is not that m
 
 ## 4. Rules for a design on these boards
 
-- **Unroll a hot loop that is a few instructions an iteration** (a `for w in 0..6` of two instructions pays x1.3-1.4 with the other core running, an unrolled body x1.12): measured only on a synthetic
-  chain, **not yet tried on the BP / OSD loops** (the 1.45 of the OSD attempt fits a loop of a few steps).
+- **Unroll a variable-trip inner loop that runs thousands of times a call.** Tried on the embedded OSD (`ft8-two-core-bench`, K = 14 pass; `ft8-osd-bench`): the elimination's row update was a loop of `w0..W` words (2-6 trips,
+  8 281 times a call); written out over all six words it took **17 % off the pass on one core and on two (537 / 362 -> 447 / 303 ms), 23 % off one OSD call (7.26 -> 5.60 ms)**, bit for bit the same answers. The
+  two-core / one-core ratio did not move (0.68): this is the loop overhead of an inner loop whose trip count is not a constant, not the cost of the second core. The other loop tried, the `npre1` gate
+  (4 095 tests a call, a software popcount in each), tested four pairs a round: 1 %, not kept. **Predicted before the run: 5 % at most; wrong for the elimination.** Variable-trip inner loops
+  with a few instructions in the body are the first place to look in a hot path; the `trailing_zeros` scatter that builds the generator (about 8 000 trips a call) is untried.
 - **Do not assume 2x from two cores.** Budget **x1.5 for compute- and internal-memory-bound work** (BP, OSD) and **about x1.1 for work that streams a PSRAM working set** (the band search), and
   measure the one-core figure on the board: the old S3 dual-core note's "244 ms of single-core work" was the 122 ms wall times two, an assumption (`PHASE_D_PIE_SIMD.md`), so the
   cost of two cores was not visible in it.
