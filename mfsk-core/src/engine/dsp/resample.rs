@@ -664,8 +664,10 @@ mod tests {
                     .wrapping_mul(6364136223846793005)
                     .wrapping_add(1442695040888963407);
                 let noise = ((st >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 6000.0;
-                let tone = 8000.0 * (core::f32::consts::TAU * 1500.0 * i as f32 / 48000.0).sin();
-                (noise + tone) as i16
+                // a 1 500 Hz triangle at 48 kHz from integers: no libm call, so the hashes below do not depend on the platform's `sin`
+                let ph = (i % 32) as i32;
+                let tri = if ph < 16 { ph - 8 } else { 24 - ph };
+                (noise + (tri * 1000) as f32) as i16
             })
             .collect()
     }
@@ -682,7 +684,7 @@ mod tests {
     }
 
     /// The 12 kHz outputs are what they were before the target became a parameter: the batch and the streaming resampler at 48 000, 44 100, 24 000 and 16 000 Hz
-    /// give the samples whose FNV hashes were taken from the code as it was (a scratch build of the commit before). **Fails if** the refactor changes one sample
+    /// give the samples whose FNV hashes were taken from the code as it was (a scratch build of `d0d39689`, the commit before the target became a parameter; the input is integers only, so the hashes do not depend on a libm; the first version of this test took them from `f32::sin` input that no Linux build reproduced, and CI failed on it for three commits). **Fails if** the refactor changes one sample
     /// or one output count of the 12 kHz path (the filter taps, the interpolation, the phase step, the ring).
     #[test]
     fn the_12k_outputs_are_what_they_were() {
@@ -690,33 +692,33 @@ mod tests {
             (
                 48_000,
                 96_000,
-                244931166423935021,
+                17382929057420325823,
                 24000,
-                10208247876593079070,
+                9047118746626079296,
                 24000,
             ),
             (
                 44_100,
                 88_200,
-                1939685733906210040,
+                10642893612809545096,
                 24001,
-                12972434343827817668,
+                2036763528108904569,
                 24000,
             ),
             (
                 24_000,
                 48_000,
-                17916385077328962935,
+                17594844038096371176,
                 24000,
-                18275154338166326010,
+                8176350238613271093,
                 24000,
             ),
             (
                 16_000,
                 32_000,
-                13285267916852385764,
+                2252673651563069181,
                 24000,
-                466958958094099648,
+                2316291657126323324,
                 24000,
             ),
         ];
