@@ -27,6 +27,15 @@ const MY_GRID: &str = match option_env!("MFSK_CORES3_TEST_GRID") {
 /// The decoders' side of the queue: any task may push.
 pub static HEARD: HeardQueue = HeardQueue::new();
 
+/// Queue a decode from any task (the late path's): see [`QsoStep::push`].
+pub fn push_heard(text: &str, bits: &[u8], snr_db: f32, period: u32) {
+    if let Some(item) = heard_item_from_text(MY_CALL, text, bits, snr_db, period) {
+        if !HEARD.push(item) {
+            log::warn!("[QSO] heard queue full: the oldest decode was dropped");
+        }
+    }
+}
+
 pub struct QsoStep {
     activator: Activator,
     collector: HeardCollector,

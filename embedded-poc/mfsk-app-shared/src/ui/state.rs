@@ -327,29 +327,44 @@ impl UiState {
         let slot_seq = self.published;
         self.latest_slot_seq = slot_seq;
         for d in decodes {
-            let mut msg: String<22> = String::new();
-            // By characters, not bytes: a cut inside a multi-byte
-            // character would not be a `str`.
-            for ch in d.text.chars() {
-                if msg.push(ch).is_err() {
-                    break;
-                }
-            }
-            self.push_decode(DecodedRow {
-                df_hz: d.freq_hz.round().clamp(0.0, 65_535.0) as u16,
-                snr_db: if d.snr_db.is_finite() {
-                    d.snr_db.round().clamp(-128.0, 127.0) as i8
-                } else {
-                    0
-                },
-                hard_errors: d.hard_errors.min(255) as u8,
-                dt_ds: (d.dt_sec * 10.0).round().clamp(-99.0, 99.0) as i8,
-                msg,
-                slot_seq,
-                first_seq: slot_seq,
-            });
+            self.push_slot_decode(slot_seq, d);
         }
         self.bump();
+    }
+
+    /// Decodes that arrive **after** their slot was published (the late path's, after the subtraction passes): rows of the latest slot, **without moving the watermark** — the slot is the
+    /// same one, so its earlier rows keep their highlight.
+    pub fn publish_late<'a>(&mut self, decodes: impl IntoIterator<Item = SlotDecode<'a>>) {
+        let slot_seq = self.latest_slot_seq;
+        for d in decodes {
+            self.push_slot_decode(slot_seq, d);
+        }
+        self.bump();
+    }
+
+    /// One decode as a row of slot `slot_seq`.
+    fn push_slot_decode(&mut self, slot_seq: u32, d: SlotDecode<'_>) {
+        let mut msg: String<22> = String::new();
+        // By characters, not bytes: a cut inside a multi-byte
+        // character would not be a `str`.
+        for ch in d.text.chars() {
+            if msg.push(ch).is_err() {
+                break;
+            }
+        }
+        self.push_decode(DecodedRow {
+            df_hz: d.freq_hz.round().clamp(0.0, 65_535.0) as u16,
+            snr_db: if d.snr_db.is_finite() {
+                d.snr_db.round().clamp(-128.0, 127.0) as i8
+            } else {
+                0
+            },
+            hard_errors: d.hard_errors.min(255) as u8,
+            dt_ds: (d.dt_sec * 10.0).round().clamp(-99.0, 99.0) as i8,
+            msg,
+            slot_seq,
+            first_seq: slot_seq,
+        });
     }
 
     /// Push a fresh decode. Dedupes by `msg` — if the message text

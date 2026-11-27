@@ -885,6 +885,21 @@ pub fn publish_slot(
     append_all_txt(text, mode.slot_period_ms() as u64);
 }
 
+/// [`publish_slot`] for decodes that arrive after their slot was published (the late path's): the same rows and `ALL.TXT` lines, the watermark not moved
+/// (`UiState::publish_late`).
+pub fn publish_late(ui: &mut UiState, mode: BootMode, slot_unix: Option<i64>, decodes: &[SlotDecode<'_>]) {
+    ui.publish_late(decodes.iter().copied());
+    let Some(t) = slot_unix else { return };
+    let name = mfsk_app_shared::ui::mode_picker::mode_name(mode).unwrap_or("?");
+    let dial_hz = ui.status.rig_freq_hz.map(u64::from);
+    let mut text = String::new();
+    for d in decodes {
+        let snr = if d.snr_db.is_finite() { d.snr_db.round() as i32 } else { 0 };
+        text.push_str(&mfsk_app_shared::all_txt::rx_line(t, dial_hz, name, snr, d.dt_sec, d.freq_hz.round() as i32, d.text));
+    }
+    append_all_txt(text, mode.slot_period_ms() as u64);
+}
+
 /// Counting wrappers around the flash calls LittleFS makes
 /// (`littlefs_esp_part.c`: read, write, erase_range), linked in with
 /// `-Wl,--wrap` when built with `MFSK_STORAGE_TRACE=1`. Everything

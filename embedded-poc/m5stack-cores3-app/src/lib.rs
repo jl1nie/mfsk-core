@@ -21,6 +21,8 @@ pub mod decode_pipeline;
 #[cfg(feature = "ft8-cells-flow")]
 pub mod cells_pipeline;
 #[cfg(feature = "ft8-cells-flow")]
+pub mod cells_sic;
+#[cfg(feature = "ft8-cells-flow")]
 pub mod qso_activator;
 pub mod display;
 pub mod esp_log_bridge;

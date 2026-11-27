@@ -164,9 +164,14 @@ impl Receiver for Ft8Controller {
 /// where it already sits rather than moving it — the guarantee is what
 /// is new, not the placement.
 fn spawn_decode(body: impl FnOnce() + Send + 'static) {
+    // the cells flow's task runs the OSD pass and the Activator on top of the decode: 32 KB left 2.8 KB at its lowest (2026-11-28)
+    #[cfg(feature = "ft8-cells-flow")]
+    const DECODE_STACK: usize = 40 * 1024;
+    #[cfg(not(feature = "ft8-cells-flow"))]
+    const DECODE_STACK: usize = 32 * 1024;
     let spawned = crate::board::spawn_named_tuned(
         c"decode",
-        32 * 1024,
+        DECODE_STACK,
         None,
         Some(esp_idf_svc::hal::cpu::Core::Core0),
         body,

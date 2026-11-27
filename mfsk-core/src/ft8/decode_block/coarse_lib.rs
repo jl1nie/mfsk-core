@@ -128,6 +128,21 @@ impl HalfDbCells {
         self.data[j * n..(j + 2) * n].split_at_mut(n)
     }
 
+    /// Make this store a copy of `other` (the same shape; the memory is kept, nothing is allocated): the cells and the rows filled. A second store for the subtraction passes
+    /// ([`sic_passes_osd`](super::sic_passes_osd) writes its residual into the store it is given) is filled from the window path's.
+    ///
+    /// # Panics
+    /// If the shapes differ.
+    pub fn copy_from(&mut self, other: &HalfDbCells) {
+        assert!(
+            (self.n_freq, self.n_time, self.first_bin)
+                == (other.n_freq, other.n_time, other.first_bin),
+            "copy_from: another shape"
+        );
+        self.data.copy_from_slice(&other.data);
+        self.filled = other.filled;
+    }
+
     /// Empty the store for the next slot: every cell zero, no row filled (the memory is kept).
     pub fn clear(&mut self) {
         self.data.fill(0);

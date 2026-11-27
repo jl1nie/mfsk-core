@@ -458,3 +458,37 @@ mod jtty_all_txt_tests {
         assert_eq!(l.find("-12"), r.find("-12"));
     }
 }
+
+#[cfg(test)]
+mod publish_late_tests {
+    use super::ui::state::{SlotDecode, UiState};
+
+    fn d(text: &str) -> SlotDecode<'_> {
+        SlotDecode {
+            freq_hz: 1000.0,
+            snr_db: -5.0,
+            dt_sec: 0.1,
+            text,
+            hard_errors: 0,
+        }
+    }
+
+    /// Decodes of the late path join their slot's rows **without moving the watermark**: the rows of the window path keep their slot number, the late ones carry the same, and the next slot is
+    /// still one after. **Fails if** `publish_late` advances the slot (the window's rows would lose their highlight) or stamps the late rows with another number.
+    #[test]
+    fn a_late_row_belongs_to_the_slot_already_published() {
+        let mut ui = UiState::new();
+        ui.publish_slot([d("CQ JA1AAA PM95")]);
+        let seq = ui.latest_slot_seq;
+        ui.publish_late([d("JA1BBB JA1CCC -10")]);
+        assert_eq!(ui.latest_slot_seq, seq, "the watermark did not move");
+        let rows: Vec<_> = ui
+            .decoded_iter()
+            .map(|r| (r.msg.as_str().to_string(), r.slot_seq))
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|(_, s)| *s == seq), "{rows:?}");
+        ui.publish_slot([d("CQ JA1DDD PM95")]);
+        assert_eq!(ui.latest_slot_seq, seq + 1);
+    }
+}

@@ -24,7 +24,7 @@ use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::ft8::decode_block::{
     candidate_ready, gain_shift_for_peak, merge_cells_parts, search_cells, CellTables,
     CellsOptions, CellsPart, CellsProducer, CellsWorker, Found, Ft8BpScratch, Ft8Rate, GatedSearch,
-    OsdOptions, SnrBaseline,
+    HalfDbCells, OsdOptions, SnrBaseline,
 };
 
 /// Samples of a slot at 8 kHz.
@@ -51,6 +51,8 @@ struct Slot {
     /// The candidates of the partial search that were not ready (their rows had not arrived).
     late: Vec<(SyncCandidate, u8)>,
     parts: Vec<CellsPart>,
+    /// The window path's candidate list (30 at most, with their hard-sync counts): the late path's first pass decodes these.
+    cands: Vec<(SyncCandidate, u8)>,
     emit_at: i64,
     emit_decoded: usize,
     /// `esp_timer` microseconds at the slot's end (the `SlotEnd` message) and the sample count the sink reported.
@@ -75,6 +77,7 @@ impl Slot {
             early_cands: Vec::new(),
             late: Vec::new(),
             parts: Vec::new(),
+            cands: Vec::new(),
             emit_at: 0,
             emit_decoded: 0,
             end_at: 0,
@@ -96,6 +99,7 @@ impl Slot {
         self.early_cands.clear();
         self.late.clear();
         self.parts.clear();
+        self.cands.clear();
         self.emit_at = 0;
         self.emit_decoded = 0;
         self.us_search = 0;
@@ -155,7 +159,11 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
     let mut jobs: VecDeque<Job> = VecDeque::new();
     let mut rs = LinearResamplerI16To8k::new(12_000);
     let mut scratch: Vec<i16> = Vec::new();
-    let mut calls = mfsk_core::msg::CallsignHashTable::new();
+    // the late path (core 1): its jobs in, its memory back; two spares (audio and store) recycled between them and the slots
+    let (late_tx, late_rx) = std::sync::mpsc::channel::<crate::cells_sic::LateJob>();
+    let (back_tx, back_rx) = std::sync::mpsc::channel::<crate::cells_sic::LateDone>();
+    crate::cells_sic::spawn(late_rx, back_tx);
+    let mut spares: Vec<crate::cells_sic::LateDone> = Vec::new();
     let mut slot_n = 0u32;
     let mut qso = crate::qso_activator::QsoStep::new();
     let qso = crate::qso_activator::QsoStep::new();
@@ -246,6 +254,7 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                     let parts = core::mem::take(&mut slots[w].parts);
                     let list = merge_cells_parts(&parts, &search, rate);
                     let st = p.store();
+                    slots[w].cands = list.iter().take(options.max_cand).cloned().collect();
                     // the decodes go to the front of the queue, in order, so that they run before the end-of-slot jobs
                     let mut decode_jobs = Vec::new();
                     for (c, hs) in list.into_iter().take(options.max_cand) {
@@ -294,9 +303,7 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                     let mut published: Vec<(String, f32, f32, f32, u32)> = Vec::new();
                     for f in &slots[w].found {
                         let r = &f.res;
-                        if let Some(text) =
-                            mfsk_core::msg::wsjt77::unpack77_learn(r.message77(), &mut calls)
-                        {
+                        if let Some(text) = crate::cells_sic::render(&r.message77()) {
                             log::info!(
                                 "{:+5.1}dB {:+5.2}s {:4.0}Hz {}",
                                 r.snr_db,
@@ -352,6 +359,43 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                     crate::log_free_internal("cells-slot-end");
                     if slot_n <= 3 || slot_n % 20 == 0 {
                         crate::board::log_task_stacks();
+                    }
+                    // the late path: a copy of the cells and the slot's audio go to core 1, unless it is still busy with the last slot (the window path never waits for it)
+                    while let Ok(s) = back_rx.try_recv() {
+                        spares.push(s);
+                    }
+                    if !crate::cells_sic::LATE_BUSY.load(core::sync::atomic::Ordering::Acquire) {
+                        let (mut audio_new, mut cells) = spares.pop().unwrap_or_else(|| {
+                            let st = p.store();
+                            (
+                                vec![0i16; SLOT_8K],
+                                HalfDbCells::new(rate, st.first_bin(), st.n_freq(), st.n_time()),
+                            )
+                        });
+                        cells.copy_from(p.store());
+                        audio_new.fill(0);
+                        let audio = core::mem::replace(&mut slots[w].audio, audio_new);
+                        let known = slots[w]
+                            .found
+                            .iter()
+                            .map(|f| {
+                                mfsk_app_shared::heard_queue::pack_bits(&f.res.message77()[..])
+                            })
+                            .collect();
+                        let job = crate::cells_sic::LateJob {
+                            audio,
+                            cells,
+                            cands: core::mem::take(&mut slots[w].cands),
+                            known,
+                            slot_n,
+                            period: slot_n / 2,
+                            slot_unix: crate::storage::decoded_slot_unix(15_000),
+                        };
+                        crate::cells_sic::LATE_BUSY
+                            .store(true, core::sync::atomic::Ordering::Release);
+                        let _ = late_tx.send(job);
+                    } else {
+                        log::warn!("CELLS slot {slot_n}: the late path is still busy with the last slot: no SIC for this one");
                     }
                     slots[w].reset();
                     owner = None;

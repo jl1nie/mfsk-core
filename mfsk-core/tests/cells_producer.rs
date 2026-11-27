@@ -125,3 +125,23 @@ fn a_restarted_producer_makes_the_cells_of_a_fresh_one() {
         coarse_sync_gated_cells(&mut SliceSource(&b), Ft8Rate::Hz8000, &search(), 1).unwrap();
     same_rows(p.store(), &whole, whole.n_time(), "restarted");
 }
+
+/// `copy_from` makes a second store the first's (the cells and the rows filled) without allocating, for the subtraction passes that write their residual into the store they get.
+/// **Fails if** a cell or the fill differs after the copy, or a store of another shape is accepted.
+#[test]
+fn a_copied_store_is_the_store() {
+    let a = audio("qso1");
+    let mut p =
+        CellsProducer::new(Ft8Rate::Hz8000, &search(), gain_shift_for_peak(peak(&a))).unwrap();
+    p.advance(&a, 70_000);
+    let s = p.store();
+    let mut spare = HalfDbCells::new(Ft8Rate::Hz8000, s.first_bin(), s.n_freq(), s.n_time());
+    spare.copy_from(s);
+    assert_eq!(spare.filled_rows(), s.filled_rows());
+    same_rows(&spare, s, s.n_time(), "copy");
+    let wrong = std::panic::catch_unwind(|| {
+        let mut other = HalfDbCells::new(Ft8Rate::Hz8000, 0, 10, 4);
+        other.copy_from(&HalfDbCells::new(Ft8Rate::Hz8000, 0, 11, 4));
+    });
+    assert!(wrong.is_err(), "another shape is refused");
+}

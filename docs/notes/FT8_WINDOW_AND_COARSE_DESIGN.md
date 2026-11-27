@@ -1040,3 +1040,13 @@ Step 0d of the board plan (section 25): how much of the window path's work can b
 * **No second search after the end**: only the candidates the partial search found and did not decode are decoded from the complete store. Host, 60 slots (`icap-early`, `NO_FULL=1`): 1 014 decodes against the complete flow's 1 019 (6 lost, 1 gained), 470 ms less on the board.
 * **Memory**: min free internal 128 887 B, largest block 49 152 B at the slot's end; the decode task (32 KB) keeps 8.8 KB free at its lowest (the OSD pass).
 * **Not yet**: a real radio (UAC path), the QSO machine, cold acquisition and the grid trim, the 20-minute run, the old flow side by side.
+
+## 34. The late path (SIC) in the CoreS3 app (`ft8-cells-flow`, wav_sim `qso3_busy`, 2026-11-28)
+
+`cells_sic.rs`: after a slot's window path is out, a copy of its cells (second store, `HalfDbCells::copy_from`) and its audio go to a task on core 1 (priority 4, 48 KB stack) that runs `CellsOptions::p0_late()` (`sic_passes_osd`, 2 passes, OSD capped at 6 a round); what it decodes that the window path did not goes to the heard queue (`push_heard`), the station list (`UiState::publish_late`: the slot's rows, the watermark unmoved: host test), `ALL.TXT` and the log. The audio and the store come back when the job ends, so a slot allocates nothing after the first.
+
+* **It decodes more**: `qso3_busy` 11 decodes in the window path, **13 in all, 2 new** every slot (`KD2UGC F6GCP R-23`, `K1BZM EA3CJ JN01`); SIC 3.8 s on core 1 (`ft8-sic-bench` said 4.94 s with the OSD, in another harness).
+* **The window path did not slow down**: 382-396 ms after the end, longest job 207-221 ms (without the late path 378-385 ms and 207 ms). 32 slots (8 minutes), no reset, no slot without its late path, 0 samples dropped.
+* **What it costs**: the waterfall's FFT (core 0, the esp-dsp scratch shared with the SIC's searches) went from 2.4-2.6 ms to 2.7-3.0 ms a row while the SIC runs (about +15 %): the contention `ESP32S3_TWO_CORE_BEHAVIOUR.md` warned of exists, and is small. Internal DRAM free at the slot's end: 128 KB without the late path, **55 KB with it** (the worker's OSD memory, the SIC's, the 40 KB decode stack, the late task's stack): largest block 25.6 KB. WiFi / USB host load is not in this run.
+* **Stacks** (high-water): decode task 40 KB, 10.8 KB free at its lowest (it had 2.8 KB at 32 KB once the Activator was in: raised); late task 48 KB, 22.5 KB free.
+* **Not yet**: a radio, WiFi and the USB host running, a run of hours, the late decodes reaching the Activator at a real reply deadline (they enter the queue; `decide` is called from the receive path every second slot).
