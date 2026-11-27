@@ -19,7 +19,6 @@ use mfsk_core::decoder::{ApMode, DecodeParams, Decoder, Depth, SlotInput};
 use mfsk_core::ft8::Ft8;
 
 /// A reference signal: frequency, DT, SNR, message, and whether the flow missed it.
-#[cfg(feature = "fixed-point")]
 type Truth = (f32, f32, f32, String, u8);
 
 fn norm(s: &str) -> String {
@@ -772,9 +771,119 @@ fn tones_of(msg: &str) {
     );
 }
 
+/// `probe7 <truth.tsv> <dir>`: for every reference signal, the time course of its tones in the 12 kHz audio: at the best of a local search (+-0.5 Hz, +-0.03 s) the hard-decision errors and the power of
+/// the right tone over the mean of the other seven (dB) in six runs of symbols. `V <slot> <missed> <snr> <errors of the 6 runs> <dB of the 6 runs> <message>`.
+fn probe7(truth: &str, dir: &str) {
+    use mfsk_core::msg::wsjt77::pack77;
+    let segs = [
+        (0usize, 13usize),
+        (13, 26),
+        (26, 40),
+        (40, 53),
+        (53, 66),
+        (66, 79),
+    ];
+    let mut by_slot: std::collections::BTreeMap<String, Vec<Truth>> = Default::default();
+    for l in std::fs::read_to_string(truth).unwrap().lines() {
+        let f: Vec<&str> = l.splitn(6, '\t').collect();
+        by_slot.entry(f[0].to_string()).or_default().push((
+            f[1].parse().unwrap(),
+            f[2].parse().unwrap(),
+            f[3].parse().unwrap(),
+            norm(f[4]),
+            f[5].parse().unwrap(),
+        ));
+    }
+    for (slot, sigs) in by_slot {
+        let audio = load(&format!("{dir}/{slot}.wav"));
+        for (f, dt, snr, msg, missed) in sigs {
+            let t: Vec<&str> = msg.split(' ').collect();
+            let bits = match t.len() {
+                3 => pack77(t[0], t[1], t[2]),
+                2 => pack77(t[0], t[1], ""),
+                _ => None,
+            };
+            let Some(bits) = bits else { continue };
+            let tones = mfsk_core::engine::tx::message_to_tones::<Ft8>(&bits);
+            let powers = |ff: f32, dd: f32| -> Vec<[f64; 8]> {
+                (0..79)
+                    .map(|k| {
+                        let start = ((dd + 0.5) * 12_000.0).round() as i64 + 1920 * k as i64;
+                        let mut p = [0f64; 8];
+                        for (tt, pt) in p.iter_mut().enumerate() {
+                            let w = 2.0 * std::f64::consts::PI * (ff as f64 + 6.25 * tt as f64)
+                                / 12_000.0;
+                            let (mut re, mut im) = (0f64, 0f64);
+                            for n in 0..1920usize {
+                                let i = start + n as i64;
+                                if i >= 0 && (i as usize) < audio.len() {
+                                    let x = audio[i as usize] as f64;
+                                    re += x * (w * n as f64).cos();
+                                    im -= x * (w * n as f64).sin();
+                                }
+                            }
+                            *pt = re * re + im * im;
+                        }
+                        p
+                    })
+                    .collect()
+            };
+            let errs_of = |p: &Vec<[f64; 8]>| -> usize {
+                p.iter()
+                    .zip(tones.iter())
+                    .filter(|(pk, tr)| {
+                        (0..8)
+                            .max_by(|&x, &y| pk[x].partial_cmp(&pk[y]).unwrap())
+                            .unwrap()
+                            != **tr as usize
+                    })
+                    .count()
+            };
+            let mut best: Option<(usize, Vec<[f64; 8]>)> = None;
+            for i in -2i32..=2 {
+                for j in -3i32..=3 {
+                    let p = powers(f + 0.25 * i as f32, dt + 0.01 * j as f32);
+                    let e = errs_of(&p);
+                    if best.as_ref().is_none_or(|b| e < b.0) {
+                        best = Some((e, p));
+                    }
+                }
+            }
+            let p = best.unwrap().1;
+            let mut es = Vec::new();
+            let mut dbs = Vec::new();
+            for &(lo, hi) in &segs {
+                let mut e = 0usize;
+                let (mut good, mut other) = (0f64, 0f64);
+                for k in lo..hi {
+                    let b = (0..8)
+                        .max_by(|&x, &y| p[k][x].partial_cmp(&p[k][y]).unwrap())
+                        .unwrap();
+                    e += (b != tones[k] as usize) as usize;
+                    good += p[k][tones[k] as usize];
+                    other += (p[k].iter().sum::<f64>() - p[k][tones[k] as usize]) / 7.0;
+                }
+                es.push(e.to_string());
+                dbs.push(format!("{:.1}", 10.0 * (good / other.max(1e-9)).log10()));
+            }
+            println!(
+                "V {slot} {missed} {snr} {} {} {msg}",
+                es.join(","),
+                dbs.join(",")
+            );
+        }
+    }
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let config = args.next().expect("config");
+    if config == "probe7" {
+        let truth = args.next().expect("truth.tsv");
+        let dir = args.next().expect("corpus dir");
+        probe7(&truth, &dir);
+        return;
+    }
     if config == "tones" {
         tones_of(&args.next().expect("message"));
         return;

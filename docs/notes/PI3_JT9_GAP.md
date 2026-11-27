@@ -66,3 +66,22 @@ The trace build of `jt9` (`target/upstream/wsjtx-v3.2.0-rc1-trace`, a local copy
 **The restriction of the later passes is not what holds the plateau**: the whole-band search and the uncapped passes find nothing more (+0 to +1) and cost +4 extras and 40-60 % more time.
 
 **What the subtraction does to a weak signal** (an `#[ignore]`d measurement in `ft8dec_sic.rs`: `llra` bit errors of 174 at `jt9`'s place, on the original cells and on the residual cells after pass 0 has been subtracted): `CU2DX` 45 -> 36 (`jt9`: 8), `SB7W` 69 -> 38, and **no change at all** for `SV2FPI` (64; `jt9` 7), `DL2HRE` (37; 17), `EA8PP` (59; 9), `UB3AQS` (69; 12): nothing near them was subtracted, so **interference is not what stops these**. The cells' hard decision per symbol at the grid place (`.` right, `x` wrong), e.g. `SV2FPI`: `xxxxxxx..xxxxxx.xxxxxxx..x....xx.xxxxxx...xxxxxxxx.......x.xxxxx.xxx.....xxxxxx`: **the errors come in runs**, and in five of the six the **first 7-14 symbols are wrong and the last 12-15 are right** (`CU2DX`: `x..xxxxxxx.xxx.xx......xx.x....xx..xxxxxx...xxxx...xx.xxxxxx.x.x...............`). `jt9`'s own `s8` for `CU2DX` and `SV2FPI` shows the same shape (the first Costas array and the first data symbols wrong) with the **data symbols mostly right** (6 of 58 and 10 of 58 wrong). A signal that is strong in its second half and wrecked in its first: fading, drift, or an interferer that is there at the start. Not yet separated; the next measurement is the tone power of the right tone against the neighbours, symbol by symbol, in the 12 kHz audio and in the cells, for these six.
+
+## 7. How the misses are made: the time course of their tones (2026-11-28)
+
+The subtraction's depth by symbol position (`depth_against_the_faithful_subtraction`, strong signals, median dB left): symbols 0-6 -20.0 dB (faithful -20.2), 7-13 -24.7 (-28.1), 14-35 -23.4 (-27.6), 36-71 -23.0 (-27.2), 72-78 -22.6 (-24.0): **nothing special at the start**; the cells flow is 3-4 dB shallower in the middle (not the +-1.8 dB of the all-symbol mean).
+
+How many of the 60 misses have a strong neighbour (jt9's SNR, within +-50 Hz and +10 dB above): **19 (32 %)**, against 31 of the 342 found (9 %): interference is a real factor and not the main one (the other 41 have none).
+
+**The tones' time course** (`pi3_sweep probe7`: in the 12 kHz audio, at the best of +-0.5 Hz x +-0.03 s, the hard-decision errors and the right tone's power over the others in six runs of symbols), 58 of the misses against 325 found:
+
+| class | missed | found |
+|---|---|---|
+| clean in the raw audio (< 25 % errors) | **8 (14 %)** | 232 (71 %) |
+| early bad, late better | 12 (21 %) | 23 (7 %) |
+| late bad, early better | 8 (14 %) | 28 (9 %) |
+| bursty / mid-message | 21 (36 %) | 31 (10 %) |
+| moderate, flat (25-40 %) | 5 (9 %) | 6 (2 %) |
+| uniformly bad (>= 40 %) | 4 (7 %) | 5 (2 %) |
+
+Mean error rate of the misses is 0.47-0.54 in every run (the found: 0.15-0.24), the right tone's power 4-6 dB over the others (the found: 11-12 dB): **the misses are weak, 7 dB weaker than the found ones, and uneven in time** (the thresholds are crude: the runs are 13 symbols). **8 of 58 (14 %) are clean in the raw audio and still missed by the cells flow** (`CQ SV2FPI KN10`: 3 of 79 wrong in the 12 kHz audio at the best place, 52 of 79 in the cells): a loss of the cells' representation or placement, which the flow can be fixed for. The rest is signals `jt9` reads with an LLR 5-10 times cleaner than the cells' at the same place, which is **not explained**.

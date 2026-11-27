@@ -825,8 +825,13 @@ mod tests {
     /// (`f0 + 6.25 tone`) over the symbol that starts at sample `t0 + k nsps`. A ratio of two of these (after / before) is the depth of a subtraction **for that signal only**:
     /// the neighbours' energy is in both and cancels.
     fn tone_energy(x: &[i16], fs: f64, f0: f64, t0: i64, tones: &[u8; NN]) -> f64 {
+        tone_energy_by_symbol(x, fs, f0, t0, tones).iter().sum()
+    }
+
+    /// [`tone_energy`] symbol by symbol.
+    fn tone_energy_by_symbol(x: &[i16], fs: f64, f0: f64, t0: i64, tones: &[u8; NN]) -> Vec<f64> {
         let nsps = (fs * 0.16).round() as usize;
-        let mut e = 0.0;
+        let mut out = Vec::with_capacity(NN);
         for (k, &t) in tones.iter().enumerate() {
             let w = 2.0 * core::f64::consts::PI * (f0 + 6.25 * t as f64) / fs;
             let (mut re, mut im) = (0.0, 0.0);
@@ -839,9 +844,9 @@ mod tests {
                     im -= v * (w * n as f64).sin();
                 }
             }
-            e += re * re + im * im;
+            out.push(re * re + im * im);
         }
-        e
+        out
     }
 
     /// The depth of this module's subtraction (`ResidualSource`, 8 kHz, streaming) against the faithful pipeline's (`subtract_tones_lpf_refine_dt` after `refine_freq`, 12 kHz, as `ft8_decode.f90`'s
@@ -889,6 +894,9 @@ mod tests {
         let (nstep, fs) = (rate.nstep() as i64, rate.hz() as f32);
         // (snr, depth cells, depth faithful)
         let mut rows: Vec<(f32, f64, f64)> = Vec::new();
+        // by symbol position bucket: (energy before, after cells, after faithful), signals of +0 dB and up
+        let buckets = [(0usize, 7usize), (7, 14), (14, 36), (36, 72), (72, 79)];
+        let mut pos: Vec<Vec<(f64, f64)>> = vec![Vec::new(); 5];
         for name in &names {
             let path = format!(
                 "{}/../embedded-poc/assets/{name}.wav",
@@ -955,7 +963,46 @@ mod tests {
                     10.0 * (after8 / before8).log10(),
                     10.0 * (after12 / before12).log10(),
                 ));
+                if known[i].res.snr_db >= 0.0 {
+                    let b8 = tone_energy_by_symbol(&a8, 8000.0, f0, t8, &sg.tones);
+                    let a8s = tone_energy_by_symbol(&r8, 8000.0, f0, t8, &sg.tones);
+                    let b12 = tone_energy_by_symbol(&a12, 12000.0, f0, t12, &sg.tones);
+                    let a12s = tone_energy_by_symbol(&r12, 12000.0, f0, t12, &sg.tones);
+                    for (bi, &(lo, hi)) in buckets.iter().enumerate() {
+                        let sum = |v: &[f64]| v[lo..hi].iter().sum::<f64>();
+                        pos[bi].push((
+                            10.0 * (sum(&a8s) / sum(&b8)).log10(),
+                            10.0 * (sum(&a12s) / sum(&b12)).log10(),
+                        ));
+                    }
+                }
             }
+        }
+        std::println!(
+            "by symbol position (signals of +0 dB and up): energy left of the signal's own tone, cells / faithful"
+        );
+        for (bi, &(lo, hi)) in buckets.iter().enumerate() {
+            let med = |mut v: Vec<f64>| {
+                v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                v[v.len() / 2]
+            };
+            let fin: Vec<&(f64, f64)> = pos[bi]
+                .iter()
+                .filter(|p| p.0.is_finite() && p.1.is_finite())
+                .collect();
+            let (mc, mf) = (
+                med(fin.iter().map(|p| p.0).collect()),
+                med(fin.iter().map(|p| p.1).collect()),
+            );
+            std::println!(
+                "  symbols {lo:2}..{hi:2}: median over {} signals: cells {mc:6.1} dB   faithful {mf:6.1} dB",
+                fin.len()
+            );
+            // no run of symbols may be left much worse than the faithful subtraction leaves it (the start of a signal, where the amplitude estimate has no history, included)
+            assert!(
+                mc <= mf + 6.0 && mc <= -15.0,
+                "symbols {lo}..{hi}: the cells flow leaves {mc:.1} dB, the faithful subtraction {mf:.1} dB"
+            );
         }
         let med = |v: &mut Vec<f64>| {
             v.sort_by(|a, b| a.partial_cmp(b).unwrap());
