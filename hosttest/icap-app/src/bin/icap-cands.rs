@@ -8,7 +8,8 @@ use mfsk_core::engine::scalar::Cmplx;
 use mfsk_core::engine::source::SliceSource;
 use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::{
-    CellTables, CellsWorker, Ft8BpScratch, Ft8Rate, GatedSearch, coarse_sync_gated_cells,
+    CELLS_D_MIN_SCORE, CellTables, CellsWorker, Ft8BpScratch, Ft8Rate, GatedSearch,
+    coarse_sync_gated_cells,
 };
 use mfsk_core::msg::wsjt77::unpack77;
 use std::collections::HashSet;
@@ -17,7 +18,12 @@ fn main() {
     let mut cs: Box<[[Cmplx<f32>; 8]; 79]> =
         vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
     let mut bp = Box::new(Ft8BpScratch::new());
-    let mut w = CellsWorker::new(&mut cs, &mut bp, &tables);
+    // the floor of variant `d`: the flow's (16) unless D_MIN_SCORE says otherwise (0 = the whole staircase, as before Issue #765)
+    let d_min = std::env::var("D_MIN_SCORE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(CELLS_D_MIN_SCORE);
+    let mut w = CellsWorker::new(&mut cs, &mut bp, &tables).with_d_min_score(d_min);
     for path in std::env::args().skip(1) {
         let slot12 = wav::load_i16(&path);
         let a = resample(&slot12, 12_000, 8_000);
