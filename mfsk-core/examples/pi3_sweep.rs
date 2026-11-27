@@ -882,6 +882,7 @@ fn probe7(truth: &str, dir: &str) {
 /// `probe8 <probe7 output> <dir>`: the cells' **design** in `f64`, without the 16-bit transform and the half-dB byte: 8 kHz audio, the row of 80 ms read with a Hann window over two symbols (2 560
 /// samples starting 640 before the symbol's start), the cell at bin `b` (3.125 Hz) the magnitude of the DFT at `b x 3.125` Hz; the same hard decision per symbol at the grid place (nearest row and bin
 /// of the 12 kHz search's best place) and the best of the 3 x 3; and, for comparison, a plain one-symbol rectangular window at the exact place. `W <slot> <missed> <12k> <hann grid> <hann 3x3> <rect exact> <msg>`.
+#[cfg(feature = "fixed-point")]
 fn probe8(probe: &str, dir: &str) {
     use mfsk_core::engine::dsp::resample::resample_to_8k;
     use mfsk_core::msg::wsjt77::pack77;
@@ -1007,9 +1008,125 @@ fn probe8(probe: &str, dir: &str) {
     }
 }
 
+/// `probe10 <truth.tsv> <dir> <slot> <message> <out.wav>`: the slot's audio with **every other reference signal subtracted** (jt9's messages, frequency refined by `refine_freq`, DT by
+/// `subtract_tones_lpf_refine_dt`, strongest first) written as a 12 kHz wav; prints the energy left against the original, in dB.
+fn probe10(truth: &str, dir: &str, slot: &str, target: &str, out: &str) {
+    use mfsk_core::engine::dsp::subtract::{
+        GfskParams, SubtractCfg, refine_freq, subtract_tones_lpf_refine_dt,
+    };
+    use mfsk_core::msg::wsjt77::pack77;
+    let cfg = SubtractCfg {
+        sample_rate: 12_000.0,
+        tone_spacing_hz: 6.25,
+        samples_per_symbol: 1920,
+        base_offset_s: 0.5,
+        gfsk: Some(GfskParams {
+            bt: 2.0,
+            hmod: 1.0,
+            ramp_samples: 1920 / 8,
+            frame_ramp: false,
+        }),
+    };
+    let mut sigs: Vec<Truth> = Vec::new();
+    for l in std::fs::read_to_string(truth).unwrap().lines() {
+        let f: Vec<&str> = l.splitn(6, '\t').collect();
+        if f[0] == slot {
+            sigs.push((
+                f[1].parse().unwrap(),
+                f[2].parse().unwrap(),
+                f[3].parse().unwrap(),
+                norm(f[4]),
+                f[5].parse().unwrap(),
+            ));
+        }
+    }
+    sigs.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+    let orig = load(&format!("{dir}/{slot}.wav"));
+    let mut r = orig.clone();
+    let mut n = 0;
+    for (f, dt, _, msg, _) in &sigs {
+        if msg == target {
+            continue;
+        }
+        let t: Vec<&str> = msg.split(' ').collect();
+        let bits = match t.len() {
+            3 => pack77(t[0], t[1], t[2]),
+            2 => pack77(t[0], t[1], ""),
+            _ => None,
+        };
+        if let Some(bits) = bits {
+            let tones = mfsk_core::engine::tx::message_to_tones::<Ft8>(&bits);
+            let te = |x: &[i16], ff: f32| -> f64 {
+                let mut e = 0.0;
+                for (k, &t) in tones.iter().enumerate() {
+                    let w = 2.0 * std::f64::consts::PI * (ff as f64 + 6.25 * t as f64) / 12_000.0;
+                    let start = ((*dt + 0.5) * 12_000.0).round() as i64 + 1920 * k as i64;
+                    let (mut re, mut im) = (0f64, 0f64);
+                    for i in 0..1920usize {
+                        let ix = start + i as i64;
+                        if ix >= 0 && (ix as usize) < x.len() {
+                            re += x[ix as usize] as f64 * (w * i as f64).cos();
+                            im -= x[ix as usize] as f64 * (w * i as f64).sin();
+                        }
+                    }
+                    e += re * re + im * im;
+                }
+                e
+            };
+            let f0 = refine_freq(&r, &tones, *f, *dt, &cfg, 2.5, 0.1);
+            let before = te(&r, f0);
+            subtract_tones_lpf_refine_dt(&mut r, &tones, f0, *dt, &cfg, 2000, true);
+            if n < 6 {
+                println!(
+                    "  {msg}: printed f {f} dt {dt}, refined f {f0:.2}: its own tone energy left {:.1} dB",
+                    10.0 * (te(&r, f0) / before).log10()
+                );
+            }
+            n += 1;
+        }
+    }
+    let e = |v: &[i16]| v.iter().map(|&x| (x as f64) * (x as f64)).sum::<f64>();
+    println!(
+        "subtracted {n} signals: energy left {:.1} dB of the original",
+        10.0 * (e(&r) / e(&orig)).log10()
+    );
+    let mut pcm = Vec::new();
+    for x in &r {
+        pcm.extend_from_slice(&x.to_le_bytes());
+    }
+    let mut w = b"RIFF".to_vec();
+    w.extend_from_slice(&(36 + pcm.len() as u32).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    for v in [
+        16u32.to_le_bytes().to_vec(),
+        1u16.to_le_bytes().to_vec(),
+        1u16.to_le_bytes().to_vec(),
+        12000u32.to_le_bytes().to_vec(),
+        24000u32.to_le_bytes().to_vec(),
+        2u16.to_le_bytes().to_vec(),
+        16u16.to_le_bytes().to_vec(),
+    ] {
+        w.extend_from_slice(&v);
+    }
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
+    w.extend_from_slice(&pcm);
+    std::fs::write(out, w).unwrap();
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let config = args.next().expect("config");
+    if config == "probe10" {
+        let truth = args.next().unwrap();
+        let dir = args.next().unwrap();
+        let slot = args.next().unwrap();
+        let msg = args.next().unwrap();
+        let out = args.next().unwrap();
+        probe10(&truth, &dir, &slot, &msg, &out);
+        return;
+    }
+    #[cfg(feature = "fixed-point")]
     if config == "probe8" {
         let probe = args.next().expect("probe7 output");
         let dir = args.next().expect("corpus dir");
