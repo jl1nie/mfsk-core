@@ -1,0 +1,108 @@
+diff --git a/hosttest/icap-app/src/bin/icap-cands.rs b/hosttest/icap-app/src/bin/icap-cands.rs
+index 3d15d8c1..9b649c16 100644
+--- a/hosttest/icap-app/src/bin/icap-cands.rs
++++ b/hosttest/icap-app/src/bin/icap-cands.rs
+@@ -3,6 +3,11 @@
+ //! Each slot has `<slot>.ref` beside it (one reference message per line). TSV on stdout: slot, rank, freq, dt, score, hard sync, decoded,
+ //! in the reference, message, BP calls the candidate cost, BP message-update passes ([`BpStats`](mfsk_core::fec::ldpc::bp::BpStats)). `scripts/cands-yield.py`
+ //! reads it (design note section 27).
++use std::sync::Mutex;
++static FE: Mutex<Vec<Vec<f32>>> = Mutex::new(Vec::new());
++fn fhook(f: &[f32]) {
++    FE.lock().unwrap().push(f.to_vec());
++}
+ use icap_app_hosttest::{fft_shim, resample::resample, wav};
+ use mfsk_core::engine::scalar::Cmplx;
+ use mfsk_core::engine::source::SliceSource;
+@@ -14,6 +19,10 @@ use mfsk_core::ft8::decode_block::{
+ use mfsk_core::msg::wsjt77::unpack77;
+ use std::collections::HashSet;
+ fn main() {
++    mfsk_core::ft8::decode_block::PROBE_FEAT.store(
++        fhook as fn(&[f32]) as usize,
++        std::sync::atomic::Ordering::Relaxed,
++    );
+     let tables = CellTables::new();
+     let mut cs: Box<[[Cmplx<f32>; 8]; 79]> =
+         vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
+@@ -58,8 +67,20 @@ fn main() {
+                 }
+                 None => (0, 0, String::new()),
+             };
++            let feat = FE
++                .lock()
++                .unwrap()
++                .first()
++                .map(|v| {
++                    v.iter()
++                        .map(|x| format!("{x:.4}"))
++                        .collect::<Vec<_>>()
++                        .join(",")
++                })
++                .unwrap_or_default();
++            FE.lock().unwrap().clear();
+             println!(
+-                "{slot}\t{i}\t{:.2}\t{:.3}\t{}\t{hs}\t{dec}\t{truth}\t{msg}\t{}\t{}",
++                "{slot}\t{i}\t{:.2}\t{:.3}\t{}\t{hs}\t{dec}\t{truth}\t{msg}\t{}\t{}\t{feat}",
+                 c.freq_hz, c.dt_sec, c.score, bp.calls, bp.passes
+             );
+         }
+diff --git a/mfsk-core/src/ft8/decode_block.rs b/mfsk-core/src/ft8/decode_block.rs
+index 7e90c654..3fa87a32 100644
+--- a/mfsk-core/src/ft8/decode_block.rs
++++ b/mfsk-core/src/ft8/decode_block.rs
+@@ -107,7 +107,7 @@ pub use process_candidates::decode_block_streaming;
+ /// Phase 1.7.7-Stick: fill-closure variant for host research /
+ /// regression tests (spec-lookup vs BASIS dot product comparison).
+ pub use process_candidates::process_candidates_into_with_cs_scratch_tuned_with_fill;
+-pub use process_candidates::{Ft8BpScratch, process_candidate_with_scratch};
++pub use process_candidates::{Ft8BpScratch, PROBE_FEAT, process_candidate_with_scratch};
+ pub use process_candidates::{LowMem, decode_block_low_mem};
+ pub use process_candidates::{RefinedCandidate, decode_block, decode_block_tuned, xsnr2_db_simple};
+ #[cfg(feature = "fixed-point")]
+diff --git a/mfsk-core/src/ft8/decode_block/process_candidates.rs b/mfsk-core/src/ft8/decode_block/process_candidates.rs
+index efb81ce9..cb4eb758 100644
+--- a/mfsk-core/src/ft8/decode_block/process_candidates.rs
++++ b/mfsk-core/src/ft8/decode_block/process_candidates.rs
+@@ -2152,6 +2152,16 @@ fn wsjtx_quirky(message: &Wsjt77Fields) -> bool {
+ #[allow(clippy::too_many_arguments)]
+ #[allow(unused_variables)] // ap_hint only used under #[cfg(feature = "fft-rustfft")]
+ #[allow(unused_assignments)] // llrb_arr/llrc_arr only read back under #[cfg(feature = "fft-rustfft")]
++pub static PROBE_FEAT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
++#[inline]
++fn probe_feat(f: &[f32]) {
++    let h = PROBE_FEAT.load(core::sync::atomic::Ordering::Relaxed);
++    if h != 0 {
++        let g: fn(&[f32]) = unsafe { core::mem::transmute(h) };
++        g(f);
++    }
++}
++#[allow(clippy::too_many_arguments)]
+ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
+     cs_scratch: &[[Cmplx<f32>; 8]; 79],
+     cand: &SyncCandidate,
+@@ -2199,6 +2209,24 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
+     // NMS implementation, bit-identical AWGN behaviour by design.
+     let llr_a_fast: super::super::llr::LlrSet<LlrT> =
+         super::super::llr::compute_llr_fast_metric(cs_scratch, pass.squared());
++    {
++        // PROBE: statistics of llra before the first BP call
++        let mut a: [f32; LDPC_N] = [0.0; LDPC_N];
++        for i in 0..LDPC_N {
++            a[i] = crate::engine::scalar::LlrScalar::to_f32(llr_a_fast.llra[i]).abs();
++        }
++        let mean = a.iter().sum::<f32>() / LDPC_N as f32;
++        let var = a.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / LDPC_N as f32;
++        let mut sorted = a;
++        sorted.sort_by(|x, y| x.partial_cmp(y).unwrap());
++        let med = sorted[LDPC_N / 2];
++        let p10 = sorted[LDPC_N / 10];
++        let p90 = sorted[LDPC_N * 9 / 10];
++        let small = a.iter().filter(|&&x| x < 0.5 * mean).count() as f32 / LDPC_N as f32;
++        let big = a.iter().filter(|&&x| x > 2.0 * mean).count() as f32 / LDPC_N as f32;
++        let mx = sorted[LDPC_N - 1];
++        probe_feat(&[mean, var.sqrt(), med, p10, p90, small, big, mx]);
++    }
+     let bp_step1 = bp_step_select(bp_scratch, &llr_a_fast.llra, bp_max_iter, Some(check_crc14));
+     if let Some(bp) = bp_step1
+         && bp.hard_errors <= strictness.ft8_nharderrors_max()
