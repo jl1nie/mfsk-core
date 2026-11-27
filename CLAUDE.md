@@ -172,5 +172,6 @@ serialized across the cores, the 32 KB data cache is shared; budget x1.5, not x2
 | releasing | `docs/notes/RELEASE_PROCEDURE.md` |
 | hardware | `embedded-poc/CLAUDE.md`, board `CLAUDE.md`, `docs/notes/EMBEDDED_WORKFLOW.md` |
 | ESP32-S3 two cores, caches, PSRAM / flash misses (before any two-core or PSRAM-heavy design) | `docs/notes/ESP32S3_TWO_CORE_BEHAVIOUR.md` |
+| which implementation / OSD / SIC options for which hardware class (small ESP32, Cortex-A9, Pi 3B, Pi 4+) | `docs/notes/PROFILES.md` |
 | model choice, when to spawn agents, review requirement | `docs/notes/AGENT_WORKFLOW.md` |
 | plans, status | `docs/notes/ROADMAP.md`; embedded perf log: auto-memory `project_decode_block_embedded.md` (per machine, not synced: it is in the Linux box's `-home-minoru-src-mfsk-core/memory/`, not the Mac's; if missing, ask the user rather than reconstruct it) |
