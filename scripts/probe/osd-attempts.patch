@@ -1,0 +1,195 @@
+diff --git a/hosttest/icap-app/src/bin/icap-cands.rs b/hosttest/icap-app/src/bin/icap-cands.rs
+index ea3438dc..1ecfac1b 100644
+--- a/hosttest/icap-app/src/bin/icap-cands.rs
++++ b/hosttest/icap-app/src/bin/icap-cands.rs
+@@ -67,6 +67,7 @@ fn main() {
+             .to_string_lossy()
+             .to_string();
+         for (i, (c, hs)) in cands.iter().take(max_cand).enumerate() {
++            mfsk_core::ft8::decode_block::osd_strategy::ATT_N.store(0, std::sync::atomic::Ordering::Relaxed);
+             let _ = w.take_bp_stats();
+             let f = w.decode_candidate_hs(&cells, c, *hs, depth, 0.25);
+             let bp = w.take_bp_stats();
+@@ -79,6 +80,18 @@ fn main() {
+                 }
+                 None => (0, 0, String::new()),
+             };
++            {
++                use mfsk_core::ft8::decode_block::osd_strategy::{ATT, ATT_N};
++                use std::sync::atomic::Ordering::Relaxed;
++                for a in 0..(ATT_N.load(Relaxed) as usize).min(8) {
++                    let g = |k: usize| ATT[a * 12 + k].load(Relaxed);
++                    println!(
++                        "A\t{slot}\t{i}\t{a}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{truth}\t{}\t{hs}",
++                        f32::from_bits(g(0)), f32::from_bits(g(1)), f32::from_bits(g(2)), f32::from_bits(g(3)),
++                        g(4), g(5), g(6), g(7), g(8), g(9), g(10) as i32, g(11), c.score
++                    );
++                }
++            }
+             println!(
+                 "{slot}\t{i}\t{:.2}\t{:.3}\t{}\t{hs}\t{dec}\t{truth}\t{msg}\t{}\t{}",
+                 c.freq_hz, c.dt_sec, c.score, bp.calls, bp.passes
+diff --git a/mfsk-core/src/fec/ldpc/bp.rs b/mfsk-core/src/fec/ldpc/bp.rs
+index 480f12ce..bdb1ca8a 100644
+--- a/mfsk-core/src/fec/ldpc/bp.rs
++++ b/mfsk-core/src/fec/ldpc/bp.rs
+@@ -735,6 +735,17 @@ impl BpStats {
+     }
+ }
+ 
++use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
++pub static BPLOG: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
++pub static BPLOG_N: AtomicU32 = AtomicU32::new(0);
++fn bplog(min_nc: u32, last_nc: u32) {
++    let n = BPLOG_N.fetch_add(1, Relaxed) as usize;
++    if n < 4 {
++        BPLOG[2 * n].store(min_nc, Relaxed);
++        BPLOG[2 * n + 1].store(last_nc, Relaxed);
++    }
++}
++
+ /// Generic Normalized-Min-Sum Belief-Propagation decode.
+ ///
+ /// Architectural counterpart of [`bp_decode_generic_kind`]'s NMS
+@@ -1079,6 +1090,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
+     let mut ncnt = 0u32;
+     let mut nclast = 0u32;
+ 
++    let mut min_nc = u32::MAX;
+     for iter in 0..=max_iter {
+         // Variable-node belief sum. The wide accumulator avoids
+         // overflow when summing 1 LLR + NCW=3 tov entries.
+@@ -1125,6 +1137,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
+             }
+         }
+ 
++        min_nc = min_nc.min(ncheck);
+         if ncheck == 0 {
+             let mut decoded = vec![0u8; k];
+             decoded.copy_from_slice(&cw[..k]);
+@@ -1149,6 +1162,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
+                 // of moving so the scratch's `cw` Vec stays in the pool
+                 // for the next call.
+                 stats.add(iter, true);
++                bplog(min_nc, ncheck);
+                 return Some(BpResult {
+                     message77,
+                     info: decoded,
+@@ -1168,6 +1182,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
+             }
+             if ncnt >= 5 && iter >= 10 && ncheck > 15 {
+                 stats.add(iter, false);
++                bplog(min_nc, ncheck);
+                 return None;
+             }
+         }
+@@ -1237,6 +1252,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
+         }
+     }
+ 
++    bplog(min_nc, nclast);
+     stats.add(max_iter.saturating_add(1), false);
+     None
+ }
+diff --git a/mfsk-core/src/ft8/decode_block.rs b/mfsk-core/src/ft8/decode_block.rs
+index 2e892f4a..2b25b09d 100644
+--- a/mfsk-core/src/ft8/decode_block.rs
++++ b/mfsk-core/src/ft8/decode_block.rs
+@@ -86,7 +86,7 @@ pub use types::OsdSeeds;
+ mod coarse_sync;
+ mod fill_symbol_spectra;
+ mod fine_sync_12k;
+-mod osd_strategy;
++pub mod osd_strategy;
+ mod process_candidates;
+ pub(crate) mod spectrogram;
+ mod types;
+diff --git a/mfsk-core/src/ft8/decode_block/osd_strategy.rs b/mfsk-core/src/ft8/decode_block/osd_strategy.rs
+index 938aedb1..7d673b9c 100644
+--- a/mfsk-core/src/ft8/decode_block/osd_strategy.rs
++++ b/mfsk-core/src/ft8/decode_block/osd_strategy.rs
+@@ -128,6 +128,13 @@ pub(super) const PASS_ID_OSD_ZSAVE2_A: u8 = 19;
+ /// sync/LLR/BP/OSD sensitivity problem — mfsk-core's own OSD
+ /// implementation was already capable of the decode the whole time;
+ /// this one-line gate was refusing to even try.
++
++use core::sync::atomic::{AtomicU32, AtomicI32, Ordering::Relaxed};
++pub static LAST_OSD_RUN: AtomicI32 = AtomicI32::new(-1);
++pub static LAST_F: [AtomicU32; 4] = [const { AtomicU32::new(0) }; 4];
++pub static ATT: [AtomicU32; 96] = [const { AtomicU32::new(0) }; 96];
++pub static ATT_N: AtomicU32 = AtomicU32::new(0);
++
+ pub(super) fn try_fallback(
+     cs_scratch: &[[Cmplx<f32>; 8]; 79],
+     precomputed_llr: Option<&super::super::llr::LlrSet<f32>>,
+@@ -139,6 +146,37 @@ pub(super) fn try_fallback(
+     precomputed_llre: Option<&[f32; LDPC_N]>,
+     // The OSD's memory and the f32 BP scratch of its inputs: the caller's, so nothing is allocated here (`BpScratch::osd_work`).
+     work: &mut OsdWork,
++) -> Option<(BpResult, u8)> {
++    LAST_OSD_RUN.store(-1, Relaxed);
++    let r = try_fallback_inner(cs_scratch, precomputed_llr, depth, q, strictness, pass, precomputed_llre, work);
++    let n = ATT_N.fetch_add(1, Relaxed) as usize;
++    if n < 8 {
++        let b = n * 12;
++        for i in 0..4 {
++            ATT[b + i].store(LAST_F[i].load(Relaxed), Relaxed);
++        }
++        ATT[b + 4].store(q, Relaxed);
++        for i in 0..4 {
++            ATT[b + 5 + i].store(crate::fec::ldpc::bp::BPLOG[i].load(Relaxed), Relaxed);
++        }
++        ATT[b + 9].store(r.is_some() as u32, Relaxed);
++        ATT[b + 10].store(LAST_OSD_RUN.load(Relaxed) as u32, Relaxed);
++        ATT[b + 11].store(crate::fec::ldpc::bp::BPLOG_N.load(Relaxed), Relaxed);
++    }
++    r
++}
++
++fn try_fallback_inner(
++    cs_scratch: &[[Cmplx<f32>; 8]; 79],
++    precomputed_llr: Option<&super::super::llr::LlrSet<f32>>,
++    depth: DecodeDepth,
++    q: u32,
++    strictness: DecodeStrictness,
++    pass: super::PassCtx,
++    // `llre` (see `compute_llre_metric`) if the caller already has it in f32.
++    precomputed_llre: Option<&[f32; LDPC_N]>,
++    // The OSD's memory and the f32 BP scratch of its inputs: the caller's, so nothing is allocated here (`BpScratch::osd_work`).
++    work: &mut OsdWork,
+ ) -> Option<(BpResult, u8)> {
+     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Osd);
+     if !depth.osd || q <= 6 {
+@@ -163,6 +201,12 @@ pub(super) fn try_fallback(
+         }
+     };
+ 
++    {
++        let f = super::pre_bp_gate::BpGate::features(&llr_full_f32.llra, 0.0, 0);
++        for i in 0..4 {
++            LAST_F[i].store(f[i].to_bits(), Relaxed);
++        }
++    }
+     // WSJT-X-faithful OSD dispatch (issue #63): `ft8b.f90` calls
+     // `decode174_91` with `norder=2` for every candidate, i.e. `osd174_91`'s
+     // ndeep=2 (nord=1 + npre1=1, ntheta=10, ~165 patterns post-gate). Until
+@@ -268,6 +312,7 @@ pub(super) fn try_fallback(
+             if let Some(hit) =
+                 osd174_91_into(osd, &zsum, None).filter(|h| h.hard_errors <= nharderrors_max)
+             {
++                LAST_OSD_RUN.store(idx as i32 * 2 + n_iter as i32 - 1, Relaxed);
+                 return Some((to_bp(hit, osd.codeword()), base + idx as u8));
+             }
+         }
+diff --git a/mfsk-core/src/ft8/decode_block/process_candidates.rs b/mfsk-core/src/ft8/decode_block/process_candidates.rs
+index d0f7dc3d..bb56a28f 100644
+--- a/mfsk-core/src/ft8/decode_block/process_candidates.rs
++++ b/mfsk-core/src/ft8/decode_block/process_candidates.rs
+@@ -2197,6 +2197,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
+     // time via `fixed-point` (Q11i16) or default (f32) — see the
+     // `LlrT` definition above. Both go through the *same* generic
+     // NMS implementation, bit-identical AWGN behaviour by design.
++    crate::fec::ldpc::bp::BPLOG_N.store(0, core::sync::atomic::Ordering::Relaxed);
+     let llr_a_fast: super::super::llr::LlrSet<LlrT> =
+         super::super::llr::compute_llr_fast_metric(cs_scratch, pass.squared());
+     // The cells flow's gate before BP (`BpGate`): a candidate the model gives no chance is not decoded, nor tried by OSD. The caller sets the gate that was fitted for its depth
