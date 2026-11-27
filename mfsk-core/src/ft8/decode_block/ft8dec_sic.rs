@@ -691,10 +691,13 @@ pub fn sic_passes_with<A: PcmSource>(
 
     // pass 0
     round(cells, cands, max_cand, &mut known);
+    // the noise floor of the slot, from the complete cells of the first pass (the later passes overwrite the store with a residual)
+    let base = super::cells_flow::SnrBaseline::new(cells, tables);
     add_signals(
         &mut known,
         0,
         &View { cells, t: tables },
+        &base,
         &mut sigs,
         df,
         nstep,
@@ -740,7 +743,9 @@ pub fn sic_passes_with<A: PcmSource>(
             (max_cand / PASS_CAND_DIV).max(PASS_CAND_MIN).min(max_cand),
             &mut known,
         );
-        add_signals(&mut known, first_new, &view, &mut sigs, df, nstep, fs);
+        add_signals(
+            &mut known, first_new, &view, &base, &mut sigs, df, nstep, fs,
+        );
         new_from = before;
     }
     known.into_iter().map(|f| f.res).collect()
@@ -751,6 +756,7 @@ fn add_signals(
     known: &mut [Found],
     from: usize,
     view: &View<'_>,
+    base: &super::cells_flow::SnrBaseline,
     sigs: &mut Vec<SubSig>,
     df: f32,
     nstep: i64,
@@ -762,6 +768,8 @@ fn add_signals(
         let (f0, t0) = view.refine(f.grid, &tones, df, nstep);
         f.res.freq_hz = f0;
         f.res.dt_sec = t0 as f32 / fs - 0.5 + crate::ft8::refine_fine::XDT_OFFSET_S;
+        // the SNR on the cells of this pass (a later pass's are a residual: the signal itself is intact), against the baseline of the first pass's
+        f.res.snr_db = base.snr_db(view.cells, view.t, f.grid, &tones);
         sigs.push(SubSig { f0, t0, tones });
     }
 }

@@ -258,6 +258,102 @@ fn tcal(d: f32) -> f32 {
     if d < 0.0 { -u } else { u }
 }
 
+/// The slot's noise floor on its cells, for the SNR of its decodes: WSJT-X's `baseline.f90` (the lower envelope of the slot's average spectrum: a polynomial through the 10th percentile
+/// of each of ten segments, `engine::baseline::fit_baseline`) run over the **cells' own time-averaged power**, so that the signal's power and the floor come from one spectrum (the
+/// calibration of `ft8b.f90:451`'s `xsnr2` is fitted to a matching pair, `process_candidates.rs`). Made **once a slot from the complete cells of the first pass** (the subtraction
+/// passes overwrite the store with a residual), about 456 columns read over 174 rows; applied to each decode with [`apply`](Self::apply).
+pub struct SnrBaseline {
+    first_bin: usize,
+    /// dB (of the cells' power units) at each column.
+    base_db: Vec<f32>,
+}
+
+/// `xsig / xbase` of `ft8b.f90:451` is `xsig / xbase / K - 1` here; `K` and the dB scale are **fitted** to `jt9`'s SNR on the 22 recordings (`tests/cells_flow_accuracy.rs`).
+const SNR_K: f32 = 58.0;
+const SNR_REF_DB: f32 = 26.12;
+const SNR_FLOOR_DB: f32 = -25.0;
+
+impl SnrBaseline {
+    /// The baseline of `cells` (call it on the complete store of a slot, before any subtraction pass).
+    pub fn new(cells: &HalfDbCells, tables: &CellTables) -> Self {
+        let n_freq = cells.row_len();
+        let rows = cells.filled_rows();
+        let mut avg = alloc::vec![0.0f32; n_freq];
+        let first = cells.carrier_bins().start;
+        for row in 0..rows {
+            for (col, a) in avg.iter_mut().enumerate() {
+                if let Some(c) = cells.cell(row, first + col) {
+                    *a += tables.pow[c as usize];
+                }
+            }
+        }
+        if rows > 0 {
+            for a in avg.iter_mut() {
+                *a /= rows as f32;
+            }
+        }
+        let base_db = crate::engine::baseline::fit_baseline(&avg, 0, n_freq.saturating_sub(1));
+        Self {
+            first_bin: first,
+            base_db,
+        }
+    }
+
+    /// `xsig / xbase`: the power of the 79 transmitted `tones` (the best of the 3 x 3 cells round the grid place `g`: a signal half a cell off loses up to 3 dB) over the baseline at the
+    /// carrier. `None` where the baseline does not reach the carrier.
+    pub fn ratio(
+        &self,
+        cells: &HalfDbCells,
+        tables: &CellTables,
+        g: Grid,
+        tones: &[u8; 79],
+    ) -> Option<f32> {
+        let view = View { cells, t: tables };
+        let col = usize::try_from(g.k).ok()?.checked_sub(self.first_bin)?;
+        let base_db = *self.base_db.get(col)?;
+        let energy = |dr: i32, dc: i32| -> f32 {
+            tones
+                .iter()
+                .enumerate()
+                .map(|(sym, &t)| tables.pow[view.h(g, sym, t as usize, dr, dc)])
+                .sum()
+        };
+        let mut xsig = 0.0f32;
+        for dr in -1..=1 {
+            for dc in -1..=1 {
+                xsig = xsig.max(energy(dr, dc));
+            }
+        }
+        let xbase = 10.0f32.powf(base_db / 10.0);
+        (xbase > 0.0 && xbase.is_finite()).then_some(xsig / xbase)
+    }
+
+    /// The SNR in WSJT-X's reference (dB in 2 500 Hz) of a decode at grid place `g`.
+    pub fn snr_db(
+        &self,
+        cells: &HalfDbCells,
+        tables: &CellTables,
+        g: Grid,
+        tones: &[u8; 79],
+    ) -> f32 {
+        match self.ratio(cells, tables, g, tones) {
+            Some(r) if r / SNR_K > 1.0 => {
+                (10.0 * (r / SNR_K - 1.0).log10() - SNR_REF_DB).max(SNR_FLOOR_DB)
+            }
+            _ => SNR_FLOOR_DB,
+        }
+    }
+
+    /// Replace `found.res.snr_db` (the staircase's adjacent-tone figure, 0-15 dB off between signals) by [`snr_db`](Self::snr_db).
+    pub fn apply(&self, cells: &HalfDbCells, tables: &CellTables, found: &mut Found) {
+        let tones: [u8; 79] =
+            crate::engine::tx::message_to_tones::<crate::ft8::Ft8>(found.res.message77())
+                .try_into()
+                .expect("FT8 has 79 symbols");
+        found.res.snr_db = self.snr_db(cells, tables, found.grid, &tones);
+    }
+}
+
 /// A worker of the cells flow over **memory the caller owns**: the staging block of 79 x 8 spectra (internal DRAM on a board: its existing staging pair), the BP scratch
 /// (about 12 KB, made once per worker) and the tables. [`decode_candidate`](Self::decode_candidate) allocates nothing for a candidate that does not decode (OSD off: the OSD
 /// fallback makes a scratch of its own), so a firmware runs one worker a core and pulls candidates from a queue. `decode_block_cells` and `decode_block_cells_sic` make one
@@ -670,6 +766,11 @@ fn decode_cells_inner<S: AudioSample>(
     decode_round(
         &cells, &tables, &cands, max_cand, depth, min_shift, &mut known,
     );
+    // the SNR from the complete cells of the slot
+    let base = SnrBaseline::new(&cells, &tables);
+    for f in &mut known {
+        base.apply(&cells, &tables, f);
+    }
     Some(known.into_iter().map(|f| f.res).collect())
 }
 

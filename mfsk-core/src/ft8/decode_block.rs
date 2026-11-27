@@ -70,8 +70,8 @@ mod ft8dec_sic;
 mod pre_bp_gate;
 #[cfg(feature = "fixed-point")]
 pub use cells_flow::{
-    CELLS_D_MIN_SCORE, CellTables, CellsWorker, Found, Grid, OsdAttempt, decode_block_cells,
-    rank_osd_attempts,
+    CELLS_D_MIN_SCORE, CellTables, CellsWorker, Found, Grid, OsdAttempt, SnrBaseline,
+    decode_block_cells, rank_osd_attempts,
 };
 #[cfg(feature = "fixed-point")]
 pub use coarse_lib::{
