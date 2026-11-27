@@ -44,6 +44,8 @@ osd-bench = ["mfsk-core/osd"]
 two-core-bench = ["mfsk-core/osd"]
 # what two cores of the CoreS3 share (`apps/mem_bench.rs`): the same loops over different memories on one core and on two.
 mem-bench = []
+# the old S3 flow's pass 2 and stage 3 on one core and on two (`apps/old_s3_bench.rs`)
+old-s3-bench = []
 
 # Enable LX7 PIE _aes3_ esp-dsp kernels (fc32 + sc16 radix-2 FFT).
 # Default-off so LX6 (Core2, xtensa-esp32-espidf) keeps the _ae32_ path.

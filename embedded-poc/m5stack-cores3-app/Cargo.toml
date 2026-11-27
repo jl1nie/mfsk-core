@@ -111,6 +111,13 @@ path = "src/bin/ft8_mem_bench.rs"
 harness = false
 required-features = ["ft8-mem-bench"]
 
+# The old S3 flow on one core and on two. Build: `cargo build --release --features ft8-old-s3-bench --bin ft8-old-s3-bench`.
+[[bin]]
+name = "ft8-old-s3-bench"
+path = "src/bin/ft8_old_s3_bench.rs"
+harness = false
+required-features = ["ft8-old-s3-bench"]
+
 # The FT4 receiver's desk demo: replays the vendored golden at 12 kHz
 # and runs the shipping slot pipeline over it. No USB host, so the
 # serial console survives and the board stays flashable.
@@ -284,6 +291,7 @@ ft8-stage-bench = ["embedded-shared/stage-bench"]
 ft8-osd-bench = ["embedded-shared/osd-bench"]
 ft8-two-core-bench = ["embedded-shared/two-core-bench"]
 ft8-mem-bench = ["embedded-shared/mem-bench"]
+ft8-old-s3-bench = ["embedded-shared/old-s3-bench"]
 
 [dependencies]
 log = "0.4"
