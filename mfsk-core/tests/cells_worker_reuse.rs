@@ -593,3 +593,51 @@ fn the_osd_gate_skips_hopeless_candidates_and_saves_osd_runs() {
         "the gate saves OSD runs: {osd_gated} against {osd_base}"
     );
 }
+
+/// `OsdSeeds::AD` (variants `a` and `d`, four OSD runs a candidate) against the faithful ten runs, OSD on, no gate: **the same decodes** on the three recordings. The runs it skips
+/// (`b`, `c`, `e`) never returned on 4 780 slots (design note, OSD seeds), so a recording that loses a decode here is a new finding, not noise. **Fails if** the decode lists differ.
+#[test]
+fn osd_seeds_ad_decodes_what_the_ten_runs_do() {
+    use mfsk_core::ft8::decode_block::OsdSeeds;
+    let depth = DecodeDepth {
+        osd: true,
+        ..DecodeDepth::EMBEDDED
+    };
+    let tables = CellTables::new();
+    let mk = || -> (Box<[[Cmplx<f32>; 8]; 79]>, Box<Ft8BpScratch>) {
+        (
+            vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap(),
+            Box::new(Ft8BpScratch::new()),
+        )
+    };
+    let ((mut cs0, mut bp0), (mut cs1, mut bp1)) = (mk(), mk());
+    let mut faithful = CellsWorker::new(&mut cs0, &mut bp0, &tables);
+    let mut ad = CellsWorker::new(&mut cs1, &mut bp1, &tables).with_osd_seeds(OsdSeeds::AD);
+    let mut decoded = 0;
+    for name in ["qso3_busy", "qso1", "qso2"] {
+        let a = audio(name);
+        let (cands, cells) = coarse_sync_gated_cells(
+            &mut SliceSource(&a),
+            Ft8Rate::Hz8000,
+            &GatedSearch::new(200.0, 3000.0, 1.3, 30),
+            1,
+        )
+        .unwrap();
+        for (c, hs) in cands.iter().take(30) {
+            let key = |f: &Option<mfsk_core::ft8::decode_block::Found>| {
+                f.as_ref().map(|f| {
+                    (
+                        f.res.message77().to_vec(),
+                        f.res.freq_hz.to_bits(),
+                        f.res.dt_sec.to_bits(),
+                    )
+                })
+            };
+            let w = faithful.decode_candidate_hs(&cells, c, *hs, depth, 0.25);
+            let x = ad.decode_candidate_hs(&cells, c, *hs, depth, 0.25);
+            decoded += w.is_some() as u32;
+            assert_eq!(key(&x), key(&w), "{name}: score {} hs {hs}", c.score);
+        }
+    }
+    assert!(decoded >= 14, "the recordings decode with OSD: {decoded}");
+}

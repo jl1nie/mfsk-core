@@ -45,6 +45,14 @@
 //! **passes 870 (800-950) / 314 (280-360) / 263 (240-300)**, at 0.43 ms a pass and the non-BP 1.5-2.5 ms a candidate unchanged: **stage 3 at floor 16 with the gate 0.47 (0.42-0.52) / 0.22
 //! (0.17-0.28) / 0.17 (0.12-0.22) s** (it is 0.623 / 0.484 / 0.464 s without); decodes 9 / 4 / 5. The gate's own cost (the statistics of 174 values, two passes) is under 0.1 ms a candidate.
 //!
+//! **The OSD fallback in stage 3 (`osd_emb`, `OsdSeeds`), predicted before its run:** two more arms at the flow's floor, no gate, `DecodeDepth { osd: true, .. }`: `osd faithful` (`ft8b.f90`'s ten runs a candidate)
+//! and `osd ad` (variants `a` and `d`, four runs: none of the other six ever returned on 4 780 slots; the same decodes on all 143 400 candidates of the host corpora). Host `icap-cands`
+//! (30 candidates, OSD on): decodes 13 / 5 / 5, both arms; BP passes 1 296 / 868 / 1 003. Instructions over OSD off (callgrind): **faithful +352 / +315 / +371 M, ad +116 / +102 / +122 M**.
+//! `ft8-osd-bench` measured one `osd174_91_into` at 7.26 ms, 0.76 M host instructions, i.e. 9.6 ns an instruction; the BP pass is 10.9. At 9.6-10.9 ns:
+//! **stage 3, `osd ad`: 1.75-1.9 / 1.42-1.55 / 1.63-1.8 s; `osd faithful`: 4.0-4.4 / 3.4-3.8 / 4.1-4.5 s** (the floor-16 arm without OSD is 0.625 / 0.442 / 0.464 s). Decodes 13 / 5 / 5 in both.
+//! The unknown is what the rest of a `try_fallback` costs on the LX7 (the zsum BP, an f32 LLR): the prediction uses the host's instruction ratio for it. Stack: the OSD's own scratch is
+//! on the heap, so the stack free should stay within 2 KB of the OSD-off arms' figure.
+//!
 //! One BP pass (`b`): **0.57-0.70 ms**; a candidate apart from BP (`a`): about 1.5 ms. The stage-3 figures are +-10 %. **Stop rule:** if any stage is more than 25 % off its prediction,
 //! stop and explain it on the host before the next flash. The prediction rests on one ns-per-instruction ratio for every stage; the point of the run is to see where it breaks.
 
@@ -58,7 +66,7 @@ use mfsk_core::engine::dsp::resample::resample_to_8k;
 use mfsk_core::engine::source::SliceSource;
 use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::{
-    CELLS_D_MIN_SCORE, CELLS_GATE, CellTables, CellsWorker, Ft8BpScratch, Ft8Rate, GatedSearch,
+    CELLS_D_MIN_SCORE, CELLS_GATE, CellTables, OsdSeeds, CellsWorker, Ft8BpScratch, Ft8Rate, GatedSearch,
     coarse_sync_gated_cells, merge_cells_parts, search_cells,
 };
 use mfsk_core::msg::wsjt77::unpack77;
@@ -177,19 +185,34 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
         );
 
         // stage 3 at floor 0 and at the flow's floor
-        for (floor, gate_on) in [(0.0f32, false), (CELLS_D_MIN_SCORE, false), (CELLS_D_MIN_SCORE, true)] {
+        for (floor, gate_on, osd) in [
+            (0.0f32, false, None),
+            (CELLS_D_MIN_SCORE, false, None),
+            (CELLS_D_MIN_SCORE, true, None),
+            (CELLS_D_MIN_SCORE, false, Some(OsdSeeds::Faithful)),
+            (CELLS_D_MIN_SCORE, false, Some(OsdSeeds::AD)),
+        ] {
+            let depth = DecodeDepth { osd: osd.is_some(), ..DecodeDepth::EMBEDDED };
+            let osd_label = match osd {
+                None => "off",
+                Some(OsdSeeds::AD) => "ad",
+                Some(_) => "faithful",
+            };
             let mut rows: Vec<Row> = Vec::new();
             let mut set: Vec<alloc::string::String> = Vec::new();
             let mut total = 0i64;
             for k in 0..2 {
                 rows.clear();
                 set.clear();
-                worker = worker.with_d_min_score(floor).with_gate(gate_on.then_some(&CELLS_GATE));
+                worker = worker
+                    .with_d_min_score(floor)
+                    .with_osd_seeds(osd.unwrap_or(OsdSeeds::Faithful))
+                    .with_gate(gate_on.then_some(&CELLS_GATE));
                 let _ = worker.take_bp_stats();
                 let t_all = now_us();
                 for (i, (c, hs)) in cands.iter().take(MAX_CAND).enumerate() {
                     let t0 = now_us();
-                    let f = worker.decode_candidate_hs(&cells, c, *hs, DecodeDepth::EMBEDDED, 0.25);
+                    let f = worker.decode_candidate_hs(&cells, c, *hs, depth, 0.25);
                     let us = now_us() - t0;
                     let st = worker.take_bp_stats();
                     if let Some(f) = &f {
@@ -206,14 +229,14 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
             set.dedup();
             for r in &rows {
                 log::info!(
-                    "stage-bench: cand {label} floor {floor} gate {} #{} score {} hs {} {} us calls {} passes {} {}",
+                    "stage-bench: cand {label} floor {floor} gate {} osd {osd_label} #{} score {} hs {} {} us calls {} passes {} {}",
                     u8::from(gate_on), r.rank, r.score, r.hs, r.us, r.calls, r.passes, if r.dec { "DEC" } else { "-" }
                 );
             }
             let (calls, passes): (u32, u64) = rows.iter().fold((0, 0), |(c, p), r| (c + r.calls, p + r.passes));
             let (a, b) = fit(&rows);
             log::info!(
-                "stage-bench: s3 {label} floor {floor} gate {}: {total} us, calls {calls}, passes {passes}, {} decodes; us = {a:.0} + {b:.1} * passes (one BP pass {:.3} ms)",
+                "stage-bench: s3 {label} floor {floor} gate {} osd {osd_label}: {total} us, calls {calls}, passes {passes}, {} decodes; us = {a:.0} + {b:.1} * passes (one BP pass {:.3} ms)",
                 u8::from(gate_on),
                 set.len(),
                 b / 1000.0

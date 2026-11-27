@@ -161,6 +161,46 @@ mod tests {
         assert!(!any_large, "zero input should not produce large LLRs");
     }
 
+    /// The OSD's `OsdSeeds::AD` reuses the BP stage's one-symbol LLRs (`compute_llr_fast_metric`) in place of the full set's `llra` / `llrd`: they must be the same f32
+    /// values, bit for bit, for both metrics. **Fails if** either differs on any of 200 random spectra sets.
+    #[test]
+    fn the_ad_llrs_are_the_full_ones() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            ((state >> 40) as f32 / (1u64 << 24) as f32) - 0.5
+        };
+        for _ in 0..200 {
+            let mut cs: Box<[[Cmplx<f32>; 8]; 79]> =
+                vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
+            for sym in cs.iter_mut() {
+                for t in sym.iter_mut() {
+                    *t = Cmplx::new(next() * 4.0, next() * 4.0);
+                }
+            }
+            for squared in [false, true] {
+                let full: LlrSet<f32> = compute_llr_metric(&cs, squared);
+                let fast: LlrSet<f32> = compute_llr_fast_metric(&cs, squared);
+                assert!(
+                    full.llra
+                        .iter()
+                        .zip(&fast.llra)
+                        .all(|(a, b)| a.to_bits() == b.to_bits()),
+                    "llra (squared {squared})"
+                );
+                assert!(
+                    full.llrd
+                        .iter()
+                        .zip(&fast.llrd)
+                        .all(|(a, b)| a.to_bits() == b.to_bits()),
+                    "llrd (squared {squared})"
+                );
+            }
+        }
+    }
+
     /// A direct port of `ft8b.f90` lines 186-257 (the `nsym` 1/2/3 bit metrics, `llrd`, `llre`,
     /// `normalizebmet`, `scalefac`), 1-based indices and all, to check the shared implementation
     /// against it on random spectra. The point of it is the last group of each 29-symbol half:

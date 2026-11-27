@@ -37,7 +37,7 @@ gate-bench = ["mfsk-core/osd"]
 cells-bench = []
 # `apps::sic_bench`: `sic_passes` over caller memory on the board, the ring in PSRAM against internal DRAM (SIC-on-ESP32 step S2).
 sic-bench = []
-stage-bench = []
+stage-bench = ["mfsk-core/osd"]
 # FT8's OSD on the board: `osd174_91` against `osd174_91_into` (`apps/osd_bench.rs`).
 osd-bench = ["mfsk-core/osd"]
 

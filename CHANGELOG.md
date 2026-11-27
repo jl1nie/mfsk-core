@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### OSD seeds `a` and `d` only (`OsdSeeds::AD`, off by default; a divergence, Issue #766; host, 143 400 candidates)
+
+- `CellsWorker::with_osd_seeds(OsdSeeds::AD)`: the OSD fallback runs variants `a` and `d` at both snapshots (4 runs) in place of `ft8b.f90`'s ten. Variants `b`, `c`, `e` never returned on 4 780 slots (600 returns): **0 of 143 400 candidates differ** (7 442 decodes, 7 397 in the reference, both ways).
+- Host instructions of the OSD fallback (qso3_busy / qso1 / qso2, OSD on): `try_fallback` 319 / 286 / 337 -> 119 / 104 / 122 M (-63 %); the f32 LLR is not recomputed (the BP stage's one-symbol `llra` / `llrd` are the full set's, test `the_ad_llrs_are_the_full_ones`).
+
 ### FT8 OSD for a 32-bit core: `osd174_91_into`, `osd174_91`'s answer bit for bit (host tests, board `ft8-osd-bench`)
 
 - **New** `fec::ldpc::osd_emb::{osd174_91_into, Osd174Scratch, OsdHit}`: `ndeep = 2` over `u32` rows, the generator's columns from a compile-time table, the caller's memory (about 4.5 KB, kept in the `BpScratch`) and a distance that stops once it cannot win. `try_fallback` uses it, with the f32 BP scratch of its `zsave` inputs kept too: the fallback allocates nothing after its first run.

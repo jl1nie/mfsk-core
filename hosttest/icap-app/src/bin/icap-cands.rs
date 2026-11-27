@@ -8,8 +8,8 @@ use mfsk_core::engine::scalar::Cmplx;
 use mfsk_core::engine::source::SliceSource;
 use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::{
-    CELLS_D_MIN_SCORE, CELLS_GATE, CellTables, CellsWorker, Ft8BpScratch, Ft8Rate, GatedSearch,
-    coarse_sync_gated_cells,
+    CELLS_D_MIN_SCORE, CELLS_GATE, CELLS_GATE_OSD, CellTables, CellsWorker, Ft8BpScratch, Ft8Rate,
+    GatedSearch, OsdSeeds, coarse_sync_gated_cells,
 };
 use mfsk_core::msg::wsjt77::unpack77;
 use std::collections::HashSet;
@@ -29,9 +29,22 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
+    // OSD=1: the OSD fallback on (the gate is then CELLS_GATE_OSD); OSD_SEEDS=ad: variants a and d only (`OsdSeeds::AD`)
+    let osd = std::env::var("OSD").is_ok_and(|v| v == "1");
+    let seeds = if std::env::var("OSD_SEEDS").is_ok_and(|v| v == "ad") {
+        OsdSeeds::AD
+    } else {
+        OsdSeeds::Faithful
+    };
+    let depth = DecodeDepth {
+        osd,
+        ..DecodeDepth::EMBEDDED
+    };
+    let gate_model = if osd { &CELLS_GATE_OSD } else { &CELLS_GATE };
     let mut w = CellsWorker::new(&mut cs, &mut bp, &tables)
         .with_d_min_score(d_min)
-        .with_gate(gate.then_some(&CELLS_GATE));
+        .with_osd_seeds(seeds)
+        .with_gate(gate.then_some(gate_model));
     for path in std::env::args().skip(1) {
         let slot12 = wav::load_i16(&path);
         let a = resample(&slot12, 12_000, 8_000);
@@ -55,7 +68,7 @@ fn main() {
             .to_string();
         for (i, (c, hs)) in cands.iter().take(max_cand).enumerate() {
             let _ = w.take_bp_stats();
-            let f = w.decode_candidate_hs(&cells, c, *hs, DecodeDepth::EMBEDDED, 0.25);
+            let f = w.decode_candidate_hs(&cells, c, *hs, depth, 0.25);
             let bp = w.take_bp_stats();
             let (dec, truth, msg) = match &f {
                 Some(f) => {

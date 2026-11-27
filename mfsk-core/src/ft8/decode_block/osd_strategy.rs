@@ -246,6 +246,10 @@ pub(super) fn try_fallback(
     .into_iter()
     .enumerate()
     {
+        // `OsdSeeds::AD`: variants b, c and e never returned on the cells flow (see `OsdSeeds`); a and d are idx 0 and 3.
+        if pass.osd_seeds == super::types::OsdSeeds::AD && matches!(idx, 1 | 2 | 4) {
+            continue;
+        }
         let llr: &[f32; LDPC_N] = match llr {
             Some(l) => l,
             None => match precomputed_llre {

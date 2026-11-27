@@ -345,9 +345,24 @@ pub(in crate::ft8) struct PassCtx {
     /// Skip the staircase's variant `d` (`llrd` at one symbol, run after `llra` fails): the cells flow sets it for a candidate whose search score is under
     /// `CellsWorker`'s floor ([`CELLS_D_MIN_SCORE`](super::CELLS_D_MIN_SCORE)). Off in every WSJT-X-shaped path.
     pub skip_d: bool,
+    /// The OSD fallback's runs ([`OsdSeeds`]); `Faithful` everywhere but a cells worker that asks otherwise.
+    pub osd_seeds: OsdSeeds,
     /// The cells flow's gate before BP (`BpGate`) and the candidate's hard-sync count it reads; `None` everywhere else.
     #[cfg(feature = "fixed-point")]
     pub gate: Option<GateCtx>,
+}
+
+/// Which of the OSD fallback's ten runs a candidate gets: `ft8b.f90` seeds `osd174_91` from five LLR variants (`a` to `e`) at two BP snapshots each, in that order, and
+/// returns on the first CRC pass. Measured on the cells flow (4 780 slots, 143 400 candidates, 600 returns): **only variants `a` and `d` ever return** (`b`, `c`, `e`: none, in
+/// 6 runs of the ten), so [`AD`](Self::AD) tries those two (four runs) and loses no return on that corpus. A divergence from WSJT-X, off by default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OsdSeeds {
+    /// `ft8b.f90`'s: variants `a`, `b`, `c`, `d`, `e`, each at snapshots 1 and 2 (ten runs).
+    #[default]
+    Faithful,
+    /// Variants `a` and `d` only, each at snapshots 1 and 2 (four runs; the LLRs are the one-symbol ones the staircase made already).
+    AD,
 }
 
 /// A gate and the hard-sync count of the candidate it is asked about. Equal when they are the same gate (by address) and the same count.
@@ -375,6 +390,7 @@ impl PassCtx {
         contest: false,
         ap: true,
         skip_d: false,
+        osd_seeds: OsdSeeds::Faithful,
         #[cfg(feature = "fixed-point")]
         gate: None,
     };
@@ -383,6 +399,12 @@ impl PassCtx {
     #[cfg(feature = "fixed-point")]
     pub(in crate::ft8) const fn with_gate(self, gate: Option<GateCtx>) -> PassCtx {
         PassCtx { gate, ..self }
+    }
+
+    /// This context with the OSD fallback's runs chosen.
+    #[cfg(feature = "fixed-point")]
+    pub(in crate::ft8) const fn with_osd_seeds(self, osd_seeds: OsdSeeds) -> PassCtx {
+        PassCtx { osd_seeds, ..self }
     }
 
     /// This context without the staircase's variant `d` when `skip` is set.

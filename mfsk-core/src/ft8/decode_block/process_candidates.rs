@@ -2337,7 +2337,27 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // couldn't see.
     #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
     let prefetched_llr: Option<super::super::llr::LlrSet<f32>> =
-        if accepted.is_none() && depth.osd && q > 6 {
+        if accepted.is_none() && depth.osd && q > 6 && pass.osd_seeds == super::types::OsdSeeds::AD
+        {
+            // Only variants a and d are tried: the one-symbol LLRs Step 1 made (`llr_a_fast`), which are `compute_llr_metric`'s `llra` and `llrd`
+            // (test `the_ad_llrs_are_the_full_ones`), so nothing is recomputed. `llrb` / `llrc` of this set are zero and not read.
+            #[cfg(not(feature = "fixed-point-llr"))]
+            {
+                Some(super::super::llr::LlrSet {
+                    llra: llr_a_fast.llra,
+                    llrb: llr_a_fast.llrb,
+                    llrc: llr_a_fast.llrc,
+                    llrd: llr_a_fast.llrd,
+                })
+            }
+            #[cfg(feature = "fixed-point-llr")]
+            {
+                Some(super::super::llr::compute_llr_fast_metric::<f32>(
+                    cs_scratch,
+                    pass.squared(),
+                ))
+            }
+        } else if accepted.is_none() && depth.osd && q > 6 {
             #[cfg(not(feature = "fixed-point"))]
             {
                 match (llrb_arr, llrc_arr) {

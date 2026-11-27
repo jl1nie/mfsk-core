@@ -31,6 +31,7 @@ use super::coarse_sync::GatedSearch;
 use super::fill_symbol_spectra::{SymMask, sym_in_mask};
 use super::pre_bp_gate::BpGate;
 use super::process_candidates::{Ft8BpScratch, process_candidate_with_scratch_ctx};
+use super::types::OsdSeeds;
 use super::types::{AudioSample, DEFAULT_Q_THRESH, Ft8Rate, SAMPLE_RATE_HZ};
 use super::types::{GateCtx, PassCtx};
 use crate::engine::scalar::Cmplx;
@@ -267,6 +268,7 @@ pub struct CellsWorker<'a> {
     tables: &'a CellTables,
     d_min_score: f32,
     gate: Option<&'static BpGate>,
+    osd_seeds: OsdSeeds,
 }
 
 impl<'a> CellsWorker<'a> {
@@ -282,6 +284,7 @@ impl<'a> CellsWorker<'a> {
             tables,
             d_min_score: 0.0,
             gate: None,
+            osd_seeds: OsdSeeds::Faithful,
         }
     }
 
@@ -290,6 +293,12 @@ impl<'a> CellsWorker<'a> {
     /// [`decode_candidate_hs`](Self::decode_candidate_hs), not [`decode_candidate`](Self::decode_candidate). **The gate must be the one fitted for the flow's depth** ([`CELLS_GATE`](super::CELLS_GATE) is for OSD off); the depth does not switch it off.
     pub fn with_gate(mut self, gate: Option<&'static BpGate>) -> Self {
         self.gate = gate;
+        self
+    }
+
+    /// This worker with the OSD fallback's runs chosen ([`OsdSeeds`]; only matters when the depth has `osd`). The default is `ft8b.f90`'s ten runs.
+    pub fn with_osd_seeds(mut self, osd_seeds: OsdSeeds) -> Self {
+        self.osd_seeds = osd_seeds;
         self
     }
 
@@ -339,6 +348,7 @@ impl<'a> CellsWorker<'a> {
             &[],
             PassCtx::FIRST
                 .skip_d(cand.score < self.d_min_score)
+                .with_osd_seeds(self.osd_seeds)
                 .with_gate(gate),
         )
     }
