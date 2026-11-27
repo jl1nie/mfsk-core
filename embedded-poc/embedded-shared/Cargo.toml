@@ -37,6 +37,7 @@ gate-bench = ["mfsk-core/osd"]
 cells-bench = []
 # `apps::sic_bench`: `sic_passes` over caller memory on the board, the ring in PSRAM against internal DRAM (SIC-on-ESP32 step S2).
 sic-bench = []
+stage-bench = []
 
 # Enable LX7 PIE _aes3_ esp-dsp kernels (fc32 + sc16 radix-2 FFT).
 # Default-off so LX6 (Core2, xtensa-esp32-espidf) keeps the _ae32_ path.

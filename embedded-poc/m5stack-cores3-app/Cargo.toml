@@ -83,6 +83,13 @@ path = "src/bin/ft8_sic_bench.rs"
 harness = false
 required-features = ["ft8-sic-bench"]
 
+# The cells flow stage by stage on the board (the host-to-board time ratio of each stage). Build: `cargo build --release --features ft8-stage-bench --bin ft8-stage-bench`.
+[[bin]]
+name = "ft8-stage-bench"
+path = "src/bin/ft8_stage_bench.rs"
+harness = false
+required-features = ["ft8-stage-bench"]
+
 # The FT4 receiver's desk demo: replays the vendored golden at 12 kHz
 # and runs the shipping slot pipeline over it. No USB host, so the
 # serial console survives and the board stays flashable.
@@ -252,6 +259,7 @@ ft8-osd = ["mfsk-core/osd"]
 ft8-gate-bench = ["embedded-shared/gate-bench"]
 ft8-cells-bench = ["embedded-shared/cells-bench"]
 ft8-sic-bench = ["embedded-shared/sic-bench"]
+ft8-stage-bench = ["embedded-shared/stage-bench"]
 
 [dependencies]
 log = "0.4"
