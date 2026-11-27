@@ -364,3 +364,125 @@ const S3_FLOOR_15: usize = 230;
 const S3_FLOOR_30: usize = 289;
 #[cfg(feature = "fixed-point")]
 const S3_MAX_EXTRAS: usize = 7;
+
+/// The CoreS3's two P0 configurations (`CellsOptions::p0_window()`, `p0_late()`; `docs/notes/PROFILES.md` section 10) on the 22 recordings at 8 kHz, against `jt9`'s 402. A strategy that
+/// reads weak words (the OSD, seeds `a` and `d`, the gate, the subtraction) is where a phantom comes from, so each ships with its **precision guard**: the floors are the measured
+/// figures (2026-11-27), the extras are held to the attested or pinned set (`S3_DEBT`, `profile::ATTESTED_EXTRAS`) and to a ceiling, and `the_p0_configurations_decode_nothing_from_noise` holds 200 slots
+/// of noise to **zero** decodes.
+#[cfg(feature = "fixed-point")]
+fn p0_on_the_recordings(
+    options: &mfsk_core::ft8::decode_block::CellsOptions,
+    what: &str,
+    floor: usize,
+    max_extras: usize,
+) {
+    let mut runs = BTreeMap::new();
+    for stem in profile::stems() {
+        let slot12 = wav::load_i16(profile::asset_path(&stem));
+        let slot = resample(&slot12, 12_000, 8_000);
+        runs.insert(
+            stem,
+            profile::run_slot_s3_options(&slot, Ft8Rate::Hz8000, options).decodes,
+        );
+    }
+    assert_embedded_path();
+    let s = profile::score(&runs);
+    println!(
+        "{what}: recall {}/{} extras {} unexplained {:?}",
+        s.hits, s.reference, s.extras, s.unexplained_list
+    );
+    assert!(s.hits >= floor, "{what}: recall {} < floor {floor}", s.hits);
+    assert!(
+        s.extras <= max_extras,
+        "{what}: {} outputs jt9 lacks, ceiling {max_extras}",
+        s.extras
+    );
+    for u in &s.unexplained_list {
+        assert!(
+            S3_DEBT.contains(&(u.0.as_str(), u.1.as_str())),
+            "{what}: a decode jt9 lacks that is not attested and not pinned debt: {u:?}"
+        );
+    }
+}
+
+#[cfg(feature = "fixed-point")]
+#[test]
+fn the_p0_window_configuration_meets_its_floor() {
+    p0_on_the_recordings(
+        &mfsk_core::ft8::decode_block::CellsOptions::p0_window(),
+        "P0 window",
+        P0_WINDOW_FLOOR,
+        P0_WINDOW_MAX_EXTRAS,
+    );
+}
+
+#[cfg(feature = "fixed-point")]
+#[test]
+fn the_p0_late_configuration_meets_its_floor() {
+    p0_on_the_recordings(
+        &mfsk_core::ft8::decode_block::CellsOptions::p0_late(),
+        "P0 late",
+        P0_LATE_FLOOR,
+        P0_LATE_MAX_EXTRAS,
+    );
+}
+
+/// Measured 2026-11-27, `jt9`'s 402: window 280 (extras 2), late 324 (extras 5). The plain cells flow with the faithful inline OSD gets 286 / 332 (the gate, seeds `a` and `d` and the cap of 6 cost 6 and 8
+/// on these 22 recordings: 2 %, against 0.6 % on the 4 780 slots of design note section 29).
+#[cfg(feature = "fixed-point")]
+const P0_WINDOW_FLOOR: usize = 280;
+#[cfg(feature = "fixed-point")]
+const P0_WINDOW_MAX_EXTRAS: usize = 2;
+#[cfg(feature = "fixed-point")]
+const P0_LATE_FLOOR: usize = 324;
+#[cfg(feature = "fixed-point")]
+const P0_LATE_MAX_EXTRAS: usize = 5;
+
+/// 15 s of white noise at 8 kHz, a function of `seed` alone: the sum of four xorshift uniforms (a normal draw to a good approximation) at standard deviation `sigma` counts.
+#[cfg(feature = "fixed-point")]
+fn noise_slot(seed: u64, sigma: f32) -> Vec<i16> {
+    let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut next = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        (x >> 40) as f32 / (1u64 << 24) as f32
+    };
+    (0..15 * 8000)
+        .map(|_| {
+            (((next() + next() + next() + next()) - 2.0) * 1.732 * sigma).clamp(-32000.0, 32000.0)
+                as i16
+        })
+        .collect()
+}
+
+/// **The precision guard of the P0 configurations**: 200 slots of noise (50 each at four levels, from a few counts to a loud floor) decode **nothing** with the window path and the late path (the
+/// capped OSD reads the best-ranked failed words of a slot, and the subtraction passes read what is left: both are where a CRC-passing phantom would come from). A decode here is a regression
+/// or a real discovery about the CRC and the plausibility checks, and the test reports it by slot and message. **Fails if** any slot decodes; try it with the OSD's CRC check removed.
+#[cfg(feature = "fixed-point")]
+#[test]
+fn the_p0_configurations_decode_nothing_from_noise() {
+    use mfsk_core::ft8::decode_block::CellsOptions;
+    let mut phantoms = Vec::new();
+    for (i, (name, options)) in [
+        ("window", CellsOptions::p0_window()),
+        ("late", CellsOptions::p0_late()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for n in 0..200u64 {
+            let sigma = [30.0, 300.0, 3000.0, 9000.0][(n % 4) as usize];
+            let slot = noise_slot(1000 * (i as u64 + 1) + n, sigma);
+            let r = profile::run_slot_s3_options(&slot, Ft8Rate::Hz8000, &options);
+            for d in r.decodes {
+                phantoms.push(format!("{name} slot {n} sigma {sigma}: {d:?}"));
+            }
+        }
+    }
+    assert_embedded_path();
+    assert!(
+        phantoms.is_empty(),
+        "decodes from noise alone: {phantoms:#?}"
+    );
+}

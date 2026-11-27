@@ -745,6 +745,37 @@ pub fn run_slot_s3_cells(slot: &[i16], rate: Ft8Rate, max_cand: usize) -> Run {
     }
 }
 
+/// One slot through the cells flow **as `options` say** (`decode_block_cells_with`: the capped OSD, the gate, the SIC): the P0 presets' way in. Fixed-point build, `Hz8000` only.
+#[cfg(feature = "fixed-point")]
+pub fn run_slot_s3_options(
+    slot: &[i16],
+    rate: Ft8Rate,
+    options: &mfsk_core::ft8::decode_block::CellsOptions,
+) -> Run {
+    use mfsk_core::ft8::decode_block::decode_block_cells_with;
+    let base = heap::reset_peak();
+    let t = Instant::now();
+    let out = decode_block_cells_with(
+        slot,
+        rate,
+        &GatedSearch::new(200.0, 3000.0, SYNC_MIN, GATE_KEEP.max(options.max_cand)),
+        options,
+    )
+    .expect("the cells flow runs at 8 kHz in the fixed-point build");
+    let ms = t.elapsed().as_secs_f64() * 1e3;
+    let peak_heap = heap::peak().saturating_sub(base);
+    let decodes = out
+        .iter()
+        .filter_map(|d| unpack77(d.message77()).map(|m| (norm(&m), d.freq_hz)))
+        .collect();
+    Run {
+        decodes,
+        ms,
+        peak_heap,
+        big: Vec::new(),
+    }
+}
+
 /// One slot through variant `v` with `max_cand` candidates. `V1` and `V2` need the fixed-point build (the
 /// per-candidate entry points are `fixed-point`-gated); in the f32 build they decode nothing and say so.
 pub fn run_slot_variant(slot: &[i16], v: Variant, max_cand: usize) -> Run {
