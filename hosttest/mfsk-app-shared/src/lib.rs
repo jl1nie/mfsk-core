@@ -89,8 +89,12 @@ pub mod activator;
 /// merge into WSJT-X's is a log someone has to retype.
 #[path = "../../../embedded-poc/mfsk-app-shared/src/adif.rs"]
 pub mod adif;
+
 #[path = "../../../embedded-poc/mfsk-app-shared/src/all_txt.rs"]
 pub mod all_txt;
+/// The queue between the decoders and the activator: two producers, the QSO task owns the clock.
+#[path = "../../../embedded-poc/mfsk-app-shared/src/heard_queue.rs"]
+pub mod heard_queue;
 
 /// Icom CI-V framing — the bytes both the StickS3 (BLE) and the CoreS3
 /// (USB CDC) exchange with an IC-705, tested where tests run rather

@@ -18,6 +18,7 @@ pub mod flash_log;
 pub mod freq_presets;
 pub mod grid_fix;
 pub mod grid_state;
+pub mod heard_queue;
 pub mod http_config;
 pub mod jtty_rx_clock;
 pub mod jtty_tx;
