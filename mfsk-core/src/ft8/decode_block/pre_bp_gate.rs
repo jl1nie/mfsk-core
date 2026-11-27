@@ -7,6 +7,10 @@
 //! (about 40 000 host instructions a pass, 20-30 passes a failing call), and no OSD run. **The model is fitted for a depth**: [`CELLS_GATE`] without OSD; with OSD on, a candidate BP
 //! fails on may still decode, which that fit never saw, so a flow with OSD sets a gate fitted with OSD on (the gate is not consulted by depth: the caller chooses it).
 
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use num_traits::Float;
+
 use crate::engine::scalar::LlrScalar;
 
 /// The candidates' mean, standard deviation and maximum of `|llra|` and the model on them: `logit = bias + sum(coefficient * input)` over
