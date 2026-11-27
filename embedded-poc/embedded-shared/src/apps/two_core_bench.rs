@@ -1,0 +1,264 @@
+//! The cells flow's stage 3 and the OSD pass on **two cores** of the CoreS3, against one core: the round's candidates dealt out between two workers (core 0: this thread, core 1:
+//! `tc_w1`, each with its own internal-DRAM staging block and BP scratch), the attempts that fail the BP staircase queued by their worker, gathered, ranked
+//! (`rank_osd_attempts`) and the best `K` dealt out between the same two workers; and the band search cut over two halves of the carriers (`search_cells` and `merge_cells_parts`,
+//! the list of which is the one search's for any cut, host test). Wav replay from PSRAM, no WiFi, no USB host; each measurement made twice, the second is read.
+//!
+//! Per recording, 30 candidates, OSD seeds `a`, `d`, the variant `d` floor 16, K = 6 and 14: `band` (1 / 2 cores), and for each K the `round` (BP staircase over the 30, the OSD queued), the
+//! `osd` pass (rank and run the best K) and their sum, on one core and on two; and whether the two-core set of decodes equals the one-core set.
+//!
+//! **Predictions, written before the first run.** One core (`ft8-stage-bench`'s `osd ad-cap6` arm and the `osd pass` line): stage 3 with the pass at K = 6 0.808 / 0.705 / 0.742 s, of which
+//! the pass 0.216 / 0.252 / 0.268 s (36 ms an attempt at 6 attempts), so the round 0.59 / 0.45 / 0.47 s; the pass at K = 14 is 14 x 36 = 0.50 s; `band` 0.46 s (`ft8-stage-bench`).
+//! How two cores scale: the SIC rounds of `ft8-sic-bench`'s `2core` arm shortened the passes by 0.26 / 0.16 / 0.22 s (-9 / -8 / -10 %) against a BP of the rounds of 0.68 / 0.36 / 0.46 s
+//! on the host's instructions at 10 ns, i.e. the rounds ran **1.6-1.9 times** as fast (the search and the subtraction of a pass stay on one core). That ratio, applied here:
+//! **`round` on two cores 0.31-0.37 / 0.24-0.28 / 0.25-0.30 s; `osd` pass K = 6 0.11-0.13 / 0.13-0.15 / 0.13-0.16 s (the attempts are all about equal: dealt in turn they balance), K = 14
+//! 0.25-0.30 s; the sum at K = 6 0.42-0.50 / 0.37-0.43 / 0.38-0.46 s.** `band` on two halves: 0.25-0.30 s (the half of 0.46 s and the merge). Decodes as on one core (qso3_busy 11, `qso1` 5,
+//! `qso2` 5 at K = 6; one more or fewer at K = 14: 12 / 5 / 5), the two sets equal. Allowing for the two cores' PSRAM and FFT-scratch contention is the point of the run: if `round` or the pass
+//! is more than 25 % off, stop and find which (the host cannot tell). Window arithmetic if it holds (emit 0.81 s before the boundary): `band` on two cores ends at -0.54 s, the round at -0.2 s and
+//! the pass at K = 6 at -0.07 s; at K = 14 at +0.05 s.
+
+extern crate alloc;
+extern crate std;
+
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec::Vec;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
+
+use mfsk_core::engine::dsp::resample::resample_to_8k;
+use mfsk_core::engine::source::SliceSource;
+use mfsk_core::ft8::decode::DecodeDepth;
+use mfsk_core::ft8::decode_block::{
+    CELLS_D_MIN_SCORE, CellTables, CellsWorker, Found, Ft8BpScratch, Ft8Rate, GatedSearch, HalfDbCells, OsdAttempt, OsdSeeds,
+    coarse_sync_gated_cells, merge_cells_parts, rank_osd_attempts, search_cells,
+};
+use mfsk_core::engine::sync::SyncCandidate;
+use mfsk_core::msg::wsjt77::unpack77;
+
+const INTERNAL: u32 = (1 << 11) | (1 << 2);
+const MAX_CAND: usize = 30;
+
+fn now_us() -> i64 {
+    unsafe { esp_idf_svc::sys::esp_timer_get_time() }
+}
+fn min_free_internal() -> usize {
+    unsafe { esp_idf_svc::sys::heap_caps_get_minimum_free_size(INTERNAL) }
+}
+fn stack_free() -> usize {
+    unsafe { esp_idf_svc::sys::uxTaskGetStackHighWaterMark(core::ptr::null_mut()) as usize }
+}
+
+fn texts(known: &[Found]) -> Vec<String> {
+    let mut t: Vec<String> = known.iter().filter_map(|f| unpack77(f.res.message77())).collect();
+    t.sort();
+    t
+}
+
+/// Pointers to the read-only inputs of one request to the second core; valid until the main core has the reply (it blocks on it).
+struct Ptr<T>(*const T);
+unsafe impl<T> Send for Ptr<T> {}
+
+enum Msg {
+    Round { cells: Ptr<HalfDbCells>, cands: Ptr<(SyncCandidate, u8)>, n: usize, next: Ptr<AtomicUsize>, depth: DecodeDepth },
+    Osd { cells: Ptr<HalfDbCells>, share: Vec<(usize, OsdAttempt)>, depth: DecodeDepth },
+    Band { cells: Ptr<HalfDbCells>, search: Ptr<GatedSearch>, lo: usize, hi: usize },
+}
+enum Reply {
+    Round(Vec<(usize, Option<Found>)>, Vec<OsdAttempt>),
+    Osd(Vec<(usize, Option<Found>)>),
+    Band(mfsk_core::ft8::decode_block::CellsPart),
+}
+
+fn claim(w: &mut CellsWorker<'_>, cells: &HalfDbCells, cands: *const (SyncCandidate, u8), n: usize, next: &AtomicUsize, depth: DecodeDepth) -> Vec<(usize, Option<Found>)> {
+    let mut mine = Vec::new();
+    loop {
+        let i = next.fetch_add(1, Ordering::Relaxed);
+        if i >= n {
+            break;
+        }
+        // SAFETY: `i < n` and the pointee lives until the reply is received
+        let (cand, hs) = unsafe { &*cands.add(i) };
+        mine.push((i, w.decode_candidate_hs(cells, cand, *hs, depth, 0.25)));
+    }
+    mine
+}
+
+fn spawn_pinned(name: &'static core::ffi::CStr, core: esp_idf_svc::hal::cpu::Core, stack: usize, f: impl FnOnce() + Send + 'static) -> std::thread::JoinHandle<()> {
+    use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
+    let d = ThreadSpawnConfiguration::default();
+    ThreadSpawnConfiguration { name: Some(name), stack_size: stack, pin_to_core: Some(core), ..d }
+        .set()
+        .expect("two-core-bench: thread config");
+    let h = std::thread::Builder::new().stack_size(stack).spawn(f).expect("two-core-bench: spawn");
+    let _ = ThreadSpawnConfiguration::default().set();
+    h
+}
+
+pub fn run(target: &str, wavs: &'static [(&'static str, &'static [u8])]) -> ! {
+    log::info!("two-core-bench: {target}, stage 3, the OSD pass and the band search on one core and on two (predictions in the module doc)");
+    let h = spawn_pinned(c"tc_bench", esp_idf_svc::hal::cpu::Core::Core0, 48 * 1024, move || body(wavs));
+    let _ = h.join();
+    log::info!("two-core-bench: end");
+    loop {
+        unsafe { esp_idf_svc::sys::vTaskDelay(1000) };
+    }
+}
+
+fn worker<'a>(cs: &'a mut [[mfsk_core::engine::scalar::Cmplx<f32>; 8]; 79], bp: &'a mut Ft8BpScratch, tables: &'a CellTables) -> CellsWorker<'a> {
+    CellsWorker::new(cs, bp, tables)
+        .with_d_min_score(CELLS_D_MIN_SCORE)
+        .with_osd_seeds(OsdSeeds::AD)
+        .with_osd_deferred(true)
+}
+
+fn body(wavs: &'static [(&'static str, &'static [u8])]) {
+    log::info!("two-core-bench: boot min free internal {} B; stack free {} B", min_free_internal(), stack_free());
+    let search = GatedSearch::new(200.0, 3000.0, 1.3, MAX_CAND);
+    let rate = Ft8Rate::Hz8000;
+    let tables = CellTables::new();
+    let depth = DecodeDepth { osd: true, ..DecodeDepth::EMBEDDED };
+    // SAFETY: this thread is the only user of the main staging buffer here.
+    let cs0 = unsafe { crate::internal_pool::cs_scratch_main() };
+    let mut bp0 = Box::new(Ft8BpScratch::new());
+    let mut w0 = worker(cs0, &mut bp0, &tables);
+
+    let (tx, rx): (Sender<Msg>, Receiver<Msg>) = channel();
+    let (done_tx, done_rx): (Sender<Reply>, Receiver<Reply>) = channel();
+    let tables_addr = &tables as *const CellTables as usize;
+    let _w1 = spawn_pinned(c"tc_w1", esp_idf_svc::hal::cpu::Core::Core1, 24 * 1024, move || {
+        // SAFETY: only this thread touches the worker half of the arena; `tables` outlives it (the bench never returns)
+        let cs1 = unsafe { crate::internal_pool::cs_scratch_worker() };
+        let mut bp1 = Box::new(Ft8BpScratch::new());
+        let tables = unsafe { &*(tables_addr as *const CellTables) };
+        let mut w1 = worker(cs1, &mut bp1, tables);
+        while let Ok(m) = rx.recv() {
+            let r = match m {
+                Msg::Round { cells, cands, n, next, depth } => {
+                    // SAFETY: the sender blocks on the reply
+                    let (cells, next) = unsafe { (&*cells.0, &*next.0) };
+                    let found = claim(&mut w1, cells, cands.0, n, next, depth);
+                    Reply::Round(found, w1.take_osd_attempts())
+                }
+                Msg::Osd { cells, share, depth } => {
+                    let cells = unsafe { &*cells.0 };
+                    Reply::Osd(share.iter().map(|(r, a)| (*r, w1.run_osd_attempt(cells, a, depth))).collect())
+                }
+                Msg::Band { cells, search, lo, hi } => {
+                    let (cells, search) = unsafe { (&*cells.0, &*search.0) };
+                    Reply::Band(search_cells(cells, search, lo..hi))
+                }
+            };
+            if done_tx.send(r).is_err() {
+                break;
+            }
+        }
+    });
+    log::info!("two-core-bench: workers made; min free internal {} B", min_free_internal());
+
+    for (label, wav) in wavs {
+        let slot12: Vec<i16> = wav[44..].chunks_exact(2).take(180_000).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+        let a8 = resample_to_8k(&slot12, 12_000);
+        let (cands, cells) = coarse_sync_gated_cells(&mut SliceSource(&a8), rate, &search, 1).unwrap();
+
+        // band: one core, then two halves of the carriers
+        let (mut t1, mut t2) = (0i64, 0i64);
+        let mut same = false;
+        for _ in 0..2 {
+            let t0 = now_us();
+            let whole = merge_cells_parts(&[search_cells(&cells, &search, cells.carrier_bins())], &search, rate);
+            t1 = now_us() - t0;
+            let t0 = now_us();
+            let r = cells.carrier_bins();
+            let mid = r.start + (r.end - r.start) / 2;
+            tx.send(Msg::Band { cells: Ptr(&cells), search: Ptr(&search), lo: mid, hi: r.end }).unwrap();
+            let lo = search_cells(&cells, &search, r.start..mid);
+            let Reply::Band(hi) = done_rx.recv().unwrap() else { panic!("reply") };
+            let split = merge_cells_parts(&[lo, hi], &search, rate);
+            t2 = now_us() - t0;
+            same = split.len() == whole.len() && split.iter().zip(&whole).all(|(a, b)| a.0.freq_hz.to_bits() == b.0.freq_hz.to_bits() && a.0.dt_sec.to_bits() == b.0.dt_sec.to_bits() && a.1 == b.1);
+        }
+        log::info!("two-core-bench: {label} band: 1 core {t1} us, 2 cores {t2} us, the candidate lists {}", if same { "equal" } else { "DIFFER" });
+
+        for k in [6usize, 14] {
+            // one core
+            let (mut r1, mut o1) = (0i64, 0i64);
+            let (mut set1, mut queued, mut ran) = (Vec::new(), 0u64, 0u64);
+            for _ in 0..2 {
+                let _ = w0.take_osd_counts();
+                let mut known: Vec<Found> = Vec::new();
+                let t0 = now_us();
+                w0.decode_round(&cells, &cands, MAX_CAND, depth, 0.25, &mut known);
+                r1 = now_us() - t0;
+                let t1 = now_us();
+                w0.osd_pass(&cells, k, depth, &mut known);
+                o1 = now_us() - t1;
+                (queued, ran) = w0.take_osd_counts();
+                set1 = texts(&known);
+            }
+            log::info!(
+                "two-core-bench: {label} K {k} 1 core: round {r1} us + osd {o1} us = {} us, {} decodes, queued {queued} run {ran}",
+                r1 + o1,
+                set1.len()
+            );
+            // two cores
+            let (mut r2, mut o2) = (0i64, 0i64);
+            let mut set2 = Vec::new();
+            for _ in 0..2 {
+                let t0 = now_us();
+                let next = AtomicUsize::new(0);
+                let n = cands.len().min(MAX_CAND);
+                tx.send(Msg::Round { cells: Ptr(&cells), cands: Ptr(cands.as_ptr()), n, next: Ptr(&next), depth }).unwrap();
+                let mut all = claim(&mut w0, &cells, cands.as_ptr(), n, &next, depth);
+                let mut att = w0.take_osd_attempts();
+                let Reply::Round(theirs, their_att) = done_rx.recv().unwrap() else { panic!("reply") };
+                all.extend(theirs);
+                att.extend(their_att);
+                all.sort_by_key(|x| x.0);
+                let mut known: Vec<Found> = Vec::new();
+                for (_, f) in all {
+                    if let Some(f) = f {
+                        if !known.iter().any(|o| o.res.message77() == f.res.message77()) {
+                            known.push(f);
+                        }
+                    }
+                }
+                r2 = now_us() - t0;
+                let t1 = now_us();
+                rank_osd_attempts(&mut att, k);
+                let (mut mine, mut share) = (Vec::new(), Vec::new());
+                for (r, a) in att.into_iter().enumerate() {
+                    if r % 2 == 0 {
+                        mine.push((r, a));
+                    } else {
+                        share.push((r, a));
+                    }
+                }
+                tx.send(Msg::Osd { cells: Ptr(&cells), share, depth }).unwrap();
+                let mut ran: Vec<(usize, Option<Found>)> = mine.iter().map(|(r, a)| (*r, w0.run_osd_attempt(&cells, a, depth))).collect();
+                let Reply::Osd(theirs) = done_rx.recv().unwrap() else { panic!("reply") };
+                ran.extend(theirs);
+                ran.sort_by_key(|x| x.0);
+                for (_, f) in ran {
+                    if let Some(f) = f {
+                        if !known.iter().any(|o| o.res.message77() == f.res.message77()) {
+                            known.push(f);
+                        }
+                    }
+                }
+                o2 = now_us() - t1;
+                set2 = texts(&known);
+            }
+            log::info!(
+                "two-core-bench: {label} K {k} 2 cores: round {r2} us + osd {o2} us = {} us, {} decodes, set {} the one core's; round x{:.2}, osd x{:.2}; min free internal {} B, stack free {} B",
+                r2 + o2,
+                set2.len(),
+                if set1 == set2 { "=" } else { "DIFFERS FROM" },
+                r1 as f32 / r2 as f32,
+                o1 as f32 / o2.max(1) as f32,
+                min_free_internal(),
+                stack_free()
+            );
+        }
+    }
+    log::info!("two-core-bench: done");
+}

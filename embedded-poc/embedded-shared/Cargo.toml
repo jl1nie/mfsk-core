@@ -40,6 +40,8 @@ sic-bench = ["mfsk-core/osd"]
 stage-bench = ["mfsk-core/osd"]
 # FT8's OSD on the board: `osd174_91` against `osd174_91_into` (`apps/osd_bench.rs`).
 osd-bench = ["mfsk-core/osd"]
+# stage 3, the OSD pass and the band search on one core and on two (`apps/two_core_bench.rs`).
+two-core-bench = ["mfsk-core/osd"]
 
 # Enable LX7 PIE _aes3_ esp-dsp kernels (fc32 + sc16 radix-2 FFT).
 # Default-off so LX6 (Core2, xtensa-esp32-espidf) keeps the _ae32_ path.

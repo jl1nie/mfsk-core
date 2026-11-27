@@ -271,19 +271,56 @@ pub struct CellsWorker<'a> {
     osd_seeds: OsdSeeds,
     /// `OsdMode::Defer`: an attempt that reaches the OSD fallback is queued in `pending`, not run.
     osd_deferred: bool,
-    pending: Vec<PendingOsd>,
+    pending: Vec<OsdAttempt>,
     /// Attempts queued and attempts run by [`osd_pass`](CellsWorker::osd_pass) since [`take_osd_counts`](CellsWorker::take_osd_counts).
     osd_queued: u64,
     osd_ran: u64,
 }
 
-/// An attempt queued for the OSD fallback: the candidate, the place of the attempt (`None`: the grid place) and its [`OsdRank`](super::OsdRank) score.
-struct PendingOsd {
+/// An attempt queued for the OSD fallback ([`CellsWorker::take_osd_attempts`]): the candidate, the place of the attempt and its `OsdRank` score. Opaque; it can be moved to
+/// another worker (another core) and run there by [`CellsWorker::run_osd_attempt`] over the same cells.
+pub struct OsdAttempt {
     cand: SyncCandidate,
     hs: u8,
     g: Grid,
+    /// `None`: the grid place.
     p: Option<Place>,
     logit: f32,
+}
+
+impl OsdAttempt {
+    /// The attempt's `OsdRank` score: the higher, the likelier that the OSD decodes it.
+    pub fn logit(&self) -> f32 {
+        self.logit
+    }
+
+    /// The order the OSD pass takes the attempts in: best score first; equal scores by the candidate's frequency, DT and place, so that the order does not depend on which
+    /// worker queued an attempt.
+    fn order(a: &Self, b: &Self) -> core::cmp::Ordering {
+        b.logit
+            .partial_cmp(&a.logit)
+            .unwrap_or(core::cmp::Ordering::Equal)
+            .then(
+                a.cand
+                    .freq_hz
+                    .partial_cmp(&b.cand.freq_hz)
+                    .unwrap_or(core::cmp::Ordering::Equal),
+            )
+            .then(
+                a.cand
+                    .dt_sec
+                    .partial_cmp(&b.cand.dt_sec)
+                    .unwrap_or(core::cmp::Ordering::Equal),
+            )
+            .then(a.p.is_some().cmp(&b.p.is_some()))
+    }
+}
+
+/// The best `k` of `attempts` by score, best first (the rest dropped): what [`CellsWorker::osd_pass`] runs. A firmware with two cores gathers the attempts of both
+/// workers, ranks them here and deals the first `k` out between the workers.
+pub fn rank_osd_attempts(attempts: &mut Vec<OsdAttempt>, k: usize) {
+    attempts.sort_by(OsdAttempt::order);
+    attempts.truncate(k);
 }
 
 impl<'a> CellsWorker<'a> {
@@ -439,7 +476,7 @@ impl<'a> CellsWorker<'a> {
         }
         #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
         if let Some(logit) = self.bp.osd_work().deferred.take() {
-            self.pending.push(PendingOsd {
+            self.pending.push(OsdAttempt {
                 cand: cand.clone(),
                 hs: hs.unwrap_or(0),
                 g,
@@ -482,39 +519,44 @@ impl<'a> CellsWorker<'a> {
         depth: DecodeDepth,
         known: &mut Vec<Found>,
     ) -> usize {
-        let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
-        let tstep = cells.rate().nstep() as f32 / cells.rate().hz() as f32;
-        let mut pend = core::mem::take(&mut self.pending);
+        let mut pend = self.take_osd_attempts();
         self.osd_queued += pend.len() as u64;
         self.osd_ran += pend.len().min(k) as u64;
-        pend.sort_by(|a, b| {
-            b.logit
-                .partial_cmp(&a.logit)
-                .unwrap_or(core::cmp::Ordering::Equal)
-        });
+        rank_osd_attempts(&mut pend, k);
         let before = known.len();
-        for pd in pend.iter().take(k) {
-            let place = pd.p.unwrap_or(ON_GRID);
-            if let Some(mut d) = self.attempt(
-                cells,
-                &pd.cand,
-                pd.g,
-                place,
-                Some(pd.hs),
-                depth,
-                OsdMode::Only,
-            ) {
-                if pd.p.is_some() {
-                    (d.freq_hz, d.dt_sec) = place.moved(d.freq_hz, d.dt_sec, df, tstep);
-                }
-                if !known.iter().any(|o| o.res.message77() == d.message77()) {
-                    known.push(Found { res: d, grid: pd.g });
-                }
+        for a in &pend {
+            if let Some(d) = self.run_osd_attempt(cells, a, depth)
+                && !known.iter().any(|o| o.res.message77() == d.res.message77())
+            {
+                known.push(d);
             }
         }
         pend.clear();
-        self.pending = pend;
+        self.pending = pend; // the capacity stays
         known.len() - before
+    }
+
+    /// The attempts queued so far ([`with_osd_deferred`](Self::with_osd_deferred)), taken: the queue is empty after it.
+    pub fn take_osd_attempts(&mut self) -> Vec<OsdAttempt> {
+        core::mem::take(&mut self.pending)
+    }
+
+    /// One queued attempt run for the OSD alone, at its place on `cells` (the BP staircase gets one pass): the decode, with the frequency and DT of the place it was
+    /// found at. Not checked against any list of decodes. `depth` must have `osd`.
+    pub fn run_osd_attempt(
+        &mut self,
+        cells: &HalfDbCells,
+        a: &OsdAttempt,
+        depth: DecodeDepth,
+    ) -> Option<Found> {
+        let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
+        let tstep = cells.rate().nstep() as f32 / cells.rate().hz() as f32;
+        let place = a.p.unwrap_or(ON_GRID);
+        let mut d = self.attempt(cells, &a.cand, a.g, place, Some(a.hs), depth, OsdMode::Only)?;
+        if a.p.is_some() {
+            (d.freq_hz, d.dt_sec) = place.moved(d.freq_hz, d.dt_sec, df, tstep);
+        }
+        Some(Found { res: d, grid: a.g })
     }
 
     fn decode_candidate_at(

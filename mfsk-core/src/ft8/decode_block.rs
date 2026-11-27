@@ -69,7 +69,10 @@ mod ft8dec_sic;
 #[cfg(feature = "fixed-point")]
 mod pre_bp_gate;
 #[cfg(feature = "fixed-point")]
-pub use cells_flow::{CELLS_D_MIN_SCORE, CellTables, CellsWorker, Found, Grid, decode_block_cells};
+pub use cells_flow::{
+    CELLS_D_MIN_SCORE, CellTables, CellsWorker, Found, Grid, OsdAttempt, decode_block_cells,
+    rank_osd_attempts,
+};
 #[cfg(feature = "fixed-point")]
 pub use coarse_lib::{
     CellsPart, HalfDbCells, candidate_ready, coarse_sync_gated_cells, merge_cells_parts,

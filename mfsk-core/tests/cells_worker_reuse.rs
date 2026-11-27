@@ -883,3 +883,89 @@ fn sic_passes_osd_is_sic_passes_at_the_two_ends_and_between_them_in_the_middle()
         "the capped OSD in the SIC decodes some of them: {total_6} / {total_off}"
     );
 }
+
+/// The two-core OSD pass, with the two cores played in turn: the round's candidates dealt out between two workers (even / odd index), each queueing its failed attempts, the
+/// attempts gathered, ranked and the best `k` dealt out between the same two workers, the decodes merged in rank order. **Fails if** the set of decodes differs from one worker's
+/// `decode_round_osd` for `k` = 0, 6 and unbounded, or `rank_osd_attempts` does not keep exactly the `k` best scores in order.
+#[test]
+fn the_osd_pass_split_between_two_workers_equals_one_workers() {
+    use mfsk_core::ft8::decode_block::{Found, OsdSeeds, rank_osd_attempts};
+    let osd = DecodeDepth {
+        osd: true,
+        ..DecodeDepth::EMBEDDED
+    };
+    let tables = CellTables::new();
+    let mk = || -> (Box<[[Cmplx<f32>; 8]; 79]>, Box<Ft8BpScratch>) {
+        (
+            vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap(),
+            Box::new(Ft8BpScratch::new()),
+        )
+    };
+    let ((mut cs0, mut bp0), (mut cs1, mut bp1), (mut cs2, mut bp2)) = (mk(), mk(), mk());
+    let mut one = CellsWorker::new(&mut cs0, &mut bp0, &tables).with_osd_seeds(OsdSeeds::AD);
+    let mut w0 = CellsWorker::new(&mut cs1, &mut bp1, &tables)
+        .with_osd_seeds(OsdSeeds::AD)
+        .with_osd_deferred(true);
+    let mut w1 = CellsWorker::new(&mut cs2, &mut bp2, &tables)
+        .with_osd_seeds(OsdSeeds::AD)
+        .with_osd_deferred(true);
+    let mut ranked_checks = 0;
+    for name in ["qso3_busy", "qso1", "qso2"] {
+        let a = audio(name);
+        let (cands, cells) = coarse_sync_gated_cells(
+            &mut SliceSource(&a),
+            Ft8Rate::Hz8000,
+            &GatedSearch::new(200.0, 3000.0, 1.3, 30),
+            1,
+        )
+        .unwrap();
+        for k in [0usize, 6, usize::MAX] {
+            let mut want = Vec::new();
+            one.decode_round_osd(&cells, &cands, 30, osd, 0.25, &mut want, k);
+            // the round, two workers: candidate i to worker i % 2, the decodes merged by candidate index
+            let mut found: Vec<(usize, Option<Found>)> = Vec::new();
+            for (i, (c, hs)) in cands.iter().take(30).enumerate() {
+                let w = if i % 2 == 0 { &mut w0 } else { &mut w1 };
+                found.push((i, w.decode_candidate_hs(&cells, c, *hs, osd, 0.25)));
+            }
+            let mut known: Vec<Found> = Vec::new();
+            for (_, f) in found {
+                if let Some(f) = f
+                    && !known.iter().any(|o| o.res.message77() == f.res.message77())
+                {
+                    known.push(f);
+                }
+            }
+            // the OSD pass: gather, rank, deal out
+            let mut att = w0.take_osd_attempts();
+            att.extend(w1.take_osd_attempts());
+            let mut scores: Vec<f32> = att.iter().map(|x| x.logit()).collect();
+            scores.sort_by(|a, b| b.partial_cmp(a).unwrap());
+            rank_osd_attempts(&mut att, k);
+            let kept: Vec<f32> = att.iter().map(|x| x.logit()).collect();
+            assert_eq!(
+                kept[..],
+                scores[..scores.len().min(k)],
+                "{name} k {k}: the best scores, in order"
+            );
+            ranked_checks += 1;
+            let mut ran: Vec<(usize, Option<Found>)> = Vec::new();
+            for (r, x) in att.iter().enumerate() {
+                let w = if r % 2 == 0 { &mut w0 } else { &mut w1 };
+                ran.push((r, w.run_osd_attempt(&cells, x, osd)));
+            }
+            for (_, f) in ran {
+                if let Some(f) = f
+                    && !known.iter().any(|o| o.res.message77() == f.res.message77())
+                {
+                    known.push(f);
+                }
+            }
+            let (mut got, mut want) = (texts(&known), texts(&want));
+            got.sort();
+            want.sort();
+            assert_eq!(got, want, "{name} k {k}: two workers = one worker");
+        }
+    }
+    assert_eq!(ranked_checks, 9);
+}
