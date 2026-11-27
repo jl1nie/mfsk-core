@@ -29,9 +29,10 @@ use super::super::params::{COSTAS, DEFAULT_BP_MAX_ITER};
 use super::coarse_lib::{HalfDbCells, coarse_sync_gated_cells};
 use super::coarse_sync::GatedSearch;
 use super::fill_symbol_spectra::{SymMask, sym_in_mask};
+use super::pre_bp_gate::BpGate;
 use super::process_candidates::{Ft8BpScratch, process_candidate_with_scratch_ctx};
-use super::types::PassCtx;
 use super::types::{AudioSample, DEFAULT_Q_THRESH, Ft8Rate, SAMPLE_RATE_HZ};
+use super::types::{GateCtx, PassCtx};
 use crate::engine::scalar::Cmplx;
 use crate::engine::source::SliceSource;
 use crate::engine::sync::SyncCandidate;
@@ -265,6 +266,7 @@ pub struct CellsWorker<'a> {
     bp: &'a mut Ft8BpScratch,
     tables: &'a CellTables,
     d_min_score: f32,
+    gate: Option<&'static BpGate>,
 }
 
 impl<'a> CellsWorker<'a> {
@@ -279,7 +281,16 @@ impl<'a> CellsWorker<'a> {
             bp,
             tables,
             d_min_score: 0.0,
+            gate: None,
         }
+    }
+
+    /// This worker with the gate before BP ([`BpGate`], [`CELLS_GATE`](super::CELLS_GATE) is the fitted one): a candidate the model gives no chance is not decoded, at the grid
+    /// or at the retry. Needs the candidate's hard-sync count, so it acts through [`decode_round`](Self::decode_round) and
+    /// [`decode_candidate_hs`](Self::decode_candidate_hs), not [`decode_candidate`](Self::decode_candidate). **Only for flows without OSD** (it is not consulted when the depth has OSD on).
+    pub fn with_gate(mut self, gate: Option<&'static BpGate>) -> Self {
+        self.gate = gate;
+        self
     }
 
     /// This worker running the staircase's variant `d` only for a candidate whose search score ([`SyncCandidate::score`]) is `d_min_score` or more
@@ -309,8 +320,10 @@ impl<'a> CellsWorker<'a> {
         cand: &SyncCandidate,
         g: Grid,
         p: Place,
+        hs: Option<u8>,
         depth: DecodeDepth,
     ) -> Option<DecodeResult> {
+        let gate = self.gate.zip(hs).map(|(gate, hs)| GateCtx { gate, hs });
         let view = View {
             cells,
             t: self.tables,
@@ -324,7 +337,9 @@ impl<'a> CellsWorker<'a> {
             DEFAULT_Q_THRESH,
             DEFAULT_BP_MAX_ITER,
             &[],
-            PassCtx::FIRST.skip_d(cand.score < self.d_min_score),
+            PassCtx::FIRST
+                .skip_d(cand.score < self.d_min_score)
+                .with_gate(gate),
         )
     }
 
@@ -337,13 +352,37 @@ impl<'a> CellsWorker<'a> {
         depth: DecodeDepth,
         min_shift: f32,
     ) -> Option<Found> {
+        self.decode_candidate_at(cells, cand, None, depth, min_shift)
+    }
+
+    /// [`decode_candidate`](Self::decode_candidate) for a candidate whose hard-sync count `hs` (the search's, of 21) is known, which is what the worker's gate
+    /// ([`with_gate`](Self::with_gate)) reads: with a gate set, a candidate it gives no chance is not decoded.
+    pub fn decode_candidate_hs(
+        &mut self,
+        cells: &HalfDbCells,
+        cand: &SyncCandidate,
+        hs: u8,
+        depth: DecodeDepth,
+        min_shift: f32,
+    ) -> Option<Found> {
+        self.decode_candidate_at(cells, cand, Some(hs), depth, min_shift)
+    }
+
+    fn decode_candidate_at(
+        &mut self,
+        cells: &HalfDbCells,
+        cand: &SyncCandidate,
+        hs: Option<u8>,
+        depth: DecodeDepth,
+        min_shift: f32,
+    ) -> Option<Found> {
         let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
         let tstep = cells.rate().nstep() as f32 / cells.rate().hz() as f32;
         let g = Grid {
             j0: ((cand.dt_sec + 0.5) / tstep).round() as i32,
             k: (cand.freq_hz / df).round() as i64,
         };
-        let mut found = self.attempt(cells, cand, g, ON_GRID, depth);
+        let mut found = self.attempt(cells, cand, g, ON_GRID, hs, depth);
         if found.is_none() {
             let p = View {
                 cells,
@@ -351,7 +390,7 @@ impl<'a> CellsWorker<'a> {
             }
             .place(g);
             if p.worth_a_retry(min_shift)
-                && let Some(mut d) = self.attempt(cells, cand, g, p, depth)
+                && let Some(mut d) = self.attempt(cells, cand, g, p, hs, depth)
             {
                 (d.freq_hz, d.dt_sec) = p.moved(d.freq_hz, d.dt_sec, df, tstep);
                 found = Some(d);
@@ -375,8 +414,8 @@ impl<'a> CellsWorker<'a> {
         known: &mut Vec<Found>,
     ) -> usize {
         let before = known.len();
-        for (cand, _hs) in cands.iter().take(max_cand) {
-            if let Some(f) = self.decode_candidate(cells, cand, depth, min_shift)
+        for (cand, hs) in cands.iter().take(max_cand) {
+            if let Some(f) = self.decode_candidate_hs(cells, cand, *hs, depth, min_shift)
                 && !known.iter().any(|o| o.res.message77() == f.res.message77())
             {
                 known.push(f);

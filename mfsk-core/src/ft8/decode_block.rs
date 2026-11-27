@@ -67,6 +67,8 @@ mod coarse_lib;
 #[cfg(feature = "fixed-point")]
 mod ft8dec_sic;
 #[cfg(feature = "fixed-point")]
+mod pre_bp_gate;
+#[cfg(feature = "fixed-point")]
 pub use cells_flow::{CELLS_D_MIN_SCORE, CellTables, CellsWorker, Found, Grid, decode_block_cells};
 #[cfg(feature = "fixed-point")]
 pub use coarse_lib::{
@@ -78,6 +80,8 @@ pub use ft8dec_sic::{
     SicScratch, SicStorage, SigState, decode_block_cells_sic, sic_passes, sic_passes_with,
     sic_signal_capacity,
 };
+#[cfg(feature = "fixed-point")]
+pub use pre_bp_gate::{BpGate, CELLS_GATE};
 mod coarse_sync;
 mod fill_symbol_spectra;
 mod fine_sync_12k;

@@ -2199,6 +2199,14 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // NMS implementation, bit-identical AWGN behaviour by design.
     let llr_a_fast: super::super::llr::LlrSet<LlrT> =
         super::super::llr::compute_llr_fast_metric(cs_scratch, pass.squared());
+    // The cells flow's gate before BP (`BpGate`): a candidate the model gives no chance is not decoded. Only for flows without OSD (OSD rescues what BP fails on, which the fit never saw).
+    #[cfg(feature = "fixed-point")]
+    if let Some(g) = pass.gate
+        && !depth.osd
+        && !g.gate.passes(&llr_a_fast.llra, cand.score, g.hs)
+    {
+        return None;
+    }
     let bp_step1 = bp_step_select(bp_scratch, &llr_a_fast.llra, bp_max_iter, Some(check_crc14));
     if let Some(bp) = bp_step1
         && bp.hard_errors <= strictness.ft8_nharderrors_max()

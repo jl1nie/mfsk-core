@@ -345,7 +345,27 @@ pub(in crate::ft8) struct PassCtx {
     /// Skip the staircase's variant `d` (`llrd` at one symbol, run after `llra` fails): the cells flow sets it for a candidate whose search score is under
     /// `CellsWorker`'s floor ([`CELLS_D_MIN_SCORE`](super::CELLS_D_MIN_SCORE)). Off in every WSJT-X-shaped path.
     pub skip_d: bool,
+    /// The cells flow's gate before BP (`BpGate`) and the candidate's hard-sync count it reads; `None` everywhere else.
+    #[cfg(feature = "fixed-point")]
+    pub gate: Option<GateCtx>,
 }
+
+/// A gate and the hard-sync count of the candidate it is asked about. Equal when they are the same gate (by address) and the same count.
+#[cfg(feature = "fixed-point")]
+#[derive(Clone, Copy, Debug)]
+pub(in crate::ft8) struct GateCtx {
+    pub gate: &'static super::pre_bp_gate::BpGate,
+    pub hs: u8,
+}
+
+#[cfg(feature = "fixed-point")]
+impl PartialEq for GateCtx {
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::eq(self.gate, other.gate) && self.hs == other.hs
+    }
+}
+#[cfg(feature = "fixed-point")]
+impl Eq for GateCtx {}
 
 impl PassCtx {
     /// Pass 1: `imetric` 1.
@@ -355,7 +375,15 @@ impl PassCtx {
         contest: false,
         ap: true,
         skip_d: false,
+        #[cfg(feature = "fixed-point")]
+        gate: None,
     };
+
+    /// This context with the gate before BP (the cells flow).
+    #[cfg(feature = "fixed-point")]
+    pub(in crate::ft8) const fn with_gate(self, gate: Option<GateCtx>) -> PassCtx {
+        PassCtx { gate, ..self }
+    }
 
     /// This context without the staircase's variant `d` when `skip` is set.
     #[cfg(feature = "fixed-point")]

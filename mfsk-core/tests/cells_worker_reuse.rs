@@ -474,3 +474,64 @@ fn a_worker_skips_variant_d_under_its_score_floor() {
         "the floor saves BP calls: {calls_gated} against {calls_base}"
     );
 }
+
+/// `CellsWorker::with_gate(Some(&CELLS_GATE))`: on the three recordings' 30 candidates each, against a worker without the gate: **the same decodes** (message, frequency, DT: the gate only skips), and fewer BP
+/// calls over all of them; a worker with no gate set decodes as `decode_candidate` does. **Fails if** the gate skips a candidate that decodes without it, never skips one (no call saved), or
+/// changes what a worker without it does.
+#[test]
+fn the_gate_skips_hopeless_candidates_and_nothing_that_decodes() {
+    use mfsk_core::ft8::decode_block::CELLS_GATE;
+    let tables = CellTables::new();
+    let mk = || -> (Box<[[Cmplx<f32>; 8]; 79]>, Box<Ft8BpScratch>) {
+        (
+            vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap(),
+            Box::new(Ft8BpScratch::new()),
+        )
+    };
+    let ((mut cs0, mut bp0), (mut cs1, mut bp1)) = (mk(), mk());
+    let mut base = CellsWorker::new(&mut cs0, &mut bp0, &tables);
+    let mut gated = CellsWorker::new(&mut cs1, &mut bp1, &tables).with_gate(Some(&CELLS_GATE));
+    let (mut calls_base, mut calls_gated, mut skipped) = (0u32, 0u32, 0);
+    for name in ["qso3_busy", "qso1", "qso2"] {
+        let a = audio(name);
+        let (cands, cells) = coarse_sync_gated_cells(
+            &mut SliceSource(&a),
+            Ft8Rate::Hz8000,
+            &GatedSearch::new(200.0, 3000.0, 1.3, 30),
+            1,
+        )
+        .unwrap();
+        for (c, hs) in cands.iter().take(30) {
+            let key = |f: &Option<mfsk_core::ft8::decode_block::Found>| {
+                f.as_ref().map(|f| {
+                    (
+                        f.res.message77().to_vec(),
+                        f.res.freq_hz.to_bits(),
+                        f.res.dt_sec.to_bits(),
+                    )
+                })
+            };
+            let b = base.decode_candidate_hs(&cells, c, *hs, DecodeDepth::EMBEDDED, 0.25);
+            let sb = base.take_bp_stats();
+            // a worker with no gate: the hs-aware call is the plain one
+            let plain = base.decode_candidate(&cells, c, DecodeDepth::EMBEDDED, 0.25);
+            assert_eq!(key(&plain), key(&b), "{name}: no gate, the same decode");
+            let _ = base.take_bp_stats();
+            let g = gated.decode_candidate_hs(&cells, c, *hs, DecodeDepth::EMBEDDED, 0.25);
+            let sg = gated.take_bp_stats();
+            assert_eq!(
+                key(&g),
+                key(&b),
+                "{name}: score {} hs {hs}: the gate must not change a decode",
+                c.score
+            );
+            calls_base += sb.calls;
+            calls_gated += sg.calls;
+            skipped += (sg.calls < sb.calls) as usize;
+        }
+    }
+    assert!(
+        skipped >= 10 && calls_gated < calls_base,
+        "the gate saves BP calls: {calls_gated} against {calls_base}, {skipped} candidates"
+    );
+}

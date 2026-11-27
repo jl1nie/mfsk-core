@@ -90,3 +90,22 @@ for fam in ('busy','dense','sweep','itu'):
     trm=syn&(corp!=fam); tem=corp==fam
     p=fit(Xm,trm); thr=np.sort(p[trm&(tr==1)])[0]; sk=tem&(p<thr)
     print(f"    held out {fam:6s}: lost {int(tr[sk].sum()):3d} of {int(tr[tem].sum()):5d}, passes saved {100*passes[sk].sum()/passes[tem].sum():5.1f}%")
+
+print("\n\n===== the coefficients to ship: the cheap model on the raw scale, trained on the generated sets only =====")
+# z = bias + sum(coef_i * x_i) on the raw features x = [mean, std, max, mean/std, score, hs]; the standardisation is folded into the coefficients
+Xc = cheap
+mu = Xc[syn].mean(0); sd = Xc[syn].std(0) + 1e-9
+Zc = np.column_stack([(Xc - mu) / sd, np.ones(len(Xc))]); wv = np.zeros(Zc.shape[1])
+for it in range(6000):
+    pp = 1 / (1 + np.exp(-(Zc[syn] @ wv))); wv -= 0.5 * (Zc[syn].T @ (pp - tr[syn]) / syn.sum() + 1e-4 * wv)
+coef = wv[:-1] / sd
+bias = wv[-1] - float((wv[:-1] * mu / sd).sum())
+z = Xc @ coef + bias
+zmin = z[syn & (tr == 1)].min()
+print("names :", ["mean|llra|", "std|llra|", "max|llra|", "mean/std", "score", "hard sync"])
+print("coef  :", [float(f"{c:.6g}") for c in coef])
+print("bias  :", float(f"{bias:.6g}"), " lowest logit of a true decode in the generated sets:", float(f"{zmin:.4f}"))
+for margin in (0.0, 0.5, 1.0):
+    thr = zmin - margin
+    sk = z < thr
+    print(f"  threshold {thr:+.4f} (margin {margin}): lost on generated {int(tr[sk & syn].sum())}, on real {int(tr[sk & real].sum())} of {int(tr[real].sum())}; passes saved: generated {100*passes[sk & syn].sum()/passes[syn].sum():.1f}%, real {100*passes[sk & real].sum()/passes[real].sum():.1f}%")
