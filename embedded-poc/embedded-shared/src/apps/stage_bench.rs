@@ -35,6 +35,11 @@
 //! prediction pays for each taken one), toward 0.40 s. **Predicted: `band` 0.40-0.62 s** (it was 0.90-0.94 s); `band narrow` per position equal to the whole band's within 5 % (still CPU-bound);
 //! the rest of the table unchanged (the demux, stage 3, the BP pass). Stop rule as above.
 //!
+//! **The flat-table NMS decoder, predicted before its run:** the BP pass went from 76 000 to 39 900 host instructions (-47.5 %: the searches for an edge's slot and for the check's place in a bit's list
+//! gone, the bounds checks of the table-driven reads gone), bit for bit the same decodes and pass counts (so the passes below are the previous run's: floor 16 1 240 / 951 / 995, floor 0 1 987 / 1 838 / 1 947).
+//! The board spent 0.69-0.75 ms a pass. **Predicted: one BP pass 0.35-0.48 ms** (if the time follows the instructions 0.36-0.39, the removed bounds checks are branches too: toward 0.35);
+//! stage 3 at floor 16 **0.50-0.67 / 0.38-0.51 / 0.39-0.52 s** (it was 0.927 / 0.708 / 0.741), at floor 0 0.75-1.0 / 0.65-0.85 / 0.70-0.95 s. Decodes 9 / 4 / 5. The `band` and the demux unchanged.
+//!
 //! One BP pass (`b`): **0.57-0.70 ms**; a candidate apart from BP (`a`): about 1.5 ms. The stage-3 figures are +-10 %. **Stop rule:** if any stage is more than 25 % off its prediction,
 //! stop and explain it on the host before the next flash. The prediction rests on one ns-per-instruction ratio for every stage; the point of the run is to see where it breaks.
 

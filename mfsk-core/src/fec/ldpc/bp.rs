@@ -781,6 +781,13 @@ pub struct BpScratch<P: LdpcParams, T: LlrScalar> {
     /// product by `1.0` is exact), so every message is bit-identical.
     c2v_idx: Vec<u16>,
     prod_idx: Vec<u16>,
+    /// The code's edges as flat tables, built once by [`Self::ensure_edges`] (the NMS decoder reads them every pass instead of searching `P::nm` / `P::mn`):
+    /// `nm_flat[j * MAX_ROW + i]` the bit of check `j`'s `i`-th edge; `nrw_flat[j]` the row weight; for the variable edge `v = bit * NCW + k` (the bit's `k`-th check),
+    /// `v2c_e[v]` the index `check * MAX_ROW + slot` of the same edge on the check side and `v2c_chk[v]` its check.
+    nm_flat: Vec<u8>,
+    nrw_flat: Vec<u8>,
+    v2c_e: Vec<u16>,
+    v2c_chk: Vec<u8>,
     min1: Vec<T>,
     min2: Vec<T>,
     idx_min1: Vec<u32>,
@@ -817,6 +824,10 @@ impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
             tanhtoc: Vec::new(),
             c2v_idx: Vec::new(),
             prod_idx: Vec::new(),
+            nm_flat: Vec::new(),
+            nrw_flat: Vec::new(),
+            v2c_e: Vec::new(),
+            v2c_chk: Vec::new(),
             min1: vec![T::POS_INF_LIKE; m_checks],
             min2: vec![T::POS_INF_LIKE; m_checks],
             idx_min1: vec![0u32; m_checks],
@@ -878,6 +889,63 @@ impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
     /// subsequent calls (capacity is fixed by `P`, and every element is
     /// unconditionally overwritten before being read each iteration —
     /// see [`Self::reset`]'s comment).
+    /// Build the flat edge tables ([`Self::nm_flat`] and the others, and `c2v_idx`) once: the NMS decoder and the min-sum kinds read them in place of searching the code's
+    /// tables on every pass. About 3.4 KB for FT8's code; the arithmetic is unchanged (they hold the same indices the searches found).
+    #[inline]
+    fn ensure_edges(&mut self) {
+        const {
+            assert!(P::M * P::MAX_ROW < u16::MAX as usize);
+            assert!(P::N * NCW < u16::MAX as usize);
+        }
+        if !self.c2v_idx.is_empty() {
+            return;
+        }
+        let mut c2v = vec![0u16; P::M * P::MAX_ROW];
+        let mut nm_flat = vec![0u8; P::M * P::MAX_ROW];
+        let mut nrw_flat = vec![0u8; P::M];
+        for j in 0..P::M {
+            nrw_flat[j] = P::nrw(j);
+            for i in 0..P::nrw(j) as usize {
+                let ibj = P::nm(j, i) as usize;
+                nm_flat[j * P::MAX_ROW + i] = ibj as u8;
+                let mut found = None;
+                for (kk, &c) in P::mn(ibj).iter().enumerate() {
+                    if c as usize == j {
+                        debug_assert!(found.is_none(), "bit {ibj} in check {j} twice");
+                        found = Some(ibj * NCW + kk);
+                    }
+                }
+                c2v[j * P::MAX_ROW + i] = found.expect("bit not in its check's mn") as u16;
+            }
+        }
+        let mut v2c_e = vec![0u16; P::N * NCW];
+        let mut v2c_chk = vec![0u8; P::N * NCW];
+        for j in 0..P::N {
+            for (k_, &c) in P::mn(j).iter().enumerate() {
+                let ichk = c as usize;
+                let slot = (0..P::nrw(ichk) as usize)
+                    .find(|&s| P::nm(ichk, s) as usize == j)
+                    .expect("bit not in its check's row");
+                v2c_e[j * NCW + k_] = (ichk * P::MAX_ROW + slot) as u16;
+                v2c_chk[j * NCW + k_] = ichk as u8;
+            }
+        }
+        // the contents the decoder's unchecked reads rely on
+        assert!(nm_flat.iter().all(|&b| (b as usize) < P::N));
+        assert!(c2v.iter().all(|&e| (e as usize) < P::N * NCW));
+        assert!(v2c_e.iter().all(|&e| (e as usize) < P::M * P::MAX_ROW));
+        assert!(v2c_chk.iter().all(|&c| (c as usize) < P::M));
+        assert!(
+            P::N <= 256 && P::M <= 256,
+            "the tables hold bit and check indices as u8"
+        );
+        self.nm_flat = nm_flat;
+        self.nrw_flat = nrw_flat;
+        self.v2c_e = v2c_e;
+        self.v2c_chk = v2c_chk;
+        self.c2v_idx = c2v;
+    }
+
     #[inline]
     fn ensure_tanhtoc(&mut self) {
         // The tables hold indices as `u16`: every index must fit.
@@ -890,20 +958,7 @@ impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
             self.tanhtoc = vec![T::ZERO; P::M * P::MAX_ROW + 1];
             let one_slot = P::M * P::MAX_ROW;
             self.tanhtoc[one_slot] = T::from_f32(1.0);
-            let mut c2v = vec![0u16; P::M * P::MAX_ROW];
-            for j in 0..P::M {
-                for i in 0..P::nrw(j) as usize {
-                    let ibj = P::nm(j, i) as usize;
-                    let mut found = None;
-                    for (kk, &c) in P::mn(ibj).iter().enumerate() {
-                        if c as usize == j {
-                            debug_assert!(found.is_none(), "bit {ibj} in check {j} twice");
-                            found = Some(ibj * NCW + kk);
-                        }
-                    }
-                    c2v[j * P::MAX_ROW + i] = found.expect("bit not in its check's mn") as u16;
-                }
-            }
+            self.ensure_edges();
             let width = P::MAX_ROW - 1;
             let mut prod = vec![one_slot as u16; P::N * NCW * width];
             for j in 0..P::N {
@@ -918,7 +973,6 @@ impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
                     }
                 }
             }
-            self.c2v_idx = c2v;
             self.prod_idx = prod;
         }
     }
@@ -982,6 +1036,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
     let max_row = P::MAX_ROW;
 
     scratch.reset();
+    scratch.ensure_edges();
     let BpScratch {
         tov,
         toc,
@@ -992,15 +1047,56 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
         zn,
         cw,
         stats,
+        c2v_idx,
+        nm_flat,
+        nrw_flat,
+        v2c_e,
+        v2c_chk,
         ..
     } = scratch;
 
+    // The lengths the unchecked reads below rely on, checked once. The *contents* of the edge tables are in range by construction
+    // (`BpScratch::ensure_edges` builds them from the code's tables and asserts it), so an index read from one is in range of the array it indexes.
+    assert!(
+        llr.len() == n
+            && tov.len() == n * NCW
+            && zn.len() == n
+            && cw.len() == n
+            && toc.len() == m_checks * max_row
+            && c2v_idx.len() == m_checks * max_row
+            && nm_flat.len() == m_checks * max_row
+            && nrw_flat.len() == m_checks
+            && min1.len() == m_checks
+            && min2.len() == m_checks
+            && idx_min1.len() == m_checks
+            && sign_xor.len() == m_checks
+            && v2c_e.len() == n * NCW
+            && v2c_chk.len() == n * NCW,
+        "BpScratch / llr lengths"
+    );
+    // SAFETY (all `at!` / `set!` below): the index is either an affine loop variable bounded by the lengths asserted above, or an entry of an edge table whose entries
+    // `ensure_edges` has checked to be less than the length of the array it is used on (`nm_flat` < n, `c2v_idx` < n * NCW, `v2c_e` < m * max_row, `v2c_chk` < m).
+    macro_rules! at {
+        ($s:expr, $i:expr) => {{
+            let i = $i;
+            debug_assert!(i < $s.len());
+            unsafe { *$s.get_unchecked(i) }
+        }};
+    }
+    macro_rules! set {
+        ($s:expr, $i:expr, $v:expr) => {{
+            let i = $i;
+            debug_assert!(i < $s.len());
+            *unsafe { $s.get_unchecked_mut(i) } = $v;
+        }};
+    }
+
     // Initial messages: each check edge carries the bit's raw LLR.
     for j in 0..m_checks {
-        let nrw_j = P::nrw(j) as usize;
+        let nrw_j = at!(nrw_flat, j) as usize;
         for i in 0..nrw_j {
-            let bit = P::nm(j, i) as usize;
-            toc[j * max_row + i] = llr[bit];
+            let e = j * max_row + i;
+            set!(toc, e, at!(llr, at!(nm_flat, e) as usize));
         }
     }
 
@@ -1010,31 +1106,43 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
     for iter in 0..=max_iter {
         // Variable-node belief sum. The wide accumulator avoids
         // overflow when summing 1 LLR + NCW=3 tov entries.
-        for i in 0..n {
-            let ap = ap_mask.is_some_and(|mm| mm[i]);
-            if !ap {
-                let mut sum = llr[i].to_wide();
-                for k_ in 0..NCW {
-                    sum = T::wide_add(sum, tov[i * NCW + k_].to_wide());
+        match ap_mask {
+            None => {
+                for ((z, &l), t) in zn.iter_mut().zip(llr).zip(tov.as_chunks::<NCW>().0) {
+                    let mut sum = l.to_wide();
+                    for &v in t {
+                        sum = T::wide_add(sum, v.to_wide());
+                    }
+                    *z = sum;
                 }
-                zn[i] = sum;
-            } else {
-                zn[i] = llr[i].to_wide();
+            }
+            Some(mm) => {
+                for i in 0..n {
+                    if !mm[i] {
+                        let mut sum = llr[i].to_wide();
+                        for k_ in 0..NCW {
+                            sum = T::wide_add(sum, tov[i * NCW + k_].to_wide());
+                        }
+                        zn[i] = sum;
+                    } else {
+                        zn[i] = llr[i].to_wide();
+                    }
+                }
             }
         }
 
         // Hard decisions from sign of belief.
-        for i in 0..n {
-            cw[i] = if T::wide_is_positive(zn[i]) { 1 } else { 0 };
+        for (c, &z) in cw.iter_mut().zip(zn.iter()) {
+            *c = if T::wide_is_positive(z) { 1 } else { 0 };
         }
 
         // Parity check.
         let mut ncheck = 0u32;
         for i in 0..m_checks {
-            let nrw_i = P::nrw(i) as usize;
+            let nrw_i = at!(nrw_flat, i) as usize;
             let mut parity = 0u8;
             for s in 0..nrw_i {
-                parity ^= cw[P::nm(i, s) as usize];
+                parity ^= at!(cw, at!(nm_flat, i * max_row + s) as usize);
             }
             if parity != 0 {
                 ncheck += 1;
@@ -1089,31 +1197,27 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
         }
         nclast = ncheck;
 
-        // Variable-to-check messages: subtract own contribution.
+        // Variable-to-check messages: subtract own contribution. `c2v_idx[e]` is the one `tov` entry of the bit that belongs to this check
+        // (a check is in a bit's list once), the entry the search over the bit's three checks used to find.
         for j in 0..m_checks {
-            let nrw_j = P::nrw(j) as usize;
-            for i in 0..nrw_j {
-                let ibj = P::nm(j, i) as usize;
-                let mut msg = zn[ibj];
-                let mn_ibj = P::mn(ibj);
-                for kk in 0..NCW {
-                    if mn_ibj[kk] as usize == j {
-                        msg = T::wide_sub(msg, tov[ibj * NCW + kk].to_wide());
-                    }
-                }
-                toc[j * max_row + i] = T::from_wide_sat(msg);
+            let nrw_j = at!(nrw_flat, j) as usize;
+            for e in j * max_row..j * max_row + nrw_j {
+                let msg = T::wide_sub(
+                    at!(zn, at!(nm_flat, e) as usize),
+                    at!(tov, at!(c2v_idx, e) as usize).to_wide(),
+                );
+                set!(toc, e, T::from_wide_sat(msg));
             }
         }
 
         // Min-sum kernel: per check node compute the two smallest |toc|.
-        for i in 0..m_checks {
-            let nrw_i = P::nrw(i) as usize;
+        for (i, row) in toc.chunks_exact(max_row).enumerate() {
+            let nrw_i = at!(nrw_flat, i) as usize;
             let mut m1 = T::POS_INF_LIKE;
             let mut m2 = T::POS_INF_LIKE;
             let mut imin = 0_usize;
             let mut sx = false;
-            for s in 0..nrw_i {
-                let v = toc[i * max_row + s];
+            for (s, &v) in row[..nrw_i].iter().enumerate() {
                 if v.is_negative() {
                     sx = !sx;
                 }
@@ -1126,47 +1230,34 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
                     m2 = av;
                 }
             }
-            min1[i] = m1;
-            min2[i] = m2;
-            idx_min1[i] = imin as u32;
-            sign_xor[i] = sx;
+            set!(min1, i, m1);
+            set!(min2, i, m2);
+            set!(idx_min1, i, imin as u32);
+            set!(sign_xor, i, sx);
         }
 
-        // Per-edge check-to-variable update with α scaling (NMS).
-        for j in 0..n {
-            let mn_j = P::mn(j);
-            for k_ in 0..NCW {
-                let ichk = mn_j[k_] as usize;
-                let nrw_ichk = P::nrw(ichk) as usize;
-                let mut my_slot = nrw_ichk;
-                for s in 0..nrw_ichk {
-                    if P::nm(ichk, s) as usize == j {
-                        my_slot = s;
-                        break;
-                    }
-                }
-                let my_v = if my_slot < nrw_ichk {
-                    toc[ichk * max_row + my_slot]
-                } else {
-                    T::ZERO
-                };
-                let my_neg = my_v.is_negative();
-                let nrw_odd = (nrw_ichk & 1) != 0;
-                let extrinsic_sign_neg = sign_xor[ichk] ^ my_neg ^ nrw_odd;
+        // Per-edge check-to-variable update with α scaling (NMS). `v2c_e[v]` is the edge's place on the check side (`check * MAX_ROW + slot`), found once instead of
+        // by a search over the check's row on every pass.
+        for (v, t) in tov.iter_mut().enumerate() {
+            let ichk = at!(v2c_chk, v) as usize;
+            let e = at!(v2c_e, v) as usize;
+            let my_slot = e - ichk * max_row;
+            let my_neg = at!(toc, e).is_negative();
+            let nrw_odd = (at!(nrw_flat, ichk) & 1) != 0;
+            let extrinsic_sign_neg = at!(sign_xor, ichk) ^ my_neg ^ nrw_odd;
 
-                let mag = if my_slot < nrw_ichk && my_slot as u32 == idx_min1[ichk] {
-                    min2[ichk]
-                } else {
-                    min1[ichk]
-                };
+            let mag = if my_slot as u32 == at!(idx_min1, ichk) {
+                at!(min2, ichk)
+            } else {
+                at!(min1, ichk)
+            };
 
-                let scaled = mag.mul_alpha(alpha);
-                tov[j * NCW + k_] = if extrinsic_sign_neg {
-                    scaled.neg_sat()
-                } else {
-                    scaled
-                };
-            }
+            let scaled = mag.mul_alpha(alpha);
+            *t = if extrinsic_sign_neg {
+                scaled.neg_sat()
+            } else {
+                scaled
+            };
         }
     }
 
@@ -1627,5 +1718,305 @@ mod tests {
             seen.iter().all(|&n| n >= 5),
             "every decoder needs failing inputs here: {seen:?}"
         );
+    }
+
+    /// The NMS decoder as it was before its edge tables (a search over the check's row and over the bit's three checks on every pass): the reference the flat-table decoder is checked against.
+    fn nms_reference<P: LdpcParams, T: LlrScalar>(
+        scratch: &mut BpScratch<P, T>,
+        llr: &[T],
+        ap_mask: Option<&[bool]>,
+        max_iter: u32,
+        verify: Option<fn(&[u8]) -> bool>,
+        alpha: f32,
+    ) -> Option<BpResult> {
+        debug_assert_eq!(llr.len(), P::N);
+        if let Some(m) = ap_mask {
+            debug_assert_eq!(m.len(), P::N);
+        }
+
+        let n = P::N;
+        let m_checks = P::M;
+        let k = P::K;
+        let max_row = P::MAX_ROW;
+
+        scratch.reset();
+        let BpScratch {
+            tov,
+            toc,
+            min1,
+            min2,
+            idx_min1,
+            sign_xor,
+            zn,
+            cw,
+            stats,
+            ..
+        } = scratch;
+
+        // Initial messages: each check edge carries the bit's raw LLR.
+        for j in 0..m_checks {
+            let nrw_j = P::nrw(j) as usize;
+            for i in 0..nrw_j {
+                let bit = P::nm(j, i) as usize;
+                toc[j * max_row + i] = llr[bit];
+            }
+        }
+
+        let mut ncnt = 0u32;
+        let mut nclast = 0u32;
+
+        for iter in 0..=max_iter {
+            // Variable-node belief sum. The wide accumulator avoids
+            // overflow when summing 1 LLR + NCW=3 tov entries.
+            for i in 0..n {
+                let ap = ap_mask.is_some_and(|mm| mm[i]);
+                if !ap {
+                    let mut sum = llr[i].to_wide();
+                    for k_ in 0..NCW {
+                        sum = T::wide_add(sum, tov[i * NCW + k_].to_wide());
+                    }
+                    zn[i] = sum;
+                } else {
+                    zn[i] = llr[i].to_wide();
+                }
+            }
+
+            // Hard decisions from sign of belief.
+            for i in 0..n {
+                cw[i] = if T::wide_is_positive(zn[i]) { 1 } else { 0 };
+            }
+
+            // Parity check.
+            let mut ncheck = 0u32;
+            for i in 0..m_checks {
+                let nrw_i = P::nrw(i) as usize;
+                let mut parity = 0u8;
+                for s in 0..nrw_i {
+                    parity ^= cw[P::nm(i, s) as usize];
+                }
+                if parity != 0 {
+                    ncheck += 1;
+                }
+            }
+
+            if ncheck == 0 {
+                let mut decoded = vec![0u8; k];
+                decoded.copy_from_slice(&cw[..k]);
+                let accept = match verify {
+                    Some(f) => f(&decoded),
+                    None => true,
+                };
+                if accept {
+                    let mut hard_errors = 0u32;
+                    for i in 0..n {
+                        // Hard error iff hard decision (cw) disagrees with
+                        // the LLR's sign. Mirrors the f32 path's
+                        // `(cw[i] == 1) != (llr[i] > 0)`.
+                        let llr_says_one = !llr[i].is_negative();
+                        if (cw[i] == 1) != llr_says_one {
+                            hard_errors += 1;
+                        }
+                    }
+                    let mut message77 = [0u8; 77];
+                    message77.copy_from_slice(&decoded[..77]);
+                    // Codeword is small (174 / 240 bytes); clone instead
+                    // of moving so the scratch's `cw` Vec stays in the pool
+                    // for the next call.
+                    stats.add(iter, true);
+                    return Some(BpResult {
+                        message77,
+                        info: decoded,
+                        codeword: cw.clone(),
+                        hard_errors,
+                        iterations: iter,
+                    });
+                }
+            }
+
+            // Stall detector — same heuristic as the f32 SumProduct path.
+            if iter > 0 {
+                if ncheck < nclast {
+                    ncnt = 0;
+                } else {
+                    ncnt += 1;
+                }
+                if ncnt >= 5 && iter >= 10 && ncheck > 15 {
+                    stats.add(iter, false);
+                    return None;
+                }
+            }
+            nclast = ncheck;
+
+            // Variable-to-check messages: subtract own contribution.
+            for j in 0..m_checks {
+                let nrw_j = P::nrw(j) as usize;
+                for i in 0..nrw_j {
+                    let ibj = P::nm(j, i) as usize;
+                    let mut msg = zn[ibj];
+                    let mn_ibj = P::mn(ibj);
+                    for kk in 0..NCW {
+                        if mn_ibj[kk] as usize == j {
+                            msg = T::wide_sub(msg, tov[ibj * NCW + kk].to_wide());
+                        }
+                    }
+                    toc[j * max_row + i] = T::from_wide_sat(msg);
+                }
+            }
+
+            // Min-sum kernel: per check node compute the two smallest |toc|.
+            for i in 0..m_checks {
+                let nrw_i = P::nrw(i) as usize;
+                let mut m1 = T::POS_INF_LIKE;
+                let mut m2 = T::POS_INF_LIKE;
+                let mut imin = 0_usize;
+                let mut sx = false;
+                for s in 0..nrw_i {
+                    let v = toc[i * max_row + s];
+                    if v.is_negative() {
+                        sx = !sx;
+                    }
+                    let av = v.abs_sat();
+                    if av.lt_total(m1) {
+                        m2 = m1;
+                        m1 = av;
+                        imin = s;
+                    } else if av.lt_total(m2) {
+                        m2 = av;
+                    }
+                }
+                min1[i] = m1;
+                min2[i] = m2;
+                idx_min1[i] = imin as u32;
+                sign_xor[i] = sx;
+            }
+
+            // Per-edge check-to-variable update with α scaling (NMS).
+            for j in 0..n {
+                let mn_j = P::mn(j);
+                for k_ in 0..NCW {
+                    let ichk = mn_j[k_] as usize;
+                    let nrw_ichk = P::nrw(ichk) as usize;
+                    let mut my_slot = nrw_ichk;
+                    for s in 0..nrw_ichk {
+                        if P::nm(ichk, s) as usize == j {
+                            my_slot = s;
+                            break;
+                        }
+                    }
+                    let my_v = if my_slot < nrw_ichk {
+                        toc[ichk * max_row + my_slot]
+                    } else {
+                        T::ZERO
+                    };
+                    let my_neg = my_v.is_negative();
+                    let nrw_odd = (nrw_ichk & 1) != 0;
+                    let extrinsic_sign_neg = sign_xor[ichk] ^ my_neg ^ nrw_odd;
+
+                    let mag = if my_slot < nrw_ichk && my_slot as u32 == idx_min1[ichk] {
+                        min2[ichk]
+                    } else {
+                        min1[ichk]
+                    };
+
+                    let scaled = mag.mul_alpha(alpha);
+                    tov[j * NCW + k_] = if extrinsic_sign_neg {
+                        scaled.neg_sat()
+                    } else {
+                        scaled
+                    };
+                }
+            }
+        }
+
+        stats.add(max_iter.saturating_add(1), false);
+        None
+    }
+
+    fn same_result(a: &Option<BpResult>, b: &Option<BpResult>) -> bool {
+        match (a, b) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                a.message77 == b.message77
+                    && a.info == b.info
+                    && a.codeword == b.codeword
+                    && a.hard_errors == b.hard_errors
+                    && a.iterations == b.iterations
+            }
+            _ => false,
+        }
+    }
+
+    /// The flat-table NMS decoder gives **the same result and the same pass counts as the searching one**, bit for bit, for both LLR types (`f32` and the board's `Q11i16`), both codes
+    /// (LDPC(174,91) and (240,101)), with and without an AP mask and a verifier, over inputs that decode after few passes, after many, and never (an all-zero codeword at four amplitudes with
+    /// four noise levels, and pure noise). **Fails if** an edge table points at the wrong place, the slot arithmetic is off, the AP path differs, or the decode count of a stall or loop end changes.
+    #[test]
+    fn the_flat_table_nms_decoder_equals_the_searching_one() {
+        fn run<P: LdpcParams, T: LlrScalar>(label: &str) -> (usize, usize) {
+            let n = P::N;
+            let mut sa = BpScratch::<P, T>::new();
+            let mut sb = BpScratch::<P, T>::new();
+            let (mut decoded, mut total) = (0usize, 0usize);
+            let mut seed = 0u32;
+            for amp in [0.5f32, 1.0, 1.5, 2.5] {
+                for noise in [0.0f32, 1.0, 2.0, 3.0, 4.0] {
+                    for _ in 0..6 {
+                        seed += 1;
+                        let noise_llr = synth_llr(n, seed);
+                        // an all-zero codeword (LLR < 0 is bit 0) with noise; amplitude 0 would be pure noise
+                        let llr: Vec<T> = noise_llr
+                            .iter()
+                            .map(|&x| T::from_f32((-amp * 4.0 + x * noise).clamp(-7.5, 7.5)))
+                            .collect();
+                        let mask: Vec<bool> = (0..n).map(|i| i % 11 == 0).collect();
+                        for (ap, max_iter, verify) in [
+                            (None, 30u32, None),
+                            (None, 7, None),
+                            (None, 30, Some((|_: &[u8]| false) as fn(&[u8]) -> bool)),
+                            (Some(mask.as_slice()), 30, None),
+                        ] {
+                            let a = bp_decode_generic_nms_with_scratch::<P, T>(
+                                &mut sa, &llr, ap, max_iter, verify, 0.8,
+                            );
+                            let b = nms_reference::<P, T>(&mut sb, &llr, ap, max_iter, verify, 0.8);
+                            assert!(
+                                same_result(&a, &b),
+                                "{label}: amp {amp} noise {noise} seed {seed} max_iter {max_iter} ap {}",
+                                ap.is_some()
+                            );
+                            assert_eq!(
+                                sa.take_stats(),
+                                sb.take_stats(),
+                                "{label}: stats, amp {amp} noise {noise} seed {seed} max_iter {max_iter}"
+                            );
+                            total += 1;
+                            decoded += a.is_some() as usize;
+                        }
+                    }
+                }
+            }
+            (decoded, total)
+        }
+        for (label, (d, t)) in [
+            ("174,91 f32", run::<Ldpc174_91Params, f32>("174,91 f32")),
+            (
+                "174,91 Q11",
+                run::<Ldpc174_91Params, crate::engine::scalar::Q11i16>("174,91 Q11"),
+            ),
+            (
+                "240,101 f32",
+                run::<crate::fec::ldpc::params::Ldpc240_101Params, f32>("240,101 f32"),
+            ),
+            (
+                "240,101 Q11",
+                run::<crate::fec::ldpc::params::Ldpc240_101Params, crate::engine::scalar::Q11i16>(
+                    "240,101 Q11",
+                ),
+            ),
+        ] {
+            assert!(
+                d > t / 10 && d < t - t / 10,
+                "{label}: the inputs must both decode and fail: {d} of {t}"
+            );
+        }
     }
 }
