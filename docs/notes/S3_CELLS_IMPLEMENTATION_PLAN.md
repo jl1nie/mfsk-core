@@ -284,27 +284,7 @@ One core, wav replay from PSRAM, no WiFi / USB host, 30 candidates, OSD off, `qs
 
 **Ways to bring the search under the budget (estimates; (A) was built the same day, section 12a):** (A) a restructured `score`: per carrier, precompute for every row and Costas symbol the exact neighbour sum and count (`w[r][k]`, `n[r][k]`, with the same row-edge rules, so the integer result and the truncating division are the same), then each of the 60 lags is 21 lookups: about 1.75x fewer operations (an estimate from operation counts: 0.9 s -> about 0.5 s); (B) the two-core split already in the library (`search_cells` per half of the carriers, `merge_cells_parts`): about 2x; (C) **score incrementally in the producer**: when row `r + 2` arrives, the contributions of row `r` are added to the 21 lag accumulators of each carrier (about 240 operations a carrier a row, about 0.5 ms a row pair against an 80 ms cadence), so that at the emit point only the selection and the hard sync of the survivors are left; bit-identical to `search_cells` over the rows filled so far if the two last rows are added with the edge rule at the finalisation (a test over every fill point would pin it). (C) removes the search from the post-boundary path altogether and is the plan's section 4.4; (A) and (B) shorten it.
 
-## 13. Does the cells flow fit the window? The timeline from the measured numbers (2026-11-27; an estimate, one core, nothing else running)
-
-**A correction first.** Section 12 compared `band` (0.90 s as measured there; 0.46 s after the regrouped scoring, section 12a) with the 500 ms of post-boundary compute and said the search had to be shortened to fit. That put the search **after** the boundary; the design (section 4.4, `CORES3_FT8_SLOT_BUDGET.md`) runs it at the **emit point, pair 87 of 92, which leaves 810 ms before the boundary**, and decodes there every candidate whose rows have arrived (`candidate_ready`); only the late ones wait for the slot's end. The estimate below follows that design.
-
-Inputs (board, `ft8-stage-bench` after the `d` floor, the regrouped scoring and the flat-table BP; logs `..._bpflat_2026-11-27.log`): `band` 0.456-0.460 s over the 174 rows of the emit point (one core); stage 3 a candidate as logged (`#i ... us`); which candidates are ready at 174 rows: `j0 + 157 < 174` with `j0 = round((dt + 0.5) / 0.08)` from the candidates' DT (host list of the same slots); the first 15 or 30 in the search's order (hard sync).
-
-| | candidates ready at the emit point | 15 candidates: ready / late (stage 3) | 30 candidates: ready / late |
-|---|---|---|---|
-| `qso3_busy` | 27 of 30 | 0.281 s / 0.000 s | 0.529 s / 0.059 s |
-| `qso1` | 18 of 30 | 0.110 s / 0.088 s | 0.291 s / 0.167 s |
-| `qso2` | 19 of 30 | 0.175 s / 0.098 s | 0.289 s / 0.189 s |
-
-Timeline (one core, seconds relative to the boundary; the emit point is at -0.81): the search ends at -0.81 + 0.46 = **-0.35**; the ready candidates are decoded from there: with 15 candidates all of them end **before the boundary** (0.28 s of 0.35 s at most); the late ones follow after it, so the last decode is at **+0.00 / +0.09 / +0.10 s**. With 30 candidates `qso3_busy` runs 0.18 s past the boundary on its ready ones and its last decode is at **+0.24 s** (`qso1` +0.17, `qso2` +0.19). **All inside the 500 ms after the boundary** (the old S3 uses about 270 ms), and the shipped 15 candidates are the cheap ones (ranks 0-14 decode in few passes: 15 candidates cost 0.11-0.28 s, 30 cost 0.35-0.59 s).
-
-So **one core is enough for the window; the two-core split is not needed to fit it**: it would move the end of the last decode earlier (the search 0.23 s, stage 3 halved: everything before the boundary), a margin, not a requirement.
-
-**What this does not establish:** (1) the firmware's other load: the UAC reader and `USB UAC Host` (priority 6), WiFi, the display and the producer on core 1 (about 7 ms of each 160 ms): the bench ran alone on one core; the old S3 had the same neighbours and used 270 ms of its 500; (2) the search at the emit point over 174 rows was timed over 184 (a little cheaper in the app); (3) the producer, the 48 kHz to 8 kHz reader and the early emit are not in the app (section 5 steps 1-3): the cells flow's own timeline is this estimate, not a measurement of the app; (4) the soft FFT in the bench's demux (0.93 s) is not on this path (the producer does it, with esp-dsp 5.44 ms an FFT); (5) subtraction passes (SIC) are after the boundary and take seconds: not in this window.
-
-**Decisions for the owner that this fixes the numbers of:** the candidate count (15 as shipped, or 30: the first needs 0.11-0.28 s of stage 3, the second 0.29-0.53 s; ranks 16-25 convert at about 0.1 % on the old flow, `CORES3_FT8_SLOT_BUDGET.md` section 4, not re-measured on this one); the emit point (87); whether the app gets the cells flow (section 5 steps 1-3 are the work).
-
-### 12a. After the changes of the day (2026-11-27; logs `ft8-stage-bench_regroup_`, `_bpflat_`, `_bpconst_2026-11-27.log` in `embedded-poc/m5stack-cores3-app/logs/`, git-ignored; the predictions are in the bench's module doc)
+## 12a. After the changes of the day (2026-11-27; logs `ft8-stage-bench_regroup_`, `_bpflat_`, `_bpconst_2026-11-27.log` in `embedded-poc/m5stack-cores3-app/logs/`, git-ignored; the predictions are in the bench's module doc)
 
 One core, 30 candidates, OSD off, the `d` floor 16, `qso3_busy` / `qso1` / `qso2`; the decodes (9 / 4 / 5) and the BP passes (1 240 / 951 / 995) are the same in every run.
 
@@ -316,6 +296,29 @@ One core, 30 candidates, OSD off, the `d` floor 16, `qso3_busy` / `qso1` / `qso2
 | min free internal DRAM (qso2) | 251 647 B | 251 647 B | 247 059 B | 251 647 B |
 
 The scoring: `band_best` 63.8 -> 42.4 M host instructions, 14.0 -> 5.6 M conditional branches, bit for bit the same scores. The tables of the BP in the scratch cost 4.6 KB of internal DRAM on this board (every table under the 2 KB threshold goes to internal), which the compile-time version does not.
+
+**The trade of the compile-time tables** (the logs `_bpflat_` and `_bpconst_`): against the first version's heap tables the const ones are about **6 % slower per BP pass on the board** (floor 0: 0.382 / 0.383 / 0.388 -> 0.408 / 0.409 / 0.414 ms; stage 3 at floor 0 0.832 / 0.754 / 0.799 -> 0.884 / 0.802 / 0.850 s; at floor 16 +5 % / +5 % / -3 %), for **4.6 KB of internal DRAM kept free** and no state in the scratch. The cause is a hypothesis, not measured: the tables are flash rodata read through the cache, where the heap tables sat in internal DRAM. Host instructions a pass: 76 000 -> 39 900 (heap tables) -> 37 600 (const), `scripts/bp-instr-per-pass.sh`.
+
+
+## 13. Does the cells flow fit the window? The timeline from the measured numbers (2026-11-27; an estimate, one core, nothing else running)
+
+**A correction first.** Section 12 compared `band` (0.90 s as measured there; 0.46 s after the regrouped scoring, section 12a) with the 500 ms of post-boundary compute and said the search had to be shortened to fit. That put the search **after** the boundary; the design (section 4.4, `CORES3_FT8_SLOT_BUDGET.md`) runs it at the **emit point, pair 87 of 92, which leaves 810 ms before the boundary**, and decodes there every candidate whose rows have arrived (`candidate_ready`); only the late ones wait for the slot's end. The estimate below follows that design.
+
+Inputs (board, `ft8-stage-bench` after the `d` floor, the regrouped scoring and the compile-time-table BP; log `..._bpconst_2026-11-27.log`; the same estimate from the heap-table run `..._bpflat_` is 0.03-0.04 s earlier): `band` 0.456-0.460 s over the 174 rows of the emit point (one core); stage 3 a candidate as logged (`#i ... us`); which candidates are ready at 174 rows: `j0 + 157 < 174` with `j0 = round((dt + 0.5) / 0.08)` from the candidates' DT (host list of the same slots); the first 15 or 30 in the search's order (hard sync).
+
+| | candidates ready at the emit point | 15 candidates: ready / late (stage 3) | 30 candidates: ready / late |
+|---|---|---|---|
+| `qso3_busy` | 27 of 30 | 0.297 s / 0.000 s | 0.559 s / 0.062 s |
+| `qso1` | 18 of 30 | 0.117 s / 0.134 s | 0.265 s / 0.218 s |
+| `qso2` | 19 of 30 | 0.141 s / 0.103 s | 0.263 s / 0.200 s |
+
+Timeline (one core, seconds relative to the boundary; the emit point is at -0.81): the search ends at -0.81 + 0.46 = **-0.35**; the ready candidates are decoded from there: with 15 candidates all of them end **before the boundary** (0.28 s of 0.35 s at most); the late ones follow after it, so the last decode is at **+0.00 / +0.13 / +0.10 s**. With 30 candidates `qso3_busy` runs 0.21 s past the boundary on its ready ones and its last decode is at **+0.27 s** (`qso1` +0.22, `qso2` +0.20). **All inside the 500 ms after the boundary** (the old S3 uses about 270 ms), and the shipped 15 candidates are the cheap ones (ranks 0-14 decode in few passes: 15 candidates cost 0.12-0.30 s, 30 cost 0.38-0.62 s).
+
+So **one core is enough for the window; the two-core split is not needed to fit it**: it would move the end of the last decode earlier (the search 0.23 s, stage 3 halved: everything before the boundary), a margin, not a requirement.
+
+**What this does not establish:** (1) the firmware's other load: the UAC reader and `USB UAC Host` (priority 6), WiFi, the display and the producer on core 1 (about 7 ms of each 160 ms): the bench ran alone on one core; the old S3 had the same neighbours and used 270 ms of its 500; (2) the search at the emit point over 174 rows was timed over 184 (a little cheaper in the app); (3) the producer, the 48 kHz to 8 kHz reader and the early emit are not in the app (section 5 steps 1-3): the cells flow's own timeline is this estimate, not a measurement of the app; (4) the soft FFT in the bench's demux (0.93 s) is not on this path (the producer does it, with esp-dsp 5.44 ms an FFT); (5) subtraction passes (SIC) are after the boundary and take seconds: not in this window.
+
+**Decisions for the owner that this fixes the numbers of:** the candidate count (15 as shipped, or 30: the first needs 0.12-0.30 s of stage 3, the second 0.38-0.62 s; ranks 16-25 convert at about 0.1 % on the old flow, `CORES3_FT8_SLOT_BUDGET.md` section 4, not re-measured on this one); the emit point (87); whether the app gets the cells flow (section 5 steps 1-3 are the work).
 
 ## 14. Is there room for SIC? The board after the day's speed-ups (2026-11-27; `ft8-sic-bench`, log `ft8-sic-bench_after_2026-11-27.log`, git-ignored; predictions committed first, `f0267c3b`)
 

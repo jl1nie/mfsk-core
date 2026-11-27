@@ -2,11 +2,11 @@
 
 ## Unreleased
 
-### Cells flow on the CoreS3: the search and the BP twice as fast, bit for bit (host and board, `ft8-stage-bench`)
+### Cells flow on the CoreS3: a faster search and a faster BP, bit for bit (host and board, `ft8-stage-bench`)
 
 - `band_best` scores a carrier at a time (`carrier_scores`): the neighbour terms of a Costas symbol are made once for every row of the carrier and each of the 60 positions adds up 21 entries; the scores are the old ones at every position (test over every position, 184 rows and nine shorter fills). Host 63.8 -> 42.4 M instructions, 14.0 -> 5.6 M conditional branches; **CoreS3 `band` 0.90-0.94 s -> 0.46 s** (one core; CPU-bound: the same per position over a narrow and the whole range).
-- The NMS decoder reads edge tables made at compile time (`LdpcParams::NMS_EDGES`; every index range-checked at compile time) in place of searching the code's tables on every pass: **76 000 -> 37 600 host instructions a BP pass**, the results bit for bit the old decoder's (the old one is kept in the tests; f32 and Q11i16, 174,91 and 240,101). CoreS3: a BP pass 0.69-0.75 -> 0.26-0.44 ms, stage 3 at the `d` floor 0.93 / 0.71 / 0.74 -> 0.62 / 0.48 / 0.46 s. `unsafe` reads with the lengths asserted once.
-- With the `d` floor (#765) the cells flow's 30 candidates end at +0.24 / +0.17 / +0.19 s after the slot boundary on one core, 15 at +0.00 / +0.09 / +0.10 s (an estimate, plan section 13; the app's other load is not measured). Detail and the predictions: `S3_CELLS_IMPLEMENTATION_PLAN.md` sections 12-13.
+- The NMS decoder reads edge tables made at compile time (`LdpcParams::NMS_EDGES`; every index range-checked at compile time) in place of searching the code's tables on every pass: **76 000 -> 37 600 host instructions a BP pass** (`scripts/bp-instr-per-pass.sh`), the results bit for bit the old decoder's (the old one is kept in the tests; f32 and Q11i16, 174,91 and 240,101). CoreS3: a BP pass 0.68-0.75 -> 0.41-0.44 ms (one fit with a large intercept gave 0.26), stage 3 at the `d` floor 0.93 / 0.71 / 0.74 -> 0.62 / 0.48 / 0.46 s; the compile-time tables are about 6 % slower per pass than a first version's heap tables and keep 4.6 KB of internal DRAM free (plan section 12a). `unsafe` reads with the lengths asserted once.
+- With the `d` floor (#765) the cells flow's 30 candidates end at +0.27 / +0.22 / +0.20 s after the slot boundary on one core, 15 at +0.00 / +0.13 / +0.10 s (an estimate, plan section 13; the app's other load is not measured). Detail and the predictions: `S3_CELLS_IMPLEMENTATION_PLAN.md` sections 12-13.
 
 ### Cells flow: variant `d` only from score 16 up (Issue #765; host, measured over 4 780 slots and the SNR ladders)
 

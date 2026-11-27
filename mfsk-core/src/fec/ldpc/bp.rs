@@ -1027,6 +1027,8 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
     // SAFETY (all `at!` / `set!` below): the index is either an affine loop variable bounded by the lengths asserted above (a check's edges are `j * max_row + i` with
     // `i < nrw[j] <= MAX_ROW`), or an entry of an edge table whose entries `edge_arrays` has checked, when the table is built at compile time, to be less than the length of the
     // array it is used on (`nm_flat` < n, `c2v` < n * NCW, `v2c_e` < m * max_row, `v2c_chk` < m).
+    // (`edge_arrays` is given the row width `R` as a literal and the decoder uses `P::MAX_ROW`: they are the same number because `edge_arrays` asserts `ER == M * R` and the inline
+    // `const {}` above asserts `nm_flat.len() == P::M * P::MAX_ROW`, which is what `j * max_row + i < len` relies on.)
     macro_rules! at {
         ($s:expr, $i:expr) => {{
             let i = $i;
@@ -1898,7 +1900,7 @@ mod tests {
     }
 
     /// The flat-table NMS decoder (`P::NMS_EDGES`, built at compile time) gives **the same result and the same pass counts as the searching one**, bit for bit, for both LLR types
-    /// (`f32` and the board's `Q11i16`), the codes LDPC(174,91) and (240,101) (the two with a decoder in the tree), each with and without an AP mask, with a verifier that rejects and with
+    /// (`f32` and the board's `Q11i16`), the codes LDPC(174,91) (the one with an NMS caller in the tree) and (240,101) (its decoder runs the kind entry point; tested here as the second code), each with and without an AP mask, with a verifier that rejects and with
     /// none, at `max_iter` 30 and 7, over inputs that decode after few passes, after many, and never (an all-zero codeword at four amplitudes with five noise levels, 0 to 4 times a
     /// pseudo-random LLR vector; the amplitudes are not 0, so no input is pure noise, but the larger noise levels fail to decode). **Not reached:** `max_iter` 0, an AP mask together with a
     /// verifier that accepts, the codes (240,74) and (128,90), saturating `Q11i16` extremes beyond 7.5. **Fails if** an edge table points at the wrong place, the slot arithmetic is off, the AP path
