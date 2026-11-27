@@ -1,25 +1,28 @@
-//! What two cores of the CoreS3 (ESP32-S3, LX7) share that slows each of them: the same loop on core 0 alone and on both cores at once, over different memories.
-//! No FT8 in it. (`ft8-two-core-bench` found an OSD attempt 38 ms on one core and about 55 ms on each of two running together, the BP of the round 1.35 times slower: design note
-//! section 30. The OSD memory's place, internal DRAM or PSRAM, explained 5 % of it.) Every arm is a chain of dependent reads (the next index comes from the value just read, as a table walk does)
-//! over a table of its own per core unless it says shared, timed on core 0 while core 1 is idle, then on both with a common start (each core's own time is read; the second run of each is kept):
+//! What two cores of the CoreS3 (ESP32-S3, LX7) share that slows each of them: the same loop on core 0 alone and on both cores at once, over different memories and with the code in
+//! different memories. No FT8 in it. (`ft8-two-core-bench` found an OSD attempt 38 ms on one core and about 55 ms on each of two running together, the BP of the round 1.35 times slower:
+//! design note section 30. The OSD memory's place, internal DRAM or PSRAM, explained 5 % of it.) The loop of a memory arm **chases a cyclic permutation** (`i = table[i]`, one cycle through every
+//! entry: Sattolo), so the working set is the whole table and each step waits for its load; a table of its own per core unless it says shared. Timed on core 0 while core 1 is idle, on core 1 the
+//! same way, then on both with a common start (the second run of each is kept):
 //!
-//! | arm | what the loop reads |
+//! | arm | what the loop reads / where its code is |
 //! |---|---|
-//! | `alu` | nothing: eight independent f32 chains (the FPU), no memory |
+//! | `alu`, `mul` | no memory: eight independent f32 chains; a dependent integer multiply-add chain (the code in flash, fetched through the instruction cache) |
+//! | `alu-iram`, `mul-iram` | the same loops with their code in **IRAM** (`.iram1`: no cache, no flash) |
 //! | `int-sep` | 8 KB tables in internal DRAM, each core's in a **different 32 KB bank** (the S3's internal SRAM is in 32 KB banks; two masters on one bank are arbitrated) |
 //! | `int-same` | 8 KB tables in internal DRAM, both in **one** 32 KB bank |
 //! | `int-shared` | one 8 KB table in internal DRAM, both cores read it |
-//! | `flash-8k`, `flash-128k` | one `static` table (flash `.rodata`, through the cache: where `NMS_EDGES` and the OSD's `COLS` are) of 8 KB (fits the data cache) and of 128 KB (does not) |
-//! | `psram-32k`, `psram-512k` | a table per core in PSRAM, 32 KB and 512 KB |
+//! | `flash-8k`, `flash-128k` | one `static` table (flash `.rodata`, through the data cache: where `NMS_EDGES` and the OSD's `COLS` are) of 8 KB (fits the cache) and of 128 KB (does not) |
+//! | `psram-32k`, `psram-512k`, `psram-shr` | a table per core in PSRAM, 32 KB and 512 KB; one 32 KB table shared |
 //!
-//! Logged per arm: ns a read (core 0 alone; core 0 and core 1 together) and the slowdown of core 0 (together over alone) and of core 1 (together over its own alone, measured the same way
-//! with core 0 idle). The addresses of the tables are logged (internal DRAM 0x3FC8..., PSRAM 0x3C..., flash 0x3C... below the PSRAM window: the log says which each is).
+//! **The first run (2026-11-27) is void for the memory arms**: its walk made the index from the low bits of a state that depends only on those bits, so it cycled through a few hundred entries in
+//! every table and every arm ran from the cache at the same 54.2 ns a step. What it did show is real: the two **compute-only** loops, `alu` (x1.15) and the multiply chain of the walk (x1.23), ran
+//! slower on each core while the other core ran the same loop, with no data memory on the critical path. That points at the code's fetch, or at the core itself, before any data memory.
 //!
-//! **Predictions, written before the first run.** The observation to explain: x1.35-1.45 on the BP / OSD code of the cells flow when both cores run. Four readings, and what each says:
-//! **(flash cache)** `flash-8k` and `flash-128k` slow by **x1.25 or more**, the rest x1.10 or less; **(bank)** `int-same` slows by x1.25 or more and `int-sep` / `int-shared` by x1.10 or less;
-//! **(PSRAM / cache)** `psram-32k` / `psram-512k` slow by x1.25 or more; **(none of the memories)** every arm x1.10 or less, `alu` included: the slowdown is not in the loads (the tick and
-//! other interrupts on the second core, a lock, the code's fetch from the shared instruction cache, a frequency change when both run). The expected values with no sharing: **x1.00 +-0.03**. If two
-//! readings hold at once, the arms that slow tell which. Not a pass / fail test: the numbers are the result.
+//! **Predictions for this run, written before it.** The values with nothing shared: **x1.00 +-0.03**. Readings, and what each says: **(code fetch)** `alu` and `mul` (code in flash) slow
+//! by **x1.10-1.25** as before and `alu-iram` / `mul-iram` by **x1.03 or less**; **(core / clock / interrupts)** the IRAM variants slow as much as the flash ones (x1.10-1.25), and then every arm
+//! carries that and the memory arms say little; **(flash cache)** `flash-8k` / `flash-128k` slow by more than x1.25 and `int-*` by x1.10 or less; **(bank)** `int-same` x1.25 or more while `int-sep`
+//! / `int-shared` x1.10 or less; **(PSRAM)** `psram-*` x1.25 or more. A memory arm's step costs: internal DRAM 3-6 ns, flash-8k about the same (a cache hit), flash-128k and psram-512k 40-150 ns (misses).
+//! Not a pass / fail test: the numbers are the result.
 
 extern crate alloc;
 extern crate std;
@@ -35,37 +38,96 @@ fn now_us() -> i64 {
     unsafe { esp_idf_svc::sys::esp_timer_get_time() }
 }
 
-const fn lcg_table<const N: usize>() -> [u32; N] {
+/// A cyclic permutation of `0..N` (Sattolo): following `i = t[i]` from any entry visits all `N` before it returns.
+const fn perm_table<const N: usize>() -> [u32; N] {
     let mut t = [0u32; N];
-    let mut x = 12345u32;
     let mut i = 0;
     while i < N {
-        x = x.wrapping_mul(1664525).wrapping_add(1013904223);
-        t[i] = x;
+        t[i] = i as u32;
         i += 1;
+    }
+    let mut x = 12345u32;
+    let mut k = N - 1;
+    while k >= 1 {
+        x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+        let j = ((x >> 8) as usize) % k;
+        let tmp = t[k];
+        t[k] = t[j];
+        t[j] = tmp;
+        k -= 1;
     }
     t
 }
-/// Flash `.rodata` (not `DRAM_ATTR`): read through the cache.
-static FLASH_8K: [u32; 2048] = lcg_table::<2048>();
-static FLASH_128K: [u32; 32768] = lcg_table::<32768>();
 
-/// A walk of `n` dependent reads over `table` (a power of two long): the next index is made from the value read.
+/// The same at run time, over `n` words at `p`.
+fn fill_perm(p: *mut u32, n: usize, seed: u32) {
+    let mut x = seed;
+    unsafe {
+        for i in 0..n {
+            *p.add(i) = i as u32;
+        }
+        for k in (1..n).rev() {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            let j = ((x >> 8) as usize) % k;
+            let t = *p.add(k);
+            *p.add(k) = *p.add(j);
+            *p.add(j) = t;
+        }
+    }
+}
+/// Flash `.rodata` (not `DRAM_ATTR`): read through the cache.
+static FLASH_8K: [u32; 2048] = perm_table::<2048>();
+static FLASH_128K: [u32; 32768] = perm_table::<32768>();
+
+/// `n` steps of `i = table[i]` over a cyclic permutation.
 #[inline(never)]
-fn walk(table: &[u32], n: usize, seed: u32) -> u32 {
-    let mask = table.len() - 1;
-    let (mut x, mut acc) = (seed, 0u32);
+fn chase(table: &[u32], n: usize) -> u32 {
+    let (mut i, mut acc) = (0usize, 0u32);
     for _ in 0..n {
-        let v = unsafe { *table.get_unchecked((x as usize) & mask) };
-        acc = acc.wrapping_add(v);
-        x = x.wrapping_mul(1664525).wrapping_add(1013904223) ^ v;
+        i = unsafe { *table.get_unchecked(i) } as usize;
+        acc ^= i as u32;
     }
     black_box(acc)
+}
+
+/// A dependent multiply-add chain: the integer pipeline and nothing else.
+#[inline(never)]
+fn mul(n: usize) -> u32 {
+    let mut x = 12345u32;
+    for _ in 0..n {
+        x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+    }
+    black_box(x)
 }
 
 /// Eight independent f32 chains: the FPU and nothing else.
 #[inline(never)]
 fn alu(n: usize) -> u32 {
+    alu_body(n)
+}
+
+/// `alu` with its code in IRAM.
+#[inline(never)]
+#[unsafe(link_section = ".iram1.mem_bench_alu")]
+fn alu_iram(n: usize) -> u32 {
+    alu_body(n)
+}
+
+/// `mul` with its code in IRAM.
+#[inline(never)]
+#[unsafe(link_section = ".iram1.mem_bench_mul")]
+fn mul_iram(n: usize) -> u32 {
+    let mut x = 12345u32;
+    for _ in 0..n {
+        x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+    }
+    black_box(x)
+}
+
+#[inline(always)]
+fn alu_body(n: usize) -> u32 {
     let mut a = [1.0f32, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7];
     for _ in 0..n {
         for v in a.iter_mut() {
@@ -91,12 +153,18 @@ impl Tab {
 #[derive(Clone, Copy)]
 enum Kernel {
     Alu(usize),
+    AluIram(usize),
+    Mul(usize),
+    MulIram(usize),
     Walk(Tab, usize),
 }
-fn run_kernel(k: Kernel, seed: u32) -> u32 {
+fn run_kernel(k: Kernel, _seed: u32) -> u32 {
     match k {
         Kernel::Alu(n) => alu(n),
-        Kernel::Walk(t, n) => walk(t.slice(), n, seed),
+        Kernel::AluIram(n) => alu_iram(n),
+        Kernel::Mul(n) => mul(n),
+        Kernel::MulIram(n) => mul_iram(n),
+        Kernel::Walk(t, n) => chase(t.slice(), n),
     }
 }
 
@@ -142,28 +210,15 @@ fn body() {
     let blk = unsafe { esp_idf_svc::sys::heap_caps_aligned_alloc(32768, 98304, INTERNAL) } as *mut u32;
     assert!(!blk.is_null(), "mem-bench: 96 KB of internal DRAM");
     let words = |bytes: usize| bytes / 4;
-    let fill = |p: *mut u32, n: usize, salt: u32| {
-        let mut x = salt;
-        for i in 0..n {
-            x = x.wrapping_mul(1664525).wrapping_add(1013904223);
-            unsafe { *p.add(i) = x };
-        }
-    };
-    for i in 0..words(98304) {
-        unsafe { *blk.add(i) = (i as u32).wrapping_mul(2654435761) };
-    }
-    fill(blk, words(8192), 1);
-    fill(unsafe { blk.add(words(8192)) }, words(8192), 2); // same bank as the first: offset 8 KB
-    fill(unsafe { blk.add(words(32768)) }, words(8192), 3); // the next bank
+    // each 8 KB table a cyclic permutation of its own 2048 entries; at +0 and +8 KB (one bank) and +32 KB (the next)
+    fill_perm(blk, words(8192), 1);
+    fill_perm(unsafe { blk.add(words(8192)) }, words(8192), 2);
+    fill_perm(unsafe { blk.add(words(32768)) }, words(8192), 3);
     let t8 = |off: usize| Tab(unsafe { blk.add(words(off)) }, words(8192));
     // PSRAM tables: a vector each, above the internal limit
     let mk = |n: usize, salt: u32| -> Tab {
         let mut v: Vec<u32> = alloc::vec![0; n];
-        let mut x = salt;
-        for e in v.iter_mut() {
-            x = x.wrapping_mul(1664525).wrapping_add(1013904223);
-            *e = x;
-        }
+        fill_perm(v.as_mut_ptr(), n, salt);
         let t = Tab(v.as_ptr(), n);
         core::mem::forget(v);
         t
@@ -183,8 +238,11 @@ fn body() {
     let (f8, f128) = (Tab(FLASH_8K.as_ptr(), FLASH_8K.len()), Tab(FLASH_128K.as_ptr(), FLASH_128K.len()));
 
     // (arm, kernel of core 0, kernel of core 1, reads)
-    let arms: [(&str, Kernel, Kernel); 9] = [
+    let arms: [(&str, Kernel, Kernel); 12] = [
         ("alu       ", Kernel::Alu(2_000_000), Kernel::Alu(2_000_000)),
+        ("alu-iram  ", Kernel::AluIram(2_000_000), Kernel::AluIram(2_000_000)),
+        ("mul       ", Kernel::Mul(20_000_000), Kernel::Mul(20_000_000)),
+        ("mul-iram  ", Kernel::MulIram(20_000_000), Kernel::MulIram(20_000_000)),
         ("int-sep   ", Kernel::Walk(t8(0), 6_000_000), Kernel::Walk(t8(32768), 6_000_000)),
         ("int-same  ", Kernel::Walk(t8(0), 6_000_000), Kernel::Walk(t8(8192), 6_000_000)),
         ("int-shared", Kernel::Walk(t8(0), 6_000_000), Kernel::Walk(t8(0), 6_000_000)),
@@ -198,7 +256,8 @@ fn body() {
     let mut sink = 0u32;
     for (name, k0, k1) in arms {
         let ops = match k0 {
-            Kernel::Alu(n) => n * 8,
+            Kernel::Alu(n) | Kernel::AluIram(n) => n * 8,
+            Kernel::Mul(n) | Kernel::MulIram(n) => n,
             Kernel::Walk(_, n) => n,
         } as f64;
         // core 0 alone, core 1 alone (the other idle), then both; the second run of each is kept
@@ -225,6 +284,7 @@ fn body() {
             b1 = t;
             sink ^= r;
         }
+        log::info!("mem-bench: {name} raw: ops {ops} core0 alone {a0} us, with {b0} us; core1 alone {a1} us, with {b1} us");
         log::info!(
             "mem-bench: {name} core 0: {:.2} ns alone, {:.2} ns with core 1 (x{:.2}); core 1: {:.2} ns alone, {:.2} ns with core 0 (x{:.2})",
             a0 as f64 * 1000.0 / ops,
