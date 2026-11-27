@@ -63,6 +63,8 @@ mod cd0_fir;
 #[cfg(feature = "fixed-point")]
 mod cells_flow;
 #[cfg(feature = "fixed-point")]
+mod cells_options;
+#[cfg(feature = "fixed-point")]
 mod coarse_lib;
 #[cfg(feature = "fixed-point")]
 mod ft8dec_sic;
@@ -73,6 +75,8 @@ pub use cells_flow::{
     CELLS_D_MIN_SCORE, CellTables, CellsWorker, Found, Grid, OsdAttempt, SnrBaseline,
     decode_block_cells, rank_osd_attempts,
 };
+#[cfg(feature = "fixed-point")]
+pub use cells_options::{CellsOptions, OsdOptions, SicOptions, decode_block_cells_with};
 #[cfg(feature = "fixed-point")]
 pub use coarse_lib::{
     CellsPart, HalfDbCells, candidate_ready, coarse_sync_gated_cells, merge_cells_parts,

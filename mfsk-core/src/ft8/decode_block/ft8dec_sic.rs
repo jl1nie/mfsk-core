@@ -546,7 +546,7 @@ const NEAR_CELLS: usize = 18;
 ///
 /// Every decode reports the place of [`View::refine`] (`ft8dec.c` 874-882: the parabola on the energy of its 79 tones, the time through `tcal`), finer than
 /// the grid's. **A deliberate divergence from WSJT-X** (the subtraction, the passes) and from `ft8dec` (the staircase after the spectra is the library's, as
-/// in [`decode_block_cells`](super::decode_block_cells)). `snr_db` is not validated. Peak memory: the cells of one pass (172 KB at 200-3000 Hz), the ring
+/// in [`decode_block_cells`](super::decode_block_cells)). `snr_db` is [`SnrBaseline`](super::SnrBaseline)'s (against `jt9`'s: mean 0, SD 2.1 dB). Peak memory: the cells of one pass (172 KB at 200-3000 Hz), the ring
 /// and the signals' states (about 40 KB), the spectra of one candidate.
 pub fn decode_block_cells_sic<S: AudioSample>(
     audio: &[S],

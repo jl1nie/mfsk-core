@@ -736,7 +736,7 @@ impl<'a> CellsWorker<'a> {
 /// `None` unless `rate.coarse_ft8lib()` (`Hz8000`, `fixed-point`). `depth` is the staircase's (`DecodeDepth::EMBEDDED` with `osd` on is
 /// the S3's). A decode found on the second try reports the place it was found at (`freq_hz`, `dt_sec` moved by the estimate); one found
 /// at the grid, the grid's (3.125 Hz, 80 ms: coarser than a fine sync's). `DecodeResult::sync_score` is the search's score in 0.5 dB units, and
-/// **`snr_db` is not validated** against WSJT-X's: it is computed from amplitudes read from half-dB cells.
+/// `snr_db` is [`SnrBaseline`]'s (against `jt9`'s: mean 0, SD 2.1 dB, `tests/cells_flow_accuracy.rs`).
 ///
 /// **A deliberate divergence from WSJT-X** (see this module). Peak memory: the cells (172 KB at 200-3000 Hz, made as bytes by the demux: no
 /// `u16` band in between) plus the scores of the band (n_carriers x 60 bytes) and the spectra of one candidate; 258 KB on the host heap meter

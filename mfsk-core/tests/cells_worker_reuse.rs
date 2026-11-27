@@ -1009,3 +1009,124 @@ fn a_worker_that_reserved_the_osd_memory_decodes_the_same() {
         assert!(x.len() >= 4, "{name}: decodes: {}", x.len());
     }
 }
+
+/// `(message, frequency bits, DT bits, SNR bits)` of each decode: what a preset must reproduce exactly.
+fn full_keys(r: &[mfsk_core::ft8::decode::DecodeResult]) -> Vec<(Option<String>, u32, u32, u32)> {
+    r.iter()
+        .map(|d| {
+            (
+                unpack77(d.message77()),
+                d.freq_hz.to_bits(),
+                d.dt_sec.to_bits(),
+                d.snr_db.to_bits(),
+            )
+        })
+        .collect()
+}
+
+/// `CellsOptions` and `decode_block_cells_with`: each preset gives, on the three recordings, **exactly** what the chain it stands for gives (messages, frequency, DT and SNR, bit for bit): `PLAIN` is
+/// `decode_block_cells`; `p0_window()` the worker with the `d` floor 16, `CELLS_GATE_OSD`, seeds `AD`, the OSD deferred, `decode_round_osd(k = 6)` and the SNR baseline; `p0_late()` the same
+/// under `sic_passes_osd` (2 passes, k = 6); an `Inline` OSD the worker's plain `decode_round` with the OSD on. **Fails if** any option is read wrongly (a floor, the gate, the seeds, the cap, the
+/// passes) or the one-shot entry does something the chain does not.
+#[test]
+fn the_presets_are_the_chains_they_stand_for() {
+    use mfsk_core::ft8::decode_block::{
+        CELLS_GATE_OSD, CellsOptions, OsdOptions, OsdSeeds, SicStorage, SnrBaseline,
+        decode_block_cells, decode_block_cells_with, sic_passes_osd, sic_signal_capacity,
+    };
+    let search = GatedSearch::new(200.0, 3000.0, 1.3, 30);
+    let tables = CellTables::new();
+    for name in ["qso3_busy", "qso1", "qso2"] {
+        let a = audio(name);
+        // PLAIN = decode_block_cells
+        let plain =
+            decode_block_cells(&a, Ft8Rate::Hz8000, &search, 30, DecodeDepth::EMBEDDED).unwrap();
+        let got =
+            decode_block_cells_with(&a, Ft8Rate::Hz8000, &search, &CellsOptions::PLAIN).unwrap();
+        assert_eq!(
+            full_keys(&got),
+            full_keys(&plain),
+            "{name}: PLAIN is decode_block_cells"
+        );
+
+        let (cands, mut cells) =
+            coarse_sync_gated_cells(&mut SliceSource(&a), Ft8Rate::Hz8000, &search, 1).unwrap();
+        let mk = || -> (Box<[[Cmplx<f32>; 8]; 79]>, Box<Ft8BpScratch>) {
+            (
+                vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap(),
+                Box::new(Ft8BpScratch::new()),
+            )
+        };
+        let osd = DecodeDepth {
+            osd: true,
+            ..DecodeDepth::EMBEDDED
+        };
+
+        // p0_window = the chain, with the SNR applied
+        let (mut cs, mut bp) = mk();
+        let mut w = CellsWorker::new(&mut cs, &mut bp, &tables)
+            .with_d_min_score(16.0)
+            .with_gate(Some(&CELLS_GATE_OSD))
+            .with_osd_seeds(OsdSeeds::AD)
+            .with_osd_deferred(true);
+        let mut known = Vec::new();
+        w.decode_round_osd(&cells, &cands, 30, osd, 0.25, &mut known, 6);
+        let base = SnrBaseline::new(&cells, &tables);
+        for f in &mut known {
+            base.apply(&cells, &tables, f);
+        }
+        let want: Vec<_> = known.into_iter().map(|f| f.res).collect();
+        let got = decode_block_cells_with(&a, Ft8Rate::Hz8000, &search, &CellsOptions::p0_window())
+            .unwrap();
+        assert_eq!(full_keys(&got), full_keys(&want), "{name}: p0_window");
+        assert!(want.len() >= 4, "{name}: decodes {}", want.len());
+
+        // an inline OSD = the worker's plain round with the OSD on
+        let (mut cs, mut bp) = mk();
+        let mut w = CellsWorker::new(&mut cs, &mut bp, &tables)
+            .with_d_min_score(16.0)
+            .with_osd_seeds(OsdSeeds::AD);
+        let mut known = Vec::new();
+        w.decode_round(&cells, &cands, 30, osd, 0.25, &mut known);
+        let base = SnrBaseline::new(&cells, &tables);
+        for f in &mut known {
+            base.apply(&cells, &tables, f);
+        }
+        let want: Vec<_> = known.into_iter().map(|f| f.res).collect();
+        let opts = CellsOptions {
+            gate: None,
+            osd: OsdOptions::Inline {
+                seeds: OsdSeeds::AD,
+            },
+            ..CellsOptions::PLAIN
+        };
+        let got = decode_block_cells_with(&a, Ft8Rate::Hz8000, &search, &opts).unwrap();
+        assert_eq!(full_keys(&got), full_keys(&want), "{name}: an inline OSD");
+
+        // p0_late = sic_passes_osd, 2 passes, k = 6
+        let (mut cs, mut bp) = mk();
+        let mut w = CellsWorker::new(&mut cs, &mut bp, &tables)
+            .with_d_min_score(16.0)
+            .with_gate(Some(&CELLS_GATE_OSD))
+            .with_osd_seeds(OsdSeeds::AD)
+            .with_osd_deferred(true);
+        let mut storage = SicStorage::new(Ft8Rate::Hz8000, sic_signal_capacity(30, 2));
+        let want = sic_passes_osd(
+            &mut SliceSource(&a),
+            Ft8Rate::Hz8000,
+            &search,
+            30,
+            osd,
+            2,
+            &cands,
+            &mut cells,
+            &tables,
+            &mut w,
+            &mut storage.scratch(),
+            6,
+        );
+        let got = decode_block_cells_with(&a, Ft8Rate::Hz8000, &search, &CellsOptions::p0_late())
+            .unwrap();
+        assert_eq!(full_keys(&got), full_keys(&want), "{name}: p0_late");
+    }
+}
