@@ -139,7 +139,9 @@ RUSTFLAGS="-D warnings" MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core --release 
   --test ft8_qso3_apoff_recall \
   --test ft8_qso3_apon_recall \
   --test ft8_decode_block_real_qso \
-  --test ft8_rate_8k
+  --test ft8_rate_8k \
+  --test cells_flow_host_reference \
+  --test cells_worker_reuse
 # The `not(fft-rustfft)` sibling: the driver that actually ships
 # (`decode_block_multipass` has two `#[cfg]`-gated bodies split on
 # that flag — see `ft8_embedded_driver_recall.rs`'s module doc).

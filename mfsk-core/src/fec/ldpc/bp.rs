@@ -518,7 +518,7 @@ pub fn bp_decode_generic_kind_with_scratch<P: LdpcParams>(
         }
     }
 
-    stats.add(max_iter + 1, false);
+    stats.add(max_iter.saturating_add(1), false);
     None
 }
 
@@ -702,15 +702,21 @@ use crate::engine::scalar::LlrScalar;
 
 /// What the belief-propagation decoders ran on one [`BpScratch`]: the cost of BP in the unit it scales with.
 ///
-/// A **pass** is one round of message updates (the part of an iteration that costs, about 25 000 instructions for FT8's code on x86): a decode that
-/// converges at iteration `i` ran `i` passes, a stall exit at iteration `i` ran `i`, a call that never converges ran `max_iter + 1`. Counted by
-/// [`bp_decode_generic_nms_with_scratch`] (so [`bp_decode_nms_with_scratch`]) and [`bp_decode_generic_kind_with_scratch`]; the other entry points make
-/// a scratch of their own and do not report. Plain integer adds, no allocation, no feature: the same on every target. It changes no result.
+/// A **pass** is one round of message updates (the part of an iteration that costs; about 25 000 instructions for FT8's code in one x86 measurement, a
+/// single slot): a decode that converges at iteration `i` ran `i` passes, a stall exit at iteration `i` ran `i`, a call that never converges ran
+/// `max_iter + 1`. Counted by [`bp_decode_generic_nms_with_scratch`] (so [`bp_decode_nms_with_scratch`]) and [`bp_decode_generic_kind_with_scratch`]
+/// when they run on **this scratch**. **Not counted:** the fresh-scratch entry points (`bp_decode`, `bp_decode_kind`, `bp_decode_generic*`: the scratch,
+/// and so the count, is dropped with the call), the `zsum` entry points ([`bp_llr_zsum_with_scratch`], [`bp_llr_zsum_ap_with_scratch`]: they run
+/// message-update passes on the caller's scratch and report nothing, so a pooled FEC path that follows a decode with a `zsum` run undercounts), and
+/// any BP that runs on another scratch. Plain integer adds, no allocation, no feature: the same on every target. It changes no result. The counters
+/// saturate rather than wrap or panic.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BpStats {
     /// Decoder calls.
     pub calls: u32,
-    /// Calls that ended with a decode accepted by the verifier.
+    /// Calls that ended with a parity-converged word the verifier accepted (every converged word when there is no verifier). Not a count of decoded
+    /// candidates: a caller may still drop it (a duplicate, a validity gate).
     pub decoded: u32,
     /// Message-update passes over all the calls.
     pub passes: u64,
@@ -718,9 +724,9 @@ pub struct BpStats {
 
 impl BpStats {
     fn add(&mut self, passes: u32, decoded: bool) {
-        self.calls += 1;
-        self.decoded += decoded as u32;
-        self.passes += passes as u64;
+        self.calls = self.calls.saturating_add(1);
+        self.decoded = self.decoded.saturating_add(decoded as u32);
+        self.passes = self.passes.saturating_add(passes as u64);
     }
 }
 
@@ -1164,7 +1170,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
         }
     }
 
-    stats.add(max_iter + 1, false);
+    stats.add(max_iter.saturating_add(1), false);
     None
 }
 
@@ -1393,8 +1399,8 @@ mod tests {
     }
 
     /// `BpStats` counts the message-update passes a call ran: a call that decodes at iteration `i` ran `i`, one that never does ran `max_iter + 1`, a stall exit
-    /// ran at least 10. **Fails if** a counter is off by one at any of the three exits (decode, stall, end of the loop), counts a call twice, or the kinds
-    /// disagree about what a pass is.
+    /// at iteration `s` ran `s`. **Fails if** a counter is off by one at the decode exit or the end of the loop (exact values), counts a call twice, or the
+    /// kinds disagree about what a pass is; the stall exit has its own pinned table (`bp_stats_stall_exit_counts_the_iteration_it_stopped_at`), and a verifier that rejects a converged word is checked too.
     #[test]
     fn bp_stats_count_the_passes_each_call_ran() {
         // all-zero codeword, strong LLRs (LLR < 0 is bit 0): converges before any message passes
@@ -1481,5 +1487,145 @@ mod tests {
         assert!(total.passes > 0);
         assert_eq!(scratch.take_stats(), total);
         assert_eq!(scratch.stats(), BpStats::default());
+    }
+
+    /// The passes a **stall exit** counts, pinned: for `synth_llr(174, seed)`, seeds 0..40, `max_iter` 30, the call that stops on the stall rule at iteration `s` counts `s`
+    /// (the table lists every seed that stalls, with `s`; every other seed decodes or runs to the end, 31). The values are the iteration the code stops at,
+    /// read from the stall rule (`ncnt >= 5 && iter >= 10 && ncheck > 15`) and the exit's position before the message update, as the review of the counter
+    /// did; the check against the end of the loop is not used because it is circular (an off-by-one at the stall exit moves both sides together). **Fails if**
+    /// the stall exit of the kind decoder (SumProduct, NormalizedMinSum) or of the NMS entry point counts anything but that iteration, or if the rule moves.
+    #[test]
+    fn bp_stats_stall_exit_counts_the_iteration_it_stopped_at() {
+        const SUM_PRODUCT: [(u32, u64); 12] = [
+            (1, 12),
+            (2, 14),
+            (4, 28),
+            (11, 21),
+            (13, 11),
+            (19, 18),
+            (21, 15),
+            (22, 28),
+            (29, 26),
+            (33, 30),
+            (34, 18),
+            (37, 29),
+        ];
+        const NMS: [(u32, u64); 10] = [
+            (1, 29),
+            (7, 17),
+            (9, 22),
+            (10, 14),
+            (11, 12),
+            (12, 20),
+            (19, 16),
+            (25, 23),
+            (26, 23),
+            (35, 29),
+        ];
+        type Run<'a> = &'a dyn Fn(&[f32], &mut BpScratch<Ldpc174_91Params, f32>) -> bool;
+        let stalls = |run: Run<'_>| -> Vec<(u32, u64)> {
+            let mut out = Vec::new();
+            for seed in 0..40u32 {
+                let llr = synth_llr(174, seed);
+                let mut sc = BpScratch::<Ldpc174_91Params, f32>::new();
+                let decoded = run(&llr, &mut sc);
+                let passes = sc.take_stats().passes;
+                if !decoded && passes < 31 {
+                    out.push((seed, passes));
+                }
+            }
+            out
+        };
+        let sum = stalls(&|llr, sc| {
+            bp_decode_generic_kind_with_scratch::<Ldpc174_91Params>(
+                sc,
+                llr,
+                None,
+                30,
+                None,
+                BpKind::SumProduct,
+            )
+            .is_some()
+        });
+        assert_eq!(sum, SUM_PRODUCT, "SumProduct stall exits");
+        let kind_nms = stalls(&|llr, sc| {
+            bp_decode_generic_kind_with_scratch::<Ldpc174_91Params>(
+                sc,
+                llr,
+                None,
+                30,
+                None,
+                BpKind::NormalizedMinSum { alpha: 0.8 },
+            )
+            .is_some()
+        });
+        assert_eq!(kind_nms, NMS, "NormalizedMinSum (kind decoder) stall exits");
+        let nms = stalls(&|llr, sc| {
+            bp_decode_generic_nms_with_scratch::<Ldpc174_91Params, f32>(
+                sc, llr, None, 30, None, 0.8,
+            )
+            .is_some()
+        });
+        assert_eq!(nms, NMS, "NMS entry point stall exits");
+    }
+
+    /// A parity-converged word the verifier rejects is not a decode: the loop goes on, the call counts once, at its later exit. **Fails if** such a call
+    /// counts as decoded, counts twice, or stops counting passes at the rejection.
+    #[test]
+    fn bp_stats_a_rejected_converged_word_is_not_a_decode() {
+        let clean = vec![-10.0f32; 174];
+        let mut sc = BpScratch::<Ldpc174_91Params, f32>::new();
+        let r = bp_decode_generic_nms_with_scratch::<Ldpc174_91Params, f32>(
+            &mut sc,
+            &clean,
+            None,
+            30,
+            Some(|_| false),
+            0.8,
+        );
+        assert!(r.is_none());
+        let st = sc.take_stats();
+        assert_eq!((st.calls, st.decoded), (1, 0));
+        assert_eq!(
+            st.passes, 31,
+            "ncheck stays 0, so no stall: the loop runs to its end"
+        );
+    }
+
+    /// With `max_iter` 7 the stall rule (`iter >= 10`) cannot fire, so a call that does not decode runs to the end of the loop and counts `max_iter + 1 = 8`, in the kind
+    /// decoder (both kernels) and in the NMS entry point. **Fails if** the loop-end exit of either decoder counts anything else.
+    #[test]
+    fn bp_stats_loop_end_counts_max_iter_plus_one() {
+        let mut seen = [0usize; 3];
+        for seed in 0..20u32 {
+            let llr = synth_llr(174, seed);
+            for (k, kind) in [BpKind::SumProduct, BpKind::NormalizedMinSum { alpha: 0.8 }]
+                .into_iter()
+                .enumerate()
+            {
+                let mut sc = BpScratch::<Ldpc174_91Params, f32>::new();
+                if bp_decode_generic_kind_with_scratch::<Ldpc174_91Params>(
+                    &mut sc, &llr, None, 7, None, kind,
+                )
+                .is_none()
+                {
+                    assert_eq!(sc.take_stats().passes, 8, "kind {k} seed {seed}");
+                    seen[k] += 1;
+                }
+            }
+            let mut sc = BpScratch::<Ldpc174_91Params, f32>::new();
+            if bp_decode_generic_nms_with_scratch::<Ldpc174_91Params, f32>(
+                &mut sc, &llr, None, 7, None, 0.8,
+            )
+            .is_none()
+            {
+                assert_eq!(sc.take_stats().passes, 8, "nms seed {seed}");
+                seen[2] += 1;
+            }
+        }
+        assert!(
+            seen.iter().all(|&n| n >= 5),
+            "every decoder needs failing inputs here: {seen:?}"
+        );
     }
 }

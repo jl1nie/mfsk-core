@@ -268,8 +268,10 @@ impl<'a> CellsWorker<'a> {
         Self { cs, bp, tables }
     }
 
-    /// The belief-propagation work this worker has run ([`BpStats`](crate::fec::ldpc::bp::BpStats): calls and message-update passes, which is what BP's time scales with)
-    /// since it was made or since [`take_bp_stats`](Self::take_bp_stats).
+    /// The belief-propagation work this worker has run **on its own BP scratch** ([`BpStats`](crate::fec::ldpc::bp::BpStats): calls and message-update passes, which is
+    /// what BP's time scales with) since it was made or since [`take_bp_stats`](Self::take_bp_stats). Not counted: the host build's blind-CQ AP pass (with `fft-rustfft`
+    /// a candidate that does not decode goes on to it, on a scratch of its own; the boards' build has no such pass) and OSD; `decoded` counts BP calls accepted, not
+    /// the decodes the worker returns (a duplicate or a validity gate drops some).
     pub fn bp_stats(&self) -> crate::fec::ldpc::bp::BpStats {
         self.bp.stats()
     }

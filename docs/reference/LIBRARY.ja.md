@@ -2835,7 +2835,7 @@ FT8 モジュールは共有パイプラインの上に並列のエントリ群�
 * `CellsWorker` / `CellTables` / `Grid` / `Found`、`HalfDbCells::{new, row_mut, mark_filled, filled_rows}`、`search_cells` / `merge_cells_parts` / `CellsPart` / `candidate_ready`、
   `engine::dsp::resample_to_8k` / `LinearResamplerI16To8k` (`fixed-point`、`Hz8000`。セル関連は、ファームウェアが `decode_block_cells` を組み立てる部品で、no_std + alloc) — **ワーカー**:
   `CellsWorker` は呼び出し側の作業ブロック・BP スクラッチ・テーブルを借りて 1 候補を復号する (`decode_candidate`: グリッド上の試行、続いて補間した位置での再試行)。
-  `decode_block_cells` が候補ごとにすることと同じで、自前の `Box` / `Vec` はない (共有の LLR スクラッチ、最大 696 B は残る)。**1 行ずつ書くストア**: `HalfDbCells::new` はゼロのストアを作り、
+  `decode_block_cells` が候補ごとにすることと同じで、自前の `Box` / `Vec` はない (共有の LLR スクラッチ、最大 696 B は残る)。**走らせた BP の仕事量**: `bp_stats` / `take_bp_stats` が `fec::ldpc::bp::BpStats` (`calls`、`decoded`、`passes`: ワーカーのスクラッチで BP が回したメッセージ更新のパス数で、BP の時間はこれに比例する。`BpScratch::{stats, take_stats}` は任意のスクラッチについて同じものを返す。ホスト版の AP パスと OSD は数えない) を返す。**1 行ずつ書くストア**: `HalfDbCells::new` はゼロのストアを作り、
   `row_mut` / `mark_filled` で音声が届くたびに書く。探索は**書かれた行だけ**を読む (フィルより先の行は、スロットの終わりの先と同じく範囲外)。`search_cells` はキャリアの範囲を採点し、
   `merge_cells_parts` が各部分を `coarse_sync_gated_cells` の返す一覧に統合する。**どんな分割でもビット単位で同一** (2 コアで半分ずつ)。`candidate_ready` は、候補の復号が読む行がすべて書かれているかを返す
   (スロット末尾より前の emit の、早い / 遅いの振り分け)。**リサンプル**: `resample_to_8k` と `LinearResamplerI16To8k` は `src_rate` を 8 kHz にする。Kaiser 低域通過 (通過 3,200 Hz、阻止 4,000 Hz、40 dB。
