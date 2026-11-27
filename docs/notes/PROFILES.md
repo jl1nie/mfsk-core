@@ -48,7 +48,7 @@ Every one of these is a knob that already exists, or would be one. A profile is 
 | candidates | 30 (15 when the budget is short) | 15 | WSJT-X's | WSJT-X's | WSJT-X's, deeper depth available |
 | pre-BP gate | `CELLS_GATE` / `_OSD` (built, S3) | `CELLS_GATE` | not used (the faithful pipeline has no gate) | not used | not used |
 | OSD flavour | embedded, seeds `AD` (built, S3) | embedded, seeds `AD`, K small or off | faithful `osd174_91` (built) | faithful | faithful |
-| OSD timing | deferred, capped K (K = 6 on one core, 14 on two; built, S3) | deferred, K = 2-4 or off | inline (the WSJT-X order; built) | inline | inline |
+| OSD timing | deferred, capped K (**K = 6 on one core is the default**; two cores are optional, for latency margin and not for recall; built, S3) | deferred, K = 2-4 or off | inline (the WSJT-X order; built) | inline | inline |
 | OSD parallelism | one / two workers (built, S3) | one | one worker or a pool (**to build**) | a pool (**to build**) | a pool |
 | SIC | none in the window; after it `sic_passes_osd` (built, S3) if PSRAM holds a second cell store and the previous audio (344 KB + 240 KB, plan section 14: **not decided**) | none | the faithful SIC strategy, or `sic_passes_osd` over the cells flow (built on the host) | same, more passes | same |
 | AP | off (not in the board build) | off | on (built) | on | on, with QSO context |
@@ -155,4 +155,36 @@ host instructions at 30 candidates, OSD off) and decodes more (974 against 822 o
 4. **Deletion**, as its own change after parity: the modules, the `Cargo` features and the benches that only the old flow used, with `CHANGELOG` and the docs that name them.
 
 New open decisions: **D6** the inventory of step 3 (what the old flow's pieces are still used by); **D7** whether the classic ESP32 / Core2 app moves to the cells flow in the same change or keeps the old flow until D5 is answered.
+
+## 10. P0 configuration, decided 2026-11-27
+
+**The window path** (decodes available before the reply deadline, boundary + 0.5 s) and **the late path** (decodes after it, fed to the auto-QSO). All of it is an option over the WSJT-X reference, off by default in the library, marked and tracked in Issue #766.
+
+| | window path | late path |
+|---|---|---|
+| flow | cells flow, 8 kHz, `fixed-point`, producer during capture, emit at pair 87 (0.81 s before the boundary); **replaces the old S3 flow wholesale** (section 9) | the same cells, a second store for the SIC |
+| candidates | 30 | the first pass's, then the SIC's near-signal candidates |
+| variant `d` floor | 16 (`CELLS_D_MIN_SCORE`, Issue #765) | the same |
+| pre-BP gate | `CELLS_GATE_OSD` | the same |
+| OSD | `osd174_91_into`, seeds `AD`, deferred, **K = 6**, ranked by `OsdRank`, one core | OSD in every SIC round, K = 6 (`sic_passes_osd`) |
+| SIC | none | 2 passes (3 passes: +1 decode on `qso3_busy`, 2 s more); the OSD's decodes subtracted for the next pass |
+| cores | one (the second is an option for latency margin: round x1.5, OSD pass x1.5, band x1.1 on the S3) | core 1, a task below `uac_reader` and the USB host in priority |
+| AP | none (not in the board build) | none |
+| ends | about boundary + 0.31-0.42 s on one core (qso3_busy / qso1 / qso2 computed from bench stages, not measured in the app) | about boundary + 4-5 s (`ft8-sic-bench` 4.94 s with the OSD on `qso3_busy`) |
+
+**Why K = 6 and not more.** On the 60 real slots the OSD adds 50 decodes to the 974 of the BP alone (1 024 with every attempt run); K = 6 takes 33 of them (1 007), K = 8 38, K = 10 44, K = 14 47 (1 021): **K = 14 is +14 decodes (1.4 %) over K = 6** and +1 on `qso3_busy` on the board. What a second core buys is latency (the K = 6 pass ends about 0.11 s after the boundary instead of 0.42 s), not recall. The recall is in the SIC: 3 passes with the OSD at K = 6 find 1 183 against 1 007 (+17 %). The pre-BP gate costs no decode with the capped OSD (host, 4 780 slots: 7 347 / 1 007 with and without it at K = 6, 7 393 / 1 021 at K = 14) and takes 16 % off the BP passes.
+
+**Against ft8dec** (60 real slots, jt9's 1 338 references, host; no SIC in the first two blocks): ft8dec 30 candidates, OSD off 822, OSD on 836; 300 candidates, OSD off 958, OSD on 989. **Cells, 30 candidates: OSD off 974, K = 6 1 007, K = 14 1 021.** With the SIC: ft8dec 30 candidates 1 036 / 1 053 (2 / 3 passes), its default (300 candidates, 3 passes) 1 204; cells with the OSD at K = 6 in every round 1 171 / 1 183, with the OSD at once 1 192 / 1 206.
+Phantoms (decodes not in the reference): ft8dec 15-19 (1 pass, 30 candidates), cells 24-34 (K = 6: 34): the OSD adds about 10 and not all are false, as jt9 does not decode everything real.
+
+**The late path into the QSO machine.** `activator.rs`'s `Activator::decide(period, heard)` is called once per own transmit period at the reply deadline with *every message addressed to this station decoded since the last call, late ones included* (its own doc: "a caller repeats, so a decode that missed its deadline is still worth answering from"); the partner's message is picked by exchange stage, not by arrival. A late decode therefore enters the queue like any other and is answered **one own period later** (about 30 s with every other slot). Nothing about the machine changes for it.
+**But the app does not use `Activator` yet**: `decode_pipeline.rs` calls `QsoManager::process_message` (`qso.rs`, the Phase 4 dry-run machine, TX unwired) for each result inline, with no queue, no `Heard`, no `decide` at the deadline. So the first work item is wiring (below).
+
+**Work, in order** (the first two are step 1 of section 9):
+1. **Wire `Activator` into the decode path**: a queue of `Heard` between the decode task(s) and the decision point; `decide` at the reply deadline once per own period; replace `QsoManager` there.
+2. **The cells flow in the app** (producer, emit, search, stage 3, the deferred OSD pass), then the parity check and the deletion of the old S3 flow.
+3. **The late path**: a task on core 1 below `uac_reader` that runs `sic_passes_osd` over the slot's cells and audio (a second cell store 172 KB and the previous slot's audio 240 KB held, `SicStorage` in PSRAM: the PSRAM left after replacing the 351 KB spectrogram by the 172 KB store is ample) and enqueues each decode not already queued (the 77 bits), dropping any older than `PENDING_TTL` (2 own periods); the queue safe for two producers.
+4. **Measure in the app**, not in the benches: the end-to-end latency of the window path under WiFi and the USB host, the internal DRAM left (the K = 6 flow's extra over the old one, the SIC's scratch), and what the SIC on core 1 does to the producer on core 0 (the esp-dsp FFT scratch is behind a spin lock: **untested contention**), the board time of the pre-BP gate together with the capped OSD (the host shows no loss; the board has not run the combination).
+
+**Decisions closed by this section**: D4 (the late SIC stays in P0), the K of the window path (6), the core count (one by default). **Open**: D1-D3, D5-D7 of section 7-9, and **D8** how the queue is built (a FreeRTOS queue, a `heapless` channel or a lock around the `Activator`'s input) and who owns `decide`'s clock.
 
