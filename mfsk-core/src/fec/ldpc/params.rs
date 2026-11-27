@@ -81,6 +81,135 @@ pub trait LdpcParams: sealed::Sealed + Copy + Default + 'static {
     /// what the ordered-statistics decoder (`osd_npre`) assembles its
     /// generator from, a column at a time.
     const GEN_PARITY_PACKED: &'static [u128];
+
+    /// The code's edges as flat tables, made at compile time from `mn` / `nm` / `nrw`: what the NMS decoder reads on every pass in place of searching them
+    /// ([`NmsEdges`]). No heap, no state in the scratch.
+    #[doc(hidden)]
+    const NMS_EDGES: &'static NmsEdges;
+}
+
+/// The edges of a code as flat tables (see [`LdpcParams::NMS_EDGES`]), every index range-checked when they are made (a compile-time assertion) so the decoder can read
+/// with them unchecked. `nm_flat` / `c2v` are `M * MAX_ROW` long (check `j`'s `i`-th edge at `j * MAX_ROW + i`), `nrw` `M`, `v2c_e` / `v2c_chk` `N * 3` (bit `b`'s `k`-th
+/// check at `b * 3 + k`).
+#[doc(hidden)]
+pub struct NmsEdges {
+    /// The bit of check `j`'s `i`-th edge (`j * MAX_ROW + i`); padding is 0.
+    pub(crate) nm_flat: &'static [u8],
+    /// The row weight of each check.
+    pub(crate) nrw: &'static [u8],
+    /// The `tov` index (`bit * 3 + k`) of the entry that belongs to check `j`'s `i`-th edge: where the bit's own list holds `j`.
+    pub(crate) c2v: &'static [u16],
+    /// For the variable edge `bit * 3 + k`: its place on the check side, `check * MAX_ROW + slot`.
+    pub(crate) v2c_e: &'static [u16],
+    /// For the variable edge `bit * 3 + k`: its check.
+    pub(crate) v2c_chk: &'static [u8],
+}
+
+/// The arrays [`NmsEdges`] points into.
+pub(crate) struct EdgeArrays<const M: usize, const ER: usize, const V: usize> {
+    nm_flat: [u8; ER],
+    nrw: [u8; M],
+    c2v: [u16; ER],
+    v2c_e: [u16; V],
+    v2c_chk: [u8; V],
+}
+
+/// Build the edge tables of a code at compile time: `mn` is `N` bits x 3 checks, `nm` `M` checks x `R` slots, `nrw` the row weights; `ER = M * R` and `V = N * 3` are
+/// the table lengths. Every `assert!` is a **compile-time** check of what the decoder's unchecked reads rely on: a row weight at most `R`, each check listed once in a
+/// bit's list, each bit found in its check's row, every index in range of the array it indexes, indices that fit `u8` / `u16`.
+pub(crate) const fn edge_arrays<
+    const N: usize,
+    const M: usize,
+    const R: usize,
+    const ER: usize,
+    const V: usize,
+>(
+    mn: &[[u8; 3]; N],
+    nm: &[[u8; R]; M],
+    nrw: &[u8; M],
+) -> EdgeArrays<M, ER, V> {
+    assert!(ER == M * R && V == N * 3);
+    assert!(N <= 256 && M <= 256 && ER < 65536 && V < 65536);
+    let mut a = EdgeArrays {
+        nm_flat: [0; ER],
+        nrw: [0; M],
+        c2v: [0; ER],
+        v2c_e: [0; V],
+        v2c_chk: [0; V],
+    };
+    let mut j = 0;
+    while j < M {
+        assert!(nrw[j] as usize <= R);
+        a.nrw[j] = nrw[j];
+        let mut i = 0;
+        while i < nrw[j] as usize {
+            let bit = nm[j][i] as usize;
+            assert!(bit < N);
+            a.nm_flat[j * R + i] = bit as u8;
+            // the bit's own list holds this check exactly once
+            let mut found = 0;
+            let mut kk = 0;
+            while kk < 3 {
+                if mn[bit][kk] as usize == j {
+                    found += 1;
+                    a.c2v[j * R + i] = (bit * 3 + kk) as u16;
+                }
+                kk += 1;
+            }
+            assert!(found == 1);
+            i += 1;
+        }
+        j += 1;
+    }
+    let mut b = 0;
+    while b < N {
+        let mut k = 0;
+        while k < 3 {
+            let chk = mn[b][k] as usize;
+            assert!(chk < M);
+            // the first slot of the check's row that holds this bit (the search the decoder used to run on every pass)
+            let mut slot = 0;
+            while slot < nrw[chk] as usize && nm[chk][slot] as usize != b {
+                slot += 1;
+            }
+            assert!(slot < nrw[chk] as usize);
+            a.v2c_e[b * 3 + k] = (chk * R + slot) as u16;
+            a.v2c_chk[b * 3 + k] = chk as u8;
+            k += 1;
+        }
+        b += 1;
+    }
+    a
+}
+
+const EDGES_174_91: EdgeArrays<83, 581, 522> =
+    edge_arrays::<174, 83, 7, 581, 522>(&tables::MN, &tables::NM, &tables::NRW);
+const EDGES_240_101: EdgeArrays<139, 834, 720> = edge_arrays::<240, 139, 6, 834, 720>(
+    &crate::fec::ldpc240_101::tables::MN,
+    &crate::fec::ldpc240_101::tables::NM,
+    &crate::fec::ldpc240_101::tables::NRW,
+);
+const EDGES_240_74: EdgeArrays<166, 830, 720> = edge_arrays::<240, 166, 5, 830, 720>(
+    &crate::fec::ldpc240_74::tables::MN,
+    &crate::fec::ldpc240_74::tables::NM,
+    &crate::fec::ldpc240_74::tables::NRW,
+);
+const EDGES_128_90: EdgeArrays<38, 418, 384> = edge_arrays::<128, 38, 11, 418, 384>(
+    &crate::fec::ldpc_128_90::tables::MN,
+    &crate::fec::ldpc_128_90::tables::NM,
+    &crate::fec::ldpc_128_90::tables::NRW,
+);
+
+macro_rules! nms_edges {
+    ($name:ident, $arrays:ident) => {
+        const $name: &'static NmsEdges = &NmsEdges {
+            nm_flat: &$arrays.nm_flat,
+            nrw: &$arrays.nrw,
+            c2v: &$arrays.c2v,
+            v2c_e: &$arrays.v2c_e,
+            v2c_chk: &$arrays.v2c_chk,
+        };
+    };
 }
 
 /// Packs a `M × K` 0/1 generator-parity table into one `u128` per row
@@ -125,6 +254,7 @@ impl LdpcParams for Ldpc174_91Params {
     const K: usize = 91;
     const MAX_ROW: usize = 7;
     const GEN_PARITY_PACKED: &'static [u128] = &GEN_PARITY_174_91;
+    nms_edges!(NMS_EDGES, EDGES_174_91);
 
     #[inline]
     fn mn(bit: usize) -> [u8; 3] {
@@ -163,6 +293,7 @@ impl LdpcParams for Ldpc240_101Params {
     const K: usize = 101;
     const MAX_ROW: usize = 6;
     const GEN_PARITY_PACKED: &'static [u128] = &GEN_PARITY_240_101;
+    nms_edges!(NMS_EDGES, EDGES_240_101);
 
     #[inline]
     fn mn(bit: usize) -> [u8; 3] {
@@ -202,6 +333,7 @@ impl LdpcParams for Ldpc240_74Params {
     const K: usize = 74;
     const MAX_ROW: usize = 5;
     const GEN_PARITY_PACKED: &'static [u128] = &GEN_PARITY_240_74;
+    nms_edges!(NMS_EDGES, EDGES_240_74);
 
     #[inline]
     fn mn(bit: usize) -> [u8; 3] {
@@ -240,6 +372,7 @@ impl LdpcParams for Ldpc128_90Params {
     const K: usize = 90;
     const MAX_ROW: usize = 11;
     const GEN_PARITY_PACKED: &'static [u128] = &GEN_PARITY_128_90;
+    nms_edges!(NMS_EDGES, EDGES_128_90);
 
     #[inline]
     fn mn(bit: usize) -> [u8; 3] {

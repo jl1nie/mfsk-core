@@ -702,8 +702,8 @@ use crate::engine::scalar::LlrScalar;
 
 /// What the belief-propagation decoders ran on one [`BpScratch`]: the cost of BP in the unit it scales with.
 ///
-/// A **pass** is one round of message updates (the part of an iteration that costs; about 65 000 instructions for FT8's code through the NMS entry point in one x86 measurement,
-/// `qso3_busy`: 139 M in 2 145 passes; `ft8dec`'s `bp()` about 48 500 on the same slot): a decode that converges at iteration `i` ran `i` passes, a stall exit at iteration `i` ran `i`, a call that never converges ran
+/// A **pass** is one round of message updates (the part of an iteration that costs; about 76 000 host instructions for FT8's code through the NMS entry point before its flat edge tables, 37 600 after (BP instructions divided by the passes `BpStats` counted in the same run, three
+/// recordings, x86; `ft8dec`'s `bp()` is about 48 500): a decode that converges at iteration `i` ran `i` passes, a stall exit at iteration `i` ran `i`, a call that never converges ran
 /// `max_iter + 1`. Counted by [`bp_decode_generic_nms_with_scratch`] (so [`bp_decode_nms_with_scratch`]) and [`bp_decode_generic_kind_with_scratch`]
 /// when they run on **this scratch**. **Not counted:** the fresh-scratch entry points (`bp_decode`, `bp_decode_kind`, `bp_decode_generic*`: the scratch,
 /// and so the count, is dropped with the call), the `zsum` entry points ([`bp_llr_zsum_with_scratch`], [`bp_llr_zsum_ap_with_scratch`]: they run
@@ -781,13 +781,6 @@ pub struct BpScratch<P: LdpcParams, T: LlrScalar> {
     /// product by `1.0` is exact), so every message is bit-identical.
     c2v_idx: Vec<u16>,
     prod_idx: Vec<u16>,
-    /// The code's edges as flat tables, built once by [`Self::ensure_edges`] (the NMS decoder reads them every pass instead of searching `P::nm` / `P::mn`):
-    /// `nm_flat[j * MAX_ROW + i]` the bit of check `j`'s `i`-th edge; `nrw_flat[j]` the row weight; for the variable edge `v = bit * NCW + k` (the bit's `k`-th check),
-    /// `v2c_e[v]` the index `check * MAX_ROW + slot` of the same edge on the check side and `v2c_chk[v]` its check.
-    nm_flat: Vec<u8>,
-    nrw_flat: Vec<u8>,
-    v2c_e: Vec<u16>,
-    v2c_chk: Vec<u8>,
     min1: Vec<T>,
     min2: Vec<T>,
     idx_min1: Vec<u32>,
@@ -824,10 +817,6 @@ impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
             tanhtoc: Vec::new(),
             c2v_idx: Vec::new(),
             prod_idx: Vec::new(),
-            nm_flat: Vec::new(),
-            nrw_flat: Vec::new(),
-            v2c_e: Vec::new(),
-            v2c_chk: Vec::new(),
             min1: vec![T::POS_INF_LIKE; m_checks],
             min2: vec![T::POS_INF_LIKE; m_checks],
             idx_min1: vec![0u32; m_checks],
@@ -889,63 +878,6 @@ impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
     /// subsequent calls (capacity is fixed by `P`, and every element is
     /// unconditionally overwritten before being read each iteration —
     /// see [`Self::reset`]'s comment).
-    /// Build the flat edge tables ([`Self::nm_flat`] and the others, and `c2v_idx`) once: the NMS decoder and the min-sum kinds read them in place of searching the code's
-    /// tables on every pass. About 3.4 KB for FT8's code; the arithmetic is unchanged (they hold the same indices the searches found).
-    #[inline]
-    fn ensure_edges(&mut self) {
-        const {
-            assert!(P::M * P::MAX_ROW < u16::MAX as usize);
-            assert!(P::N * NCW < u16::MAX as usize);
-        }
-        if !self.c2v_idx.is_empty() {
-            return;
-        }
-        let mut c2v = vec![0u16; P::M * P::MAX_ROW];
-        let mut nm_flat = vec![0u8; P::M * P::MAX_ROW];
-        let mut nrw_flat = vec![0u8; P::M];
-        for j in 0..P::M {
-            nrw_flat[j] = P::nrw(j);
-            for i in 0..P::nrw(j) as usize {
-                let ibj = P::nm(j, i) as usize;
-                nm_flat[j * P::MAX_ROW + i] = ibj as u8;
-                let mut found = None;
-                for (kk, &c) in P::mn(ibj).iter().enumerate() {
-                    if c as usize == j {
-                        debug_assert!(found.is_none(), "bit {ibj} in check {j} twice");
-                        found = Some(ibj * NCW + kk);
-                    }
-                }
-                c2v[j * P::MAX_ROW + i] = found.expect("bit not in its check's mn") as u16;
-            }
-        }
-        let mut v2c_e = vec![0u16; P::N * NCW];
-        let mut v2c_chk = vec![0u8; P::N * NCW];
-        for j in 0..P::N {
-            for (k_, &c) in P::mn(j).iter().enumerate() {
-                let ichk = c as usize;
-                let slot = (0..P::nrw(ichk) as usize)
-                    .find(|&s| P::nm(ichk, s) as usize == j)
-                    .expect("bit not in its check's row");
-                v2c_e[j * NCW + k_] = (ichk * P::MAX_ROW + slot) as u16;
-                v2c_chk[j * NCW + k_] = ichk as u8;
-            }
-        }
-        // the contents the decoder's unchecked reads rely on
-        assert!(nm_flat.iter().all(|&b| (b as usize) < P::N));
-        assert!(c2v.iter().all(|&e| (e as usize) < P::N * NCW));
-        assert!(v2c_e.iter().all(|&e| (e as usize) < P::M * P::MAX_ROW));
-        assert!(v2c_chk.iter().all(|&c| (c as usize) < P::M));
-        assert!(
-            P::N <= 256 && P::M <= 256,
-            "the tables hold bit and check indices as u8"
-        );
-        self.nm_flat = nm_flat;
-        self.nrw_flat = nrw_flat;
-        self.v2c_e = v2c_e;
-        self.v2c_chk = v2c_chk;
-        self.c2v_idx = c2v;
-    }
-
     #[inline]
     fn ensure_tanhtoc(&mut self) {
         // The tables hold indices as `u16`: every index must fit.
@@ -958,7 +890,20 @@ impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
             self.tanhtoc = vec![T::ZERO; P::M * P::MAX_ROW + 1];
             let one_slot = P::M * P::MAX_ROW;
             self.tanhtoc[one_slot] = T::from_f32(1.0);
-            self.ensure_edges();
+            let mut c2v = vec![0u16; P::M * P::MAX_ROW];
+            for j in 0..P::M {
+                for i in 0..P::nrw(j) as usize {
+                    let ibj = P::nm(j, i) as usize;
+                    let mut found = None;
+                    for (kk, &c) in P::mn(ibj).iter().enumerate() {
+                        if c as usize == j {
+                            debug_assert!(found.is_none(), "bit {ibj} in check {j} twice");
+                            found = Some(ibj * NCW + kk);
+                        }
+                    }
+                    c2v[j * P::MAX_ROW + i] = found.expect("bit not in its check's mn") as u16;
+                }
+            }
             let width = P::MAX_ROW - 1;
             let mut prod = vec![one_slot as u16; P::N * NCW * width];
             for j in 0..P::N {
@@ -973,6 +918,7 @@ impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
                     }
                 }
             }
+            self.c2v_idx = c2v;
             self.prod_idx = prod;
         }
     }
@@ -1036,7 +982,14 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
     let max_row = P::MAX_ROW;
 
     scratch.reset();
-    scratch.ensure_edges();
+    let edges = P::NMS_EDGES;
+    let (c2v_idx, nm_flat, nrw_flat, v2c_e, v2c_chk) = (
+        edges.c2v,
+        edges.nm_flat,
+        edges.nrw,
+        edges.v2c_e,
+        edges.v2c_chk,
+    );
     let BpScratch {
         tov,
         toc,
@@ -1047,35 +1000,33 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
         zn,
         cw,
         stats,
-        c2v_idx,
-        nm_flat,
-        nrw_flat,
-        v2c_e,
-        v2c_chk,
         ..
     } = scratch;
 
-    // The lengths the unchecked reads below rely on, checked once. The *contents* of the edge tables are in range by construction
-    // (`BpScratch::ensure_edges` builds them from the code's tables and asserts it), so an index read from one is in range of the array it indexes.
+    // The lengths the unchecked reads below rely on. The scratch's and `llr`'s are checked once; the edge tables' (`P::NMS_EDGES`) are compile-time facts, and so is their
+    // *content* (`edge_arrays` asserts at compile time every index in range of the array it indexes, every row weight at most `MAX_ROW`, and every check once in a bit's list).
+    const {
+        assert!(P::NMS_EDGES.nm_flat.len() == P::M * P::MAX_ROW);
+        assert!(P::NMS_EDGES.c2v.len() == P::M * P::MAX_ROW);
+        assert!(P::NMS_EDGES.nrw.len() == P::M);
+        assert!(P::NMS_EDGES.v2c_e.len() == P::N * NCW);
+        assert!(P::NMS_EDGES.v2c_chk.len() == P::N * NCW);
+    }
     assert!(
         llr.len() == n
             && tov.len() == n * NCW
             && zn.len() == n
             && cw.len() == n
             && toc.len() == m_checks * max_row
-            && c2v_idx.len() == m_checks * max_row
-            && nm_flat.len() == m_checks * max_row
-            && nrw_flat.len() == m_checks
             && min1.len() == m_checks
             && min2.len() == m_checks
             && idx_min1.len() == m_checks
-            && sign_xor.len() == m_checks
-            && v2c_e.len() == n * NCW
-            && v2c_chk.len() == n * NCW,
+            && sign_xor.len() == m_checks,
         "BpScratch / llr lengths"
     );
-    // SAFETY (all `at!` / `set!` below): the index is either an affine loop variable bounded by the lengths asserted above, or an entry of an edge table whose entries
-    // `ensure_edges` has checked to be less than the length of the array it is used on (`nm_flat` < n, `c2v_idx` < n * NCW, `v2c_e` < m * max_row, `v2c_chk` < m).
+    // SAFETY (all `at!` / `set!` below): the index is either an affine loop variable bounded by the lengths asserted above (a check's edges are `j * max_row + i` with
+    // `i < nrw[j] <= MAX_ROW`), or an entry of an edge table whose entries `edge_arrays` has checked, when the table is built at compile time, to be less than the length of the
+    // array it is used on (`nm_flat` < n, `c2v` < n * NCW, `v2c_e` < m * max_row, `v2c_chk` < m).
     macro_rules! at {
         ($s:expr, $i:expr) => {{
             let i = $i;
@@ -1946,9 +1897,12 @@ mod tests {
         }
     }
 
-    /// The flat-table NMS decoder gives **the same result and the same pass counts as the searching one**, bit for bit, for both LLR types (`f32` and the board's `Q11i16`), both codes
-    /// (LDPC(174,91) and (240,101)), with and without an AP mask and a verifier, over inputs that decode after few passes, after many, and never (an all-zero codeword at four amplitudes with
-    /// four noise levels, and pure noise). **Fails if** an edge table points at the wrong place, the slot arithmetic is off, the AP path differs, or the decode count of a stall or loop end changes.
+    /// The flat-table NMS decoder (`P::NMS_EDGES`, built at compile time) gives **the same result and the same pass counts as the searching one**, bit for bit, for both LLR types
+    /// (`f32` and the board's `Q11i16`), the codes LDPC(174,91) and (240,101) (the two with a decoder in the tree), each with and without an AP mask, with a verifier that rejects and with
+    /// none, at `max_iter` 30 and 7, over inputs that decode after few passes, after many, and never (an all-zero codeword at four amplitudes with five noise levels, 0 to 4 times a
+    /// pseudo-random LLR vector; the amplitudes are not 0, so no input is pure noise, but the larger noise levels fail to decode). **Not reached:** `max_iter` 0, an AP mask together with a
+    /// verifier that accepts, the codes (240,74) and (128,90), saturating `Q11i16` extremes beyond 7.5. **Fails if** an edge table points at the wrong place, the slot arithmetic is off, the AP path
+    /// differs, or the decode count of a stall or loop end changes.
     #[test]
     fn the_flat_table_nms_decoder_equals_the_searching_one() {
         fn run<P: LdpcParams, T: LlrScalar>(label: &str) -> (usize, usize) {
