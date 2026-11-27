@@ -157,6 +157,9 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
     let mut scratch: Vec<i16> = Vec::new();
     let mut calls = mfsk_core::msg::CallsignHashTable::new();
     let mut slot_n = 0u32;
+    let mut qso = crate::qso_activator::QsoStep::new();
+    let qso = crate::qso_activator::QsoStep::new();
+    let mut qso = qso;
     log::info!(
         "cells pipeline ready ({source}): {} candidates, d floor {}, OSD capped at {osd_k}, emit at {EMIT_ROWS} rows",
         options.max_cand,
@@ -301,6 +304,9 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                                 r.freq_hz,
                                 text
                             );
+                            // an own period is two slots; a decode belongs to the period of its slot
+                            let bits = r.message77();
+                            qso.push(&text, &bits[..], r.snr_db, slot_n / 2);
                             published.push((text, r.freq_hz, r.snr_db, r.dt_sec, r.hard_errors));
                         }
                     }
@@ -339,6 +345,10 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                         s.longest_job / 1000,
                         if s.emitted { (s.end_at - s.emit_at) / 1000 } else { -1 },
                     );
+                    // the window path is out: the reply deadline of every second slot (`qso_activator`'s doc)
+                    if slot_n % 2 == 0 {
+                        qso.on_reply_deadline(slot_n / 2);
+                    }
                     crate::log_free_internal("cells-slot-end");
                     if slot_n <= 3 || slot_n % 20 == 0 {
                         crate::board::log_task_stacks();

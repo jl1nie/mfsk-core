@@ -4,8 +4,9 @@
 //! once per own transmit period, at the reply deadline, it empties the queue with [`HeardCollector::collect`] and hands the result to [`Activator::decide`](crate::activator::Activator::decide).
 //!
 //! - A producer's [`HeardQueue::push`] never blocks and never waits for the consumer: a full queue drops its **oldest** item (a late decode is the least valuable).
-//! - The consumer drops an item older than [`HEARD_TTL`] own periods (the activator's own `PENDING_TTL`), and **a message already delivered** (the same 77 bits: a window decode and the late path's
-//!   decode of the same signal) is not delivered again within the TTL; after it the same bits are a new message (a partner repeating himself is exactly that).
+//! - The consumer drops an item older than [`HEARD_TTL`] own periods (the activator's own `PENDING_TTL`), and **a message already delivered for the same period** (the same 77 bits decoded in the same
+//!   period: the window path's decode and the late path's decode of one signal) is not delivered again. **The same bits in a later period are a new message**: a partner who did not copy our
+//!   reply sends it again, and the activator answers a repeat.
 //!
 //! Pure and `no_std` (a `heapless` MPMC queue: lock-free, safe for two producers on two cores); `hosttest/mfsk-app-shared` runs the tests.
 
@@ -36,6 +37,29 @@ pub fn pack_bits(bits: &[u8]) -> u128 {
     bits.iter()
         .take(77)
         .fold(0u128, |acc, &b| (acc << 1) | (b & 1) as u128)
+}
+
+/// A [`HeardItem`] from a decoded message's text (`CALL1 CALL2 EXCHANGE`, the rendered standard message) and its 77 bits, if it is addressed to `my_call` and carries an exchange an
+/// activator answers (`Heard::parse`'s rules). Free text, CQs and messages of more than three fields give `None`.
+pub fn heard_item_from_text(
+    my_call: &str,
+    text: &str,
+    bits: &[u8],
+    snr_db: f32,
+    period: u32,
+) -> Option<HeardItem> {
+    let mut f = text.split_whitespace();
+    let (call1, call2) = (f.next()?, f.next()?);
+    let exchange = f.next().unwrap_or("");
+    if f.next().is_some() {
+        return None;
+    }
+    let snr = snr_db.round().clamp(-128.0, 127.0) as i8;
+    Some(HeardItem {
+        id: pack_bits(bits),
+        period,
+        heard: Heard::parse(my_call, call1, call2, exchange, snr)?,
+    })
 }
 
 /// The producers' end: `static HEARD: HeardQueue = HeardQueue::new();`.
@@ -76,7 +100,7 @@ impl HeardQueue {
 
 /// The consumer's end, owned by the QSO task.
 pub struct HeardCollector {
-    /// `(id, period it was delivered in)`.
+    /// `(id, the period of the item)`: what was delivered, until the item's period is older than the TTL.
     seen: Vec<(u128, u32), SEEN_CAP>,
     out: Vec<Heard, QUEUE_CAP>,
 }
@@ -105,13 +129,17 @@ impl HeardCollector {
             if period.saturating_sub(item.period) > HEARD_TTL {
                 continue;
             }
-            if self.seen.iter().any(|&(id, _)| id == item.id) {
+            if self
+                .seen
+                .iter()
+                .any(|&(id, p)| id == item.id && p == item.period)
+            {
                 continue;
             }
             if self.seen.is_full() {
                 self.seen.remove(0);
             }
-            let _ = self.seen.push((item.id, period));
+            let _ = self.seen.push((item.id, item.period));
             let _ = self.out.push(item.heard);
         }
         &self.out
@@ -144,17 +172,19 @@ mod tests {
         assert_eq!(calls(c.collect(&q, 5)), ["JA1AAA", "JA1BBB"]);
     }
 
-    /// A late decode of a message already delivered in the previous call is not delivered again, but after the TTL the same bits are a new message. **Fails if** the
-    /// memory is forgotten at once (a re-delivery inside the TTL) or kept for ever (a partner repeating himself is ignored).
+    /// A late decode of a message already delivered (the same bits, the same period) is not delivered again; **the same bits in a later period are a new message** (a partner repeating himself:
+    /// the activator answers a repeat, also in the very next period). **Fails if** the late copy is delivered twice, or a repeat is swallowed by the memory of the first.
     #[test]
-    fn a_delivered_message_is_remembered_for_the_ttl_only() {
+    fn a_repeat_in_a_later_period_is_a_new_message() {
         let (q, mut c) = (HeardQueue::new(), HeardCollector::new());
         q.push(item(7, 5, "JA1AAA"));
         assert_eq!(c.collect(&q, 5).len(), 1);
         q.push(item(7, 5, "JA1AAA")); // the late path's copy, one period on
         assert!(c.collect(&q, 6).is_empty());
-        q.push(item(7, 8, "JA1AAA")); // the partner sent it again, three periods later
-        assert_eq!(c.collect(&q, 8).len(), 1);
+        q.push(item(7, 6, "JA1AAA")); // the partner sent it again in the next period
+        assert_eq!(c.collect(&q, 6).len(), 1);
+        q.push(item(7, 6, "JA1AAA")); // and the late path's copy of that
+        assert!(c.collect(&q, 7).is_empty());
     }
 
     /// A decode older than the TTL is not worth answering from. **Fails if** an item of period 5 reaches `decide` at period 8 (but one at period 6 does).
@@ -210,6 +240,64 @@ mod tests {
             got.iter().filter(|h| h.from.as_str() == "JA1AAA").count(),
             6
         );
+    }
+
+    /// What the decoders hand over is the rendered text and the bits: only a message to us with an exchange comes out, SNR rounded. **Fails if** a CQ, a message to someone else, free text
+    /// or a four-field message is queued, or the report is lost.
+    #[test]
+    fn only_a_message_to_us_becomes_an_item() {
+        let bits = [1u8; 77];
+        let it = heard_item_from_text("JL1NIE", "JL1NIE JA1AAA -07", &bits, -6.6, 4).unwrap();
+        assert_eq!(
+            (it.period, it.heard.from.as_str(), it.heard.snr),
+            (4, "JA1AAA", -7)
+        );
+        assert!(heard_item_from_text("JL1NIE", "JL1NIE JA1AAA PM95", &bits, 0.0, 4).is_some());
+        assert!(heard_item_from_text("JL1NIE", "JL1NIE JA1AAA RR73", &bits, 0.0, 4).is_some());
+        assert!(heard_item_from_text("JL1NIE", "CQ JA1AAA PM95", &bits, 0.0, 4).is_none());
+        assert!(heard_item_from_text("JL1NIE", "JA1BBB JA1AAA -07", &bits, 0.0, 4).is_none());
+        assert!(heard_item_from_text("JL1NIE", "JL1NIE JA1AAA R -07 X", &bits, 0.0, 4).is_none());
+        assert!(heard_item_from_text("JL1NIE", "JL1NIE", &bits, 0.0, 4).is_none());
+    }
+
+    /// The queue and the activator over own periods in virtual time: a caller decoded by the window path is answered in that period; the same message decoded again by the late path (the same
+    /// 77 bits) is **not** a second call; a reply that only the late path decodes (after its deadline) is answered one period later, and nobody is answered twice.
+    /// **Fails if** a late decode is lost, the duplicate makes a second answer, or the late reply is answered in the period it was missed.
+    #[test]
+    fn a_late_decode_is_answered_one_period_on_and_nobody_twice() {
+        use crate::activator::{Activator, Config, TxMsg};
+        let cfg = Config::new("JL1NIE", "PM95");
+        let mut act = Activator::new(cfg.clone());
+        act.start();
+        let (q, mut c) = (HeardQueue::new(), HeardCollector::new());
+        let text = |d: &crate::activator::Decision| d.tx.as_ref().map(|t: &TxMsg| t.text(&cfg));
+        let bits = |n: u8| {
+            let mut b = [0u8; 77];
+            b[0] = n;
+            b[76] = 1;
+            b
+        };
+        // period 1: nobody yet -> CQ
+        let d = act.decide(1, c.collect(&q, 1));
+        assert_eq!(text(&d).as_deref(), Some("CQ JL1NIE PM95"));
+        // period 2: a caller, decoded by the window path before the deadline
+        q.push(heard_item_from_text("JL1NIE", "JL1NIE JA1AAA PM95", &bits(1), -10.0, 2).unwrap());
+        let d = act.decide(2, c.collect(&q, 2));
+        let first = text(&d).expect("answers the caller");
+        assert!(first.starts_with("JA1AAA JL1NIE"), "{first}");
+        // the late path decodes the same call again after the deadline, and the caller's report, which only it hears
+        q.push(heard_item_from_text("JL1NIE", "JL1NIE JA1AAA PM95", &bits(1), -10.0, 2).unwrap());
+        q.push(heard_item_from_text("JL1NIE", "JL1NIE JA1AAA R-10", &bits(2), -10.0, 2).unwrap());
+        // period 3: the duplicate is dropped, the report is the news: RR73 and the contact logged
+        let got = c.collect(&q, 3).to_vec();
+        assert_eq!(
+            got.len(),
+            1,
+            "the duplicate of the first call is not delivered again"
+        );
+        let d = act.decide(3, &got);
+        assert_eq!(text(&d).as_deref(), Some("JA1AAA JL1NIE RR73"));
+        assert_eq!(d.logged_total, 1);
     }
 
     #[test]
