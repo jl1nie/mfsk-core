@@ -104,7 +104,7 @@ The discipline of `AGENT_WORKFLOW.md` holds: host first, predictions written bef
 ## 7. Open decisions (owner)
 
 - **D1** whether the cells flow is a Linux profile at all.
-- **D2** where profile presets live (library constants or application configuration).
+- **D2** where profile presets live (library constants or application configuration). *Provisionally in the library* (2026-11-27): `CellsOptions::p0_window()` / `p0_late()` are `const fn`s over a plain value, so an application overrides any field; moving them out is a one-file change. Awaiting the owner.
 - **D3** whether `OsdSeeds::AD` and the capped OSD may become the default on any profile (Issue #766: all are options, off, until the owner agrees and a reviewer has seen the public API).
 - **D4** whether P0 keeps the post-window SIC (needs the second cell store and the held audio, plan section 14) or stays inside the window.
 - **D5** the classic ESP32 (P0-lite): worth a measurement of the cells flow on a Core2, or left as a documented variant.

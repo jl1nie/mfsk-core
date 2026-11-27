@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### The cells flow completed as a decoder: `SnrBaseline`, `CellsOptions` + P0 presets, guards (host; Issue #766)
+
+- **SNR**: the cells flow's `snr_db` was the staircase's adjacent-tone figure (-11.5 dB off `jt9`, SD 9.0). `SnrBaseline` (`baseline.f90`'s fit over the cells' own average spectrum, once a slot from the complete first-pass cells) reports it in WSJT-X's reference: 264 matched decodes, **mean 0, SD 2.14 dB, 91 % within 4 dB, max 7.8** (`K` and the scale are *fitted* on those 22 recordings, so the figure is the fit's; DT 35 ms / freq 0.9 Hz is `jt9`'s rounding). `tests/cells_flow_accuracy.rs`.
+- **`CellsOptions`** (`PLAIN`, `p0_window()`, `p0_late()`), `CellsWorker::with_options`, `decode_block_cells_with`: a profile is a value; each preset is bit for bit the `with_*` chain it stands for (`the_presets_are_the_chains_they_stand_for`).
+- **Guards**: P0 floors on the 22 recordings (window 280, late 324 of `jt9`'s 402; extras attested), 400 noise slots decode nothing (fails with the OSD's CRC check removed). Early emit at row pair 87: 40 % of the decodes are in hand, none lost (design note section 31). Allocations of a window round: 10.4 a candidate, largest block 696 B.
+
 ### OSD in the SIC: `sic_passes_osd`, `CellsWorker::decode_round_osd` (off by default; a divergence, Issue #766; host, 4 780 slots)
 
 - Every SIC round runs the BP staircase, then the OSD for the best `osd_cap` attempts that failed it, and the OSD's decodes are **subtracted for the next pass**. `k = 0` is `sic_passes` without OSD, unbounded `k` the OSD at once (tests). `icap-sic` (`OSD_MODE=off|inline|round|final`, `OSD_CAP`, `PASSES`) runs it.
