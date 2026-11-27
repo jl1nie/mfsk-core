@@ -723,3 +723,163 @@ fn a_deferred_osd_pass_runs_the_best_k_of_the_queue() {
         );
     }
 }
+
+/// `decode_round_osd` over the three recordings: **fails if** `k = 0` decodes anything `decode_round` without OSD does not (or misses one it does), unbounded `k`
+/// differs from `decode_round` with the OSD at once, or the worker's own deferral setting is not restored.
+#[test]
+fn decode_round_osd_is_decode_round_at_the_two_ends() {
+    use mfsk_core::ft8::decode_block::OsdSeeds;
+    let osd = DecodeDepth {
+        osd: true,
+        ..DecodeDepth::EMBEDDED
+    };
+    let off = DecodeDepth::EMBEDDED;
+    let tables = CellTables::new();
+    let mut cs: Box<[[Cmplx<f32>; 8]; 79]> =
+        vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
+    let mut bp = Box::new(Ft8BpScratch::new());
+    let mut w = CellsWorker::new(&mut cs, &mut bp, &tables).with_osd_seeds(OsdSeeds::AD);
+    for name in ["qso3_busy", "qso1", "qso2"] {
+        let a = audio(name);
+        let (cands, cells) = coarse_sync_gated_cells(
+            &mut SliceSource(&a),
+            Ft8Rate::Hz8000,
+            &GatedSearch::new(200.0, 3000.0, 1.3, 30),
+            1,
+        )
+        .unwrap();
+        let run = |w: &mut CellsWorker<'_>,
+                   f: &dyn Fn(
+            &mut CellsWorker<'_>,
+            &mut Vec<mfsk_core::ft8::decode_block::Found>,
+        )| {
+            let mut known = Vec::new();
+            f(w, &mut known);
+            let mut t = texts(&known);
+            t.sort();
+            t
+        };
+        let none = run(&mut w, &|w, k| {
+            w.decode_round(&cells, &cands, 30, off, 0.25, k);
+        });
+        let at_once = run(&mut w, &|w, k| {
+            w.decode_round(&cells, &cands, 30, osd, 0.25, k);
+        });
+        let k0 = run(&mut w, &|w, k| {
+            w.decode_round_osd(&cells, &cands, 30, osd, 0.25, k, 0);
+        });
+        let all = run(&mut w, &|w, k| {
+            w.decode_round_osd(&cells, &cands, 30, osd, 0.25, k, usize::MAX);
+        });
+        assert_eq!(k0, none, "{name}: k = 0 is decode_round without OSD");
+        assert_eq!(
+            all, at_once,
+            "{name}: unbounded k is decode_round with the OSD at once"
+        );
+        assert_eq!(
+            w.osd_pending(),
+            0,
+            "{name}: the queue is empty after the round"
+        );
+        // and the worker is not left deferring: a plain round with the OSD runs it at once
+        let again = run(&mut w, &|w, k| {
+            w.decode_round(&cells, &cands, 30, osd, 0.25, k);
+        });
+        assert_eq!(again, at_once, "{name}: the deferral setting is restored");
+    }
+}
+
+/// `sic_passes_osd`: **fails if** `k = 0` differs from `sic_passes` without OSD, unbounded `k` from `sic_passes` with the OSD at once, a capped `k = 6` is not between
+/// them (it must hold every decode of `k = 0` and none that unbounded `k` lacks), or the OSD of the first pass decodes nothing the flow returns (the pass-0 OSD decodes
+/// must be in the result: they are what the next pass subtracts).
+#[test]
+fn sic_passes_osd_is_sic_passes_at_the_two_ends_and_between_them_in_the_middle() {
+    use mfsk_core::ft8::decode::DecodeResult;
+    use mfsk_core::ft8::decode_block::{
+        OsdSeeds, SicStorage, sic_passes, sic_passes_osd, sic_signal_capacity,
+    };
+    let osd = DecodeDepth {
+        osd: true,
+        ..DecodeDepth::EMBEDDED
+    };
+    let off = DecodeDepth::EMBEDDED;
+    let tables = CellTables::new();
+    let mut cs: Box<[[Cmplx<f32>; 8]; 79]> =
+        vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
+    let mut bp = Box::new(Ft8BpScratch::new());
+    let mut w = CellsWorker::new(&mut cs, &mut bp, &tables).with_osd_seeds(OsdSeeds::AD);
+    let (max_cand, passes) = (30usize, 2usize);
+    let mut storage = SicStorage::new(Ft8Rate::Hz8000, sic_signal_capacity(max_cand, passes));
+    let search = GatedSearch::new(200.0, 3000.0, 1.3, 30);
+    let msgs = |r: &[DecodeResult]| {
+        let mut t: Vec<String> = r.iter().filter_map(|d| unpack77(d.message77())).collect();
+        t.sort();
+        t
+    };
+    let (mut total_off, mut total_osd, mut total_6) = (0, 0, 0);
+    for name in ["qso3_busy", "qso1", "qso2"] {
+        let a = audio(name);
+        let mut run = |w: &mut CellsWorker<'_>, cap: Option<usize>, depth: DecodeDepth| {
+            let (cands, mut cells) =
+                coarse_sync_gated_cells(&mut SliceSource(&a), Ft8Rate::Hz8000, &search, 1).unwrap();
+            match cap {
+                None => sic_passes(
+                    &mut SliceSource(&a),
+                    Ft8Rate::Hz8000,
+                    &search,
+                    max_cand,
+                    depth,
+                    passes,
+                    &cands,
+                    &mut cells,
+                    &tables,
+                    w,
+                    &mut storage.scratch(),
+                ),
+                Some(k) => sic_passes_osd(
+                    &mut SliceSource(&a),
+                    Ft8Rate::Hz8000,
+                    &search,
+                    max_cand,
+                    depth,
+                    passes,
+                    &cands,
+                    &mut cells,
+                    &tables,
+                    w,
+                    &mut storage.scratch(),
+                    k,
+                ),
+            }
+        };
+        let none = msgs(&run(&mut w, None, off));
+        let at_once = msgs(&run(&mut w, None, osd));
+        let k0 = msgs(&run(&mut w, Some(0), osd));
+        let all = msgs(&run(&mut w, Some(usize::MAX), osd));
+        let k6 = msgs(&run(&mut w, Some(6), osd));
+        assert_eq!(k0, none, "{name}: k = 0 is the SIC without OSD");
+        assert_eq!(
+            all, at_once,
+            "{name}: unbounded k is the SIC with the OSD at once"
+        );
+        assert!(
+            none.iter().all(|m| k6.contains(m)),
+            "{name}: k = 6 keeps the BP decodes"
+        );
+        assert!(
+            k6.iter().all(|m| at_once.contains(m)),
+            "{name}: k = 6 decodes nothing the OSD at once does not"
+        );
+        total_off += none.len();
+        total_osd += at_once.len();
+        total_6 += k6.len();
+    }
+    assert!(
+        total_osd > total_off,
+        "the OSD decodes more here: {total_osd} / {total_off}"
+    );
+    assert!(
+        total_6 > total_off,
+        "the capped OSD in the SIC decodes some of them: {total_6} / {total_off}"
+    );
+}

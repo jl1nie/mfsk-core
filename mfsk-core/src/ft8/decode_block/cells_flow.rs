@@ -272,6 +272,9 @@ pub struct CellsWorker<'a> {
     /// `OsdMode::Defer`: an attempt that reaches the OSD fallback is queued in `pending`, not run.
     osd_deferred: bool,
     pending: Vec<PendingOsd>,
+    /// Attempts queued and attempts run by [`osd_pass`](CellsWorker::osd_pass) since [`take_osd_counts`](CellsWorker::take_osd_counts).
+    osd_queued: u64,
+    osd_ran: u64,
 }
 
 /// An attempt queued for the OSD fallback: the candidate, the place of the attempt (`None`: the grid place) and its [`OsdRank`](super::OsdRank) score.
@@ -299,6 +302,8 @@ impl<'a> CellsWorker<'a> {
             osd_seeds: OsdSeeds::Faithful,
             osd_deferred: false,
             pending: Vec::new(),
+            osd_queued: 0,
+            osd_ran: 0,
         }
     }
 
@@ -322,6 +327,15 @@ impl<'a> CellsWorker<'a> {
     pub fn with_osd_deferred(mut self, deferred: bool) -> Self {
         self.osd_deferred = deferred;
         self
+    }
+
+    /// The attempts [`osd_pass`](Self::osd_pass) has been given and has run since the last call (or since the worker was made), and start counting again: what the cap
+    /// kept out of the OSD is the difference.
+    pub fn take_osd_counts(&mut self) -> (u64, u64) {
+        (
+            core::mem::take(&mut self.osd_queued),
+            core::mem::take(&mut self.osd_ran),
+        )
     }
 
     /// How many attempts wait for [`osd_pass`](Self::osd_pass).
@@ -437,6 +451,27 @@ impl<'a> CellsWorker<'a> {
         let _ = (cand, hs, g, p);
     }
 
+    /// [`decode_round`](Self::decode_round) with the OSD fallback deferred and capped: the round's candidates run their BP staircase, the attempts that fail it are
+    /// queued, and the best `k` of them ([`osd_pass`](Self::osd_pass)) run the OSD, their decodes pushed to `known` after the round's own (in the order a subtraction
+    /// flow reads them). `depth` must have `osd`. `k = 0` is `decode_round` without OSD; unbounded `k` is `decode_round` with the OSD at once, up to the order in
+    /// which a retry's BP decode and a grid attempt's OSD decode meet. The worker's own [`with_osd_deferred`](Self::with_osd_deferred) setting is restored. Returns
+    /// how many decodes were added.
+    pub fn decode_round_osd(
+        &mut self,
+        cells: &HalfDbCells,
+        cands: &[(SyncCandidate, u8)],
+        max_cand: usize,
+        depth: DecodeDepth,
+        min_shift: f32,
+        known: &mut Vec<Found>,
+        k: usize,
+    ) -> usize {
+        let was = core::mem::replace(&mut self.osd_deferred, true);
+        let a = self.decode_round(cells, cands, max_cand, depth, min_shift, known);
+        self.osd_deferred = was;
+        a + self.osd_pass(cells, k, depth, known)
+    }
+
     /// The OSD fallback of the best `k` of the queued attempts ([`with_osd_deferred`](Self::with_osd_deferred)), by [`OsdRank`](super::OsdRank) score, each run again at
     /// its place for the OSD alone; the queue is emptied. A decode already in `known` (same 77 bits) is not added again. Returns how many were added. `depth` is the one the
     /// attempts ran with (it must have `osd`).
@@ -450,6 +485,8 @@ impl<'a> CellsWorker<'a> {
         let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
         let tstep = cells.rate().nstep() as f32 / cells.rate().hz() as f32;
         let mut pend = core::mem::take(&mut self.pending);
+        self.osd_queued += pend.len() as u64;
+        self.osd_ran += pend.len().min(k) as u64;
         pend.sort_by(|a, b| {
             b.logit
                 .partial_cmp(&a.logit)

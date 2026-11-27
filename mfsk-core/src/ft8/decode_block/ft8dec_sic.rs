@@ -618,6 +618,48 @@ pub fn sic_passes<A: PcmSource>(
     )
 }
 
+/// [`sic_passes`] with the OSD fallback **deferred and capped in every round** ([`CellsWorker::decode_round_osd`]): each round (the first pass and every later one)
+/// runs the BP staircase over its candidates, then the OSD for the best `osd_cap` attempts that failed it, and the OSD's decodes are subtracted with the others for the next
+/// pass. `depth` must have `osd`. A divergence from WSJT-X and from `ft8dec` (the OSD at once for every failure); `osd_cap = 0` is `sic_passes` without OSD.
+#[allow(clippy::too_many_arguments)]
+pub fn sic_passes_osd<A: PcmSource>(
+    src: &mut A,
+    rate: Ft8Rate,
+    search: &GatedSearch,
+    max_cand: usize,
+    depth: DecodeDepth,
+    passes: usize,
+    cands: &[(SyncCandidate, u8)],
+    cells: &mut HalfDbCells,
+    tables: &CellTables,
+    worker: &mut CellsWorker<'_>,
+    scratch: &mut SicScratch<'_>,
+    osd_cap: usize,
+) -> Vec<DecodeResult> {
+    sic_passes_with(
+        src,
+        rate,
+        search,
+        max_cand,
+        passes,
+        cands,
+        cells,
+        tables,
+        scratch,
+        |cells, cands, max_cand, known| {
+            worker.decode_round_osd(
+                cells,
+                cands,
+                max_cand,
+                depth,
+                RETRY_MIN_SHIFT,
+                known,
+                osd_cap,
+            );
+        },
+    )
+}
+
 /// [`sic_passes`] with the **decoding of a round left to the caller**: `round(cells, cands, max_cand, known)` must do what
 /// [`CellsWorker::decode_round`] does (decode the first `max_cand` of `cands` from `cells`, with the retry at `RETRY_MIN_SHIFT`, and push each decode not already in `known`, in
 /// candidate order). A firmware with two cores passes a closure that shares the candidates between its workers (each candidate is decoded from the same read-only `cells`

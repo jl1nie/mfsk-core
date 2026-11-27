@@ -26,6 +26,11 @@ osd = ["mfsk-core/osd"]
 
 # the cells flow exists only in the fixed-point build
 [[bin]]
+name = "icap-sic"
+path = "src/bin/icap-sic.rs"
+required-features = ["fixed-point"]
+
+[[bin]]
 name = "icap-cands"
 path = "src/bin/icap-cands.rs"
 required-features = ["fixed-point"]

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### OSD in the SIC: `sic_passes_osd`, `CellsWorker::decode_round_osd` (off by default; a divergence, Issue #766; host, 4 780 slots)
+
+- Every SIC round runs the BP staircase, then the OSD for the best `osd_cap` attempts that failed it, and the OSD's decodes are **subtracted for the next pass**. `k = 0` is `sic_passes` without OSD, unbounded `k` the OSD at once (tests). `icap-sic` (`OSD_MODE=off|inline|round|final`, `OSD_CAP`, `PASSES`) runs it.
+- 2 passes, K = 4 / 6 / 8 a round: of the 71 decodes the OSD adds on the 60 real slots, **41 / 50 / 56 are kept** (all slots: 403 / 440 / 464 of 494), the OSD on 17 / 25 / 32 % of the attempts. One OSD pass after the last SIC pass (K = 6, nothing subtracted) keeps 29 of 71: the subtraction of the OSD's decodes is what pays. 3 passes the same (53 / 76 against 26 / 76).
+
 ### OSD capped per slot: `CellsWorker::with_osd_deferred` + `osd_pass` (off by default; a divergence, Issue #766; host, 4 780 slots)
 
 - The attempts that reach the OSD fallback are queued with an `OsdRank` score (a logistic model on the LLR statistics, the hard syncs and the search score; `CELLS_OSD_RANK`, fitted on the generated sets, the 60 real slots held out) and `osd_pass(cells, k, ..)` runs the best `k` after the slot's BP work. Unbounded it decodes what the OSD at once does (test), `k = 0` what the flow does without OSD.

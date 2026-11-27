@@ -927,3 +927,22 @@ A decoded candidate costs 1-2 calls and about 10 iterations; **95 % or more of t
 
 **Not done**: the same on the board (the cap is arithmetic on the board's 33 ms an attempt); a model fitted on real slots (60 slots, 60 successes is too few); the cap on a time budget in place of K; OSD later than the slot's window (the auto-QSO's late decodes feed the next TX opportunity).
 
+## 29. The OSD in the SIC (host, 4 780 slots, 30 candidates, seeds `a`, `d`; 2026-11-27)
+
+**Method.** `icap-sic` (`hosttest/icap-app`): the cells flow's `sic_passes` per slot with the OSD (a) off, (b) at once for every failed attempt (`inline`), (c) `round`: `sic_passes_osd`, every round (pass 0 and each later pass) queues the attempts that fail the BP staircase and runs the OSD for the best K (`OsdRank`, section 28), the OSD's decodes joining `known` and so the next pass's subtraction, (d) `final`: the rounds queue, one OSD pass of K on the final residual cells, nothing of it subtracted. Truth = the slot's reference.
+
+| 2 passes | true decodes, all / real 60 | OSD attempts run | OSD's decodes kept, all (of 494) / real (of 71) |
+|---|---|---|---|
+| OSD off | 7 847 / 1 121 | 0 | |
+| at once | 8 341 / 1 192 | all (131 500) | 494 / 71 |
+| `round` K = 4 | 8 250 / 1 162 | 22 140 | 403 / 41 |
+| `round` K = 6 | 8 287 / 1 171 | 32 442 | 440 / 50 |
+| `round` K = 8 | 8 311 / 1 177 | 42 690 | 464 / 56 |
+| `final` K = 6 | 8 226 / 1 150 | 28 680 | 379 / 29 |
+
+3 passes: off 7 904 / 1 130, at once 8 404 / 1 206, `round` K = 4 / 6 / 8 8 314 / 8 349 / 8 373 (real 1 175 / 1 183 / 1 189), `final` K = 6 8 276 / 1 156. The BP work is +1 % (an OSD-only attempt runs one BP pass); decodes not in the reference 43 -> 62 (K = 6, 2 passes), 44 -> 64 (3 passes).
+
+**What it says.** The same number of OSD runs (K = 6 a round is 32 k; one pass of 6 at the end is 29 k) keeps 50 of the real slots' 71 OSD decodes when each round's OSD decodes are subtracted and 29 when they are not: the OSD's decodes are signals, and taking them out of the residual lets the next pass search what they hid. The cap per round is not a cap per slot: with 2 passes a slot runs up to 2 K attempts, 6.8 on average over the corpora (12 on `qso3_busy`). On the three recordings (OSD queued / run): 2 passes K = 6 51 / 32 / 41 queued and 12 / 8 / 12 run, K = 8 16 / 10 / 15 run.
+
+**Not done**: K per slot rather than per round; the model's ranking on residual cells (fitted on first-pass attempts); the board's time (`ft8-sic-bench`'s `osd6` / `osd8` arms: predictions in its module doc).
+

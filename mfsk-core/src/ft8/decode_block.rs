@@ -77,8 +77,8 @@ pub use coarse_lib::{
 };
 #[cfg(feature = "fixed-point")]
 pub use ft8dec_sic::{
-    SicScratch, SicStorage, SigState, decode_block_cells_sic, sic_passes, sic_passes_with,
-    sic_signal_capacity,
+    SicScratch, SicStorage, SigState, decode_block_cells_sic, sic_passes, sic_passes_osd,
+    sic_passes_with, sic_signal_capacity,
 };
 #[cfg(feature = "fixed-point")]
 pub use pre_bp_gate::{BpGate, CELLS_GATE, CELLS_GATE_OSD, CELLS_OSD_RANK, OsdRank};

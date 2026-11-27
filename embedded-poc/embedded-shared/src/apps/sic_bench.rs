@@ -18,6 +18,14 @@
 //! on `qso2`, at about 10 ns each). `storage` at 2 passes: **4.4 s (4.0-4.8) / 3.9 s (3.6-4.2) / 4.05 s (3.7-4.4)**; at 3 passes **6.8 s (6.3-7.3)** for `qso3_busy` (the others stop after the second
 //! pass, as before: 3.9 / 4.05 s); the decoded sets as before (11 / 5 / 5 at 2 passes, 12 at 3 on `qso3_busy`) and equal across the arms. The `2core` arm: as `storage`, less what core 1 takes of the rounds.
 //!
+//! **The OSD in the SIC (`sic_passes_osd`: every round runs the BP staircase, then the OSD for the best `K` attempts that failed it, and the OSD's decodes are subtracted for
+//! the next pass), predicted before its run:** two more arms, `osd6` and `osd8` (K = 6 / 8, seeds `a`, `d`, over the same `SicStorage` and worker as `storage`). Host `icap-sic` on the three
+//! recordings (OSD queued / run): 2 passes K = 6 51 / 32 / 41 queued, **12 / 8 / 12 run**, K = 8 **16 / 10 / 15 run**; 3 passes K = 6 16 / 8 / 12 run (`qso3_busy` queues 55), K = 8 20 / 10 / 15; the BP work +1 %.
+//! An OSD attempt on the board is about 36 ms (33 ms measured in `ft8-stage-bench`'s `osd ad` arm, plus the attempt's fill and BP pass: the `osd pass` line there, 0.22 s for 6). On the `storage`
+//! figures of the S2 run of 2026-11-27 (4.24 / 3.43 / 3.49 s at 2 passes, 6.53 s at 3 for `qso3_busy`): **`osd6`, 2 passes: 4.55-4.80 / 3.65-3.85 / 3.85-4.05 s; `osd8`: 4.75-4.95 / 3.75-3.95 / 4.0-4.2 s;
+//! 3 passes, `qso3_busy`: `osd6` 7.0-7.3 s, `osd8` 7.25-7.5 s.** Decodes (host; the board may differ by one, as its BP passes do): 2 passes `osd6` 13 / 5 / 5, `osd8` 14 / 5 / 5 (OSD off 11 / 4 / 5); 3 passes
+//! `osd6` 14 / 5 / 5, `osd8` 15 / 5 / 5 (OSD off 12 / 4 / 5). Stop rule: any arm more than 25 % off, or a decode count more than one off the host's, stops the next flash.
+//!
 //! Logged: the time of the search and of the passes, the decodes (each arm's set against `alloc`'s), what making the memory cost in each heap, the heap minima
 //! since boot (**cumulative**: an arm shows only what goes below an earlier arm's, so the order is alloc, storage, ring-int and the minima are floors, not
 //! per-arm peaks) and the thread's stack high-water mark. No WiFi, no USB host: this says nothing about the 15.8 kB floor of the running firmware.
@@ -35,7 +43,7 @@ use mfsk_core::engine::source::SliceSource;
 use mfsk_core::ft8::decode::{DecodeDepth, DecodeResult};
 use mfsk_core::ft8::decode_block::{
     CELLS_D_MIN_SCORE, CellTables, CellsWorker, Found, Ft8BpScratch, Ft8Rate, GatedSearch, HalfDbCells, SicScratch,
-    SicStorage, SigState, coarse_sync_gated_cells, decode_block_cells_sic, sic_passes,
+    SicStorage, SigState, coarse_sync_gated_cells, decode_block_cells_sic, sic_passes, sic_passes_osd,
     sic_passes_with, sic_signal_capacity,
 };
 use mfsk_core::engine::sync::SyncCandidate;
@@ -133,7 +141,9 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
     // SAFETY: this thread is the only user of the main staging buffer here.
     let cs = unsafe { crate::internal_pool::cs_scratch_main() };
     let mut bp = Box::new(Ft8BpScratch::new());
-    let mut worker = CellsWorker::new(cs, &mut bp, &tables).with_d_min_score(CELLS_D_MIN_SCORE);
+    let mut worker = CellsWorker::new(cs, &mut bp, &tables)
+        .with_d_min_score(CELLS_D_MIN_SCORE)
+        .with_osd_seeds(mfsk_core::ft8::decode_block::OsdSeeds::AD);
     log::info!(
         "sic-bench: worker made; free internal {} B, PSRAM {} B",
         free(INTERNAL),
@@ -203,7 +213,7 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
                 min_free(PSRAM)
             );
             // storage (ring in PSRAM) and ring-int
-            for arm in ["storage ", "ring-int", "2core   "] {
+            for arm in ["storage ", "osd6    ", "osd8    ", "ring-int", "2core   "] {
                 if arm == "ring-int" && !have_int {
                     continue;
                 }
@@ -231,6 +241,9 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
                                     }
                                 }
                             })
+                    } else if arm == "osd6    " || arm == "osd8    " {
+                        let depth = DecodeDepth { osd: true, ..DecodeDepth::EMBEDDED };
+                        sic_passes_osd(&mut SliceSource(&a8), rate, &search, MAX_CAND, depth, passes, &cands, &mut cells, &tables, &mut worker, &mut storage.scratch(), if arm == "osd6    " { 6 } else { 8 })
                     } else if arm == "storage " {
                         sic_passes(&mut SliceSource(&a8), rate, &search, MAX_CAND, DecodeDepth::EMBEDDED, passes, &cands, &mut cells, &tables, &mut worker, &mut storage.scratch())
                     } else {
@@ -253,7 +266,7 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
                     "sic-bench: {label} passes {passes} {arm}: {} us (search {t_search} + passes {t_pass}), {} decodes, set {} alloc's; min free internal {} B, PSRAM {} B, stack free {} B",
                     t_search + t_pass,
                     got.len(),
-                    if got == want { "=" } else { "DIFFERS FROM" },
+                    if arm.starts_with("osd") { "(OSD on, not compared to)" } else if got == want { "=" } else { "DIFFERS FROM" },
                     min_free(INTERNAL),
                     min_free(PSRAM),
                     stack_free()
