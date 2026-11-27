@@ -65,6 +65,8 @@ mod cells_flow;
 #[cfg(feature = "fixed-point")]
 mod cells_options;
 #[cfg(feature = "fixed-point")]
+mod cells_producer;
+#[cfg(feature = "fixed-point")]
 mod coarse_lib;
 #[cfg(feature = "fixed-point")]
 mod ft8dec_sic;
@@ -77,6 +79,8 @@ pub use cells_flow::{
 };
 #[cfg(feature = "fixed-point")]
 pub use cells_options::{CellsOptions, OsdOptions, SicOptions, decode_block_cells_with};
+#[cfg(feature = "fixed-point")]
+pub use cells_producer::{CellsProducer, gain_shift_for_peak};
 #[cfg(feature = "fixed-point")]
 pub use coarse_lib::{
     CellsPart, HalfDbCells, candidate_ready, coarse_sync_gated_cells, merge_cells_parts,

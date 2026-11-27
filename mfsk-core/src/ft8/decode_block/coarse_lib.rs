@@ -122,6 +122,18 @@ impl HalfDbCells {
         &mut self.data[row * self.n_freq..(row + 1) * self.n_freq]
     }
 
+    /// Rows `j` and `j + 1` for writing, one after the other (`n_freq` bytes each): the pair one transform makes.
+    pub fn row_pair_mut(&mut self, j: usize) -> (&mut [u8], &mut [u8]) {
+        let n = self.n_freq;
+        self.data[j * n..(j + 2) * n].split_at_mut(n)
+    }
+
+    /// Empty the store for the next slot: every cell zero, no row filled (the memory is kept).
+    pub fn clear(&mut self) {
+        self.data.fill(0);
+        self.filled = 0;
+    }
+
     /// Declare the first `rows` rows written (at most `n_time`): from here the search and [`cell`](Self::cell) read them.
     pub fn mark_filled(&mut self, rows: usize) {
         self.filled = rows.min(self.n_time);
@@ -551,6 +563,23 @@ fn finish(
 
 /// [`search`] with the whole slot's cells kept (`keep_cells`): the same candidates, the cells the search scored in a [`HalfDbCells`].
 #[allow(clippy::too_many_arguments)]
+/// The carrier bins `ia..=ib` (3.125 Hz) the search of `freq_min..freq_max` scores, `None` for an empty band: the one place the store's shape comes from, for the search and for
+/// [`CellsProducer`](super::CellsProducer).
+pub(super) fn carrier_bins_of(
+    freq_min: f32,
+    freq_max: f32,
+    rate: Ft8Rate,
+) -> Option<(usize, usize)> {
+    let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
+    let spec_n_freq = spectrogram_n_freq(freq_max, rate);
+    let ia = (freq_min / df).round() as usize;
+    let ib = ((freq_max / df).round() as usize).min(spec_n_freq.saturating_sub(MAX_TONE_OFF));
+    (ib >= ia).then_some((ia, ib))
+}
+
+/// Tone bins above a carrier's own that its row must hold (`2 (NTONES - 1) + 1`).
+pub(super) const TONE_BINS: usize = MAX_TONE_OFF;
+
 fn search_impl<A: PcmSource>(
     src: &mut A,
     rate: Ft8Rate,
@@ -563,11 +592,10 @@ fn search_impl<A: PcmSource>(
     allowed: Option<&dyn Fn(usize) -> bool>,
     gain: Option<Gain>,
 ) -> (Vec<(SyncCandidate, u8)>, Option<HalfDbCells>) {
-    let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
-    let spec_n_freq = spectrogram_n_freq(freq_max, rate);
-    let ia = (freq_min / df).round() as usize;
-    let ib = ((freq_max / df).round() as usize).min(spec_n_freq.saturating_sub(MAX_TONE_OFF));
-    if ib < ia || keep == 0 {
+    let Some((ia, ib)) = carrier_bins_of(freq_min, freq_max, rate) else {
+        return (Vec::new(), None);
+    };
+    if keep == 0 {
         return (Vec::new(), None);
     }
     let pool = match order {

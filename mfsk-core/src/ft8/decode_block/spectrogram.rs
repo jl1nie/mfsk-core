@@ -411,7 +411,7 @@ pub(super) fn gain_for_peak(peak_abs: i32) -> Gain {
 /// construction (`w[k] == w[n - k]`: the first half is computed, the second mirrors it), so an `f32` `sin` that rounds
 /// differently on another target moves a pair of entries together, never one.
 #[cfg(feature = "fixed-point")]
-fn hann_q15(n: usize) -> Vec<i16> {
+pub(super) fn hann_q15(n: usize) -> Vec<i16> {
     (0..n)
         .map(|k| {
             let k = k.min(n - k);
@@ -561,6 +561,155 @@ pub(super) struct ByteCells {
     pub(super) data: Vec<u8>,
 }
 
+/// How the audio of one or two frames becomes the FFT input: pre-scaled by `shift`, weighted by the Q15 Hann (8 kHz) and brought to 12 kHz's level (`input_gain`), the second frame in
+/// the imaginary part (the two-for-one transform). Taken out of [`spectrogram_cells_into`] so that [`CellsProducer`](super::CellsProducer) frames its audio with the same code.
+#[cfg(feature = "fixed-point")]
+pub(super) struct Framer<'a> {
+    pub(super) flen: usize,
+    pub(super) shift: Gain,
+    pub(super) win_q15: &'a [i16],
+    pub(super) hann: bool,
+    pub(super) gain_num: i32,
+    pub(super) gain_den: i32,
+}
+
+#[cfg(feature = "fixed-point")]
+impl Framer<'_> {
+    /// `buf` (the FFT size) from the frame `fa` (`flen` samples) and, if there is one, `fb`; the rest of `buf` is zero.
+    #[inline(always)]
+    pub(super) fn pack(&self, buf: &mut [Complex<i16>], fa: &[i16], fb: Option<&[i16]>) {
+        let scale = |raw: i16, k: usize| {
+            let v = (raw as i32) << self.shift;
+            let v = if self.hann {
+                ((v as i64 * self.win_q15[k] as i64) >> 15) as i32
+            } else {
+                v
+            };
+            // `gain_num == gain_den` at 12 kHz: the sample is as it was
+            let v = if self.gain_num == self.gain_den {
+                v
+            } else {
+                v * self.gain_num / self.gain_den
+            };
+            v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+        };
+        for (k, c) in buf.iter_mut().enumerate() {
+            let re = if k < self.flen { scale(fa[k], k) } else { 0 };
+            let im = match fb {
+                Some(fb) if k < self.flen => scale(fb[k], k),
+                _ => 0,
+            };
+            *c = Complex::new(re, im);
+        }
+    }
+}
+
+/// The demux of one transformed pair of frames (`buf` holds `Y = X_a + j X_b`): the cells of carriers `lo..hi` of frame a into `row_a` and of frame b into `row_b`
+/// (`hi - lo` each). The body of the loop of [`spectrogram_cells_into`], taken out so that a producer which has the audio a pair at a time
+/// ([`CellsProducer`](super::CellsProducer)) runs the very same code: the cells are bit for bit the whole-slot demux's.
+#[cfg(feature = "fixed-point")]
+#[inline(always)]
+pub(super) fn demux_pair<C: Copy, T: CellOut>(
+    buf: &[Complex<i16>],
+    nfft: usize,
+    lo: usize,
+    hi: usize,
+    conv: C,
+    row_a: &mut [T],
+    row_b: &mut [T],
+) where
+    u32: core::ops::Shr<C, Output = u32>,
+{
+    // Demux. Modular wrap (NFFT_SPEC=3840 (2560 at 8 kHz) isn't a power of two so
+    // `& (NFFT-1)` would alias the high bins). `kn = (NFFT-k) mod
+    // NFFT` collapses k=0 to 0 — DC bin is real.
+    //
+    // D4: DC bin hoisted; main loop 4× unrolled to expose
+    // independent multiply chains at opt-level=1. Per-square u32
+    // cast: each square ≤ 2^30 fits in i32; cast before adding so
+    // the sum ≤ 2^31 stays within u32 (avoids i32 panic in debug
+    // for the ±32768 edge case that `unsigned_abs` was guarding).
+
+    // k=0: DC bin (kn=0 → yn=yk)
+    if lo == 0 && hi > 0 {
+        let r0 = buf[0].re as i32;
+        let i0 = buf[0].im as i32;
+        row_a[0] = T::pack((r0 * r0) as u32 >> conv);
+        row_b[0] = T::pack((i0 * i0) as u32 >> conv);
+    }
+
+    let mut k = lo.max(1);
+    while k + 4 <= hi {
+        let yk0 = buf[k];
+        let yk1 = buf[k + 1];
+        let yk2 = buf[k + 2];
+        let yk3 = buf[k + 3];
+        let yn0 = buf[nfft - k];
+        let yn1 = buf[nfft - k - 1];
+        let yn2 = buf[nfft - k - 2];
+        let yn3 = buf[nfft - k - 3];
+
+        let (a0r, a0i) = (
+            (yk0.re as i32 + yn0.re as i32) >> 1,
+            (yk0.im as i32 - yn0.im as i32) >> 1,
+        );
+        let (b0r, b0i) = (
+            (yk0.im as i32 + yn0.im as i32) >> 1,
+            (yn0.re as i32 - yk0.re as i32) >> 1,
+        );
+        let (a1r, a1i) = (
+            (yk1.re as i32 + yn1.re as i32) >> 1,
+            (yk1.im as i32 - yn1.im as i32) >> 1,
+        );
+        let (b1r, b1i) = (
+            (yk1.im as i32 + yn1.im as i32) >> 1,
+            (yn1.re as i32 - yk1.re as i32) >> 1,
+        );
+        let (a2r, a2i) = (
+            (yk2.re as i32 + yn2.re as i32) >> 1,
+            (yk2.im as i32 - yn2.im as i32) >> 1,
+        );
+        let (b2r, b2i) = (
+            (yk2.im as i32 + yn2.im as i32) >> 1,
+            (yn2.re as i32 - yk2.re as i32) >> 1,
+        );
+        let (a3r, a3i) = (
+            (yk3.re as i32 + yn3.re as i32) >> 1,
+            (yk3.im as i32 - yn3.im as i32) >> 1,
+        );
+        let (b3r, b3i) = (
+            (yk3.im as i32 + yn3.im as i32) >> 1,
+            (yn3.re as i32 - yk3.re as i32) >> 1,
+        );
+
+        row_a[k - lo] = T::pack(((a0r * a0r) as u32 + (a0i * a0i) as u32) >> conv);
+        row_b[k - lo] = T::pack(((b0r * b0r) as u32 + (b0i * b0i) as u32) >> conv);
+        row_a[k - lo + 1] = T::pack(((a1r * a1r) as u32 + (a1i * a1i) as u32) >> conv);
+        row_b[k - lo + 1] = T::pack(((b1r * b1r) as u32 + (b1i * b1i) as u32) >> conv);
+        row_a[k - lo + 2] = T::pack(((a2r * a2r) as u32 + (a2i * a2i) as u32) >> conv);
+        row_b[k - lo + 2] = T::pack(((b2r * b2r) as u32 + (b2i * b2i) as u32) >> conv);
+        row_a[k - lo + 3] = T::pack(((a3r * a3r) as u32 + (a3i * a3i) as u32) >> conv);
+        row_b[k - lo + 3] = T::pack(((b3r * b3r) as u32 + (b3i * b3i) as u32) >> conv);
+
+        k += 4;
+    }
+    while k < hi {
+        let yn = buf[nfft - k];
+        let yk = buf[k];
+        let (ar, ai) = (
+            (yk.re as i32 + yn.re as i32) >> 1,
+            (yk.im as i32 - yn.im as i32) >> 1,
+        );
+        let (br, bi) = (
+            (yk.im as i32 + yn.im as i32) >> 1,
+            (yn.re as i32 - yk.re as i32) >> 1,
+        );
+        row_a[k - lo] = T::pack(((ar * ar) as u32 + (ai * ai) as u32) >> conv);
+        row_b[k - lo] = T::pack(((br * br) as u32 + (bi * bi) as u32) >> conv);
+        k += 1;
+    }
+}
+
 /// The demux behind both: `conv` is [`LinearShift`] (`p >> FP_SPEC_SHIFT`, the shipped cell, bit for bit) or [`HalfDb`].
 #[cfg(feature = "fixed-point")]
 fn spectrogram_cells_into<A: PcmSource, C: Copy, T: CellOut>(
@@ -658,34 +807,20 @@ where
     // would be pure cost.
     let mut win = Window::new(src);
     let (mut fa, mut fb) = (vec![0i16; flen], vec![0i16; flen]);
+    let framer = Framer {
+        flen,
+        shift,
+        win_q15: &win_q15,
+        hann,
+        gain_num,
+        gain_den,
+    };
     let mut pack = |buf: &mut [Complex<i16>], ia_a: usize, ia_b: Option<usize>| {
         win.read_into(ia_a as i64 - lead as i64, &mut fa);
         if let Some(ia_b) = ia_b {
             win.read_into(ia_b as i64 - lead as i64, &mut fb);
         }
-        let scale = |raw: i16, k: usize| {
-            let v = (raw as i32) << shift;
-            let v = if hann {
-                ((v as i64 * win_q15[k] as i64) >> 15) as i32
-            } else {
-                v
-            };
-            // `gain_num == gain_den` at 12 kHz: the sample is as it was
-            let v = if gain_num == gain_den {
-                v
-            } else {
-                v * gain_num / gain_den
-            };
-            v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
-        };
-        for (k, c) in buf.iter_mut().enumerate() {
-            let re = if k < flen { scale(fa[k], k) } else { 0 };
-            let im = match ia_b {
-                Some(_) if k < flen => scale(fb[k], k),
-                _ => 0,
-            };
-            *c = Complex::new(re, im);
-        }
+        framer.pack(buf, &fa, ia_b.map(|_| &fb[..]));
     };
 
     for jj in 0..n_pairs {
@@ -693,97 +828,11 @@ where
         let j_b = j_a + 1;
         pack(&mut buf, j_a * nstep, Some(j_b * nstep));
         fft.process(&mut buf);
-
         let row_a = j_a * n_freq;
         let row_b = j_b * n_freq;
-        // Demux. Modular wrap (NFFT_SPEC=3840 (2560 at 8 kHz) isn't a power of two so
-        // `& (NFFT-1)` would alias the high bins). `kn = (NFFT-k) mod
-        // NFFT` collapses k=0 to 0 — DC bin is real.
-        //
-        // D4: DC bin hoisted; main loop 4× unrolled to expose
-        // independent multiply chains at opt-level=1. Per-square u32
-        // cast: each square ≤ 2^30 fits in i32; cast before adding so
-        // the sum ≤ 2^31 stays within u32 (avoids i32 panic in debug
-        // for the ±32768 edge case that `unsigned_abs` was guarding).
-
-        // k=0: DC bin (kn=0 → yn=yk)
-        if lo == 0 && hi > 0 {
-            let r0 = buf[0].re as i32;
-            let i0 = buf[0].im as i32;
-            data[row_a] = T::pack((r0 * r0) as u32 >> conv);
-            data[row_b] = T::pack((i0 * i0) as u32 >> conv);
-        }
-
-        let mut k = lo.max(1);
-        while k + 4 <= hi {
-            let yk0 = buf[k];
-            let yk1 = buf[k + 1];
-            let yk2 = buf[k + 2];
-            let yk3 = buf[k + 3];
-            let yn0 = buf[nfft - k];
-            let yn1 = buf[nfft - k - 1];
-            let yn2 = buf[nfft - k - 2];
-            let yn3 = buf[nfft - k - 3];
-
-            let (a0r, a0i) = (
-                (yk0.re as i32 + yn0.re as i32) >> 1,
-                (yk0.im as i32 - yn0.im as i32) >> 1,
-            );
-            let (b0r, b0i) = (
-                (yk0.im as i32 + yn0.im as i32) >> 1,
-                (yn0.re as i32 - yk0.re as i32) >> 1,
-            );
-            let (a1r, a1i) = (
-                (yk1.re as i32 + yn1.re as i32) >> 1,
-                (yk1.im as i32 - yn1.im as i32) >> 1,
-            );
-            let (b1r, b1i) = (
-                (yk1.im as i32 + yn1.im as i32) >> 1,
-                (yn1.re as i32 - yk1.re as i32) >> 1,
-            );
-            let (a2r, a2i) = (
-                (yk2.re as i32 + yn2.re as i32) >> 1,
-                (yk2.im as i32 - yn2.im as i32) >> 1,
-            );
-            let (b2r, b2i) = (
-                (yk2.im as i32 + yn2.im as i32) >> 1,
-                (yn2.re as i32 - yk2.re as i32) >> 1,
-            );
-            let (a3r, a3i) = (
-                (yk3.re as i32 + yn3.re as i32) >> 1,
-                (yk3.im as i32 - yn3.im as i32) >> 1,
-            );
-            let (b3r, b3i) = (
-                (yk3.im as i32 + yn3.im as i32) >> 1,
-                (yn3.re as i32 - yk3.re as i32) >> 1,
-            );
-
-            data[row_a + (k - lo)] = T::pack(((a0r * a0r) as u32 + (a0i * a0i) as u32) >> conv);
-            data[row_b + (k - lo)] = T::pack(((b0r * b0r) as u32 + (b0i * b0i) as u32) >> conv);
-            data[row_a + (k - lo) + 1] = T::pack(((a1r * a1r) as u32 + (a1i * a1i) as u32) >> conv);
-            data[row_b + (k - lo) + 1] = T::pack(((b1r * b1r) as u32 + (b1i * b1i) as u32) >> conv);
-            data[row_a + (k - lo) + 2] = T::pack(((a2r * a2r) as u32 + (a2i * a2i) as u32) >> conv);
-            data[row_b + (k - lo) + 2] = T::pack(((b2r * b2r) as u32 + (b2i * b2i) as u32) >> conv);
-            data[row_a + (k - lo) + 3] = T::pack(((a3r * a3r) as u32 + (a3i * a3i) as u32) >> conv);
-            data[row_b + (k - lo) + 3] = T::pack(((b3r * b3r) as u32 + (b3i * b3i) as u32) >> conv);
-
-            k += 4;
-        }
-        while k < hi {
-            let yn = buf[nfft - k];
-            let yk = buf[k];
-            let (ar, ai) = (
-                (yk.re as i32 + yn.re as i32) >> 1,
-                (yk.im as i32 - yn.im as i32) >> 1,
-            );
-            let (br, bi) = (
-                (yk.im as i32 + yn.im as i32) >> 1,
-                (yn.re as i32 - yk.re as i32) >> 1,
-            );
-            data[row_a + (k - lo)] = T::pack(((ar * ar) as u32 + (ai * ai) as u32) >> conv);
-            data[row_b + (k - lo)] = T::pack(((br * br) as u32 + (bi * bi) as u32) >> conv);
-            k += 1;
-        }
+        // rows a and b are adjacent: one slice of both, split
+        let (ra, rb) = data[row_a..row_b + n_freq].split_at_mut(n_freq);
+        demux_pair(&buf, nfft, lo, hi, conv, ra, rb);
     }
 
     // Odd-frame fallback: single-frame FFT for the trailing slice when
