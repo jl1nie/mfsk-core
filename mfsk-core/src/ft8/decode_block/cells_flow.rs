@@ -279,6 +279,7 @@ pub struct CellsWorker<'a> {
 
 /// An attempt queued for the OSD fallback ([`CellsWorker::take_osd_attempts`]): the candidate, the place of the attempt and its `OsdRank` score. Opaque; it can be moved to
 /// another worker (another core) and run there by [`CellsWorker::run_osd_attempt`] over the same cells.
+#[derive(Clone)]
 pub struct OsdAttempt {
     cand: SyncCandidate,
     hs: u8,

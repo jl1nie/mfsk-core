@@ -36,6 +36,12 @@
 //! loops are the cause after all; if it is not, the 1.45 is mostly something these loops do not set (the popcount's instruction mix, the loads from the scratch, the BP's own loops: the zsum BP is a quarter of
 //! an attempt and is not touched), and the unrolling is not worth its code. The sets of decodes stay equal (the answers are bit-equal: `tests/osd_embedded.rs` with each feature).
 //!
+//! **The OSD pass with the attempts claimed one at a time (`osd claim` lines; the first version dealt the ranked attempts out in turn), predicted before its run.** The per-core shares of the dealt pass at K = 14
+//! were 0.322 / 0.361 s (`qso3_busy`), 0.391 / 0.391 (`qso1`), 0.352 / 0.383 (`qso2`) because a few attempts take 18-19 ms and the rest 54-58 ms. Claimed through an atomic index (the round's way) the two
+//! cores end within one attempt of each other: **the wall falls to about the mean of the two shares: `qso3_busy` -3 to -6 %, `qso1` -2 to +2 % (the shares were equal), `qso2` -2 to -6 %**
+//! (a claim costs an atomic add; the last attempts taken may leave one core idle for part of an attempt). The sets of decodes are equal to the dealt pass's. Both passes run on the same ranked attempts in the same
+//! iteration, so the comparison is of one boot and one build.
+//!
 //! **The test of it, predicted before its run:** the same bench twice in one boot, `[psram]` (the OSD memory made by `reserve_osd_work` under the 2 KB malloc limit: where the first run had it) and
 //! `[internal]` (made while `heap_caps_malloc_extmem_enable(16 KB)`: in internal DRAM; the limit is put back to 2 KB after). The round, `band` and the staging are the same in both. **If the hypothesis is right:**
 //! `[internal]` takes about 17 KB x 2 of internal DRAM, the OSD pass on **two cores at K = 14 falls to 0.27-0.31 / 0.30-0.34 / 0.30-0.34 s** (an attempt at about 40 ms: x1.8-2.0 against one core) and K = 6 to 0.11-0.13 s,
@@ -91,6 +97,8 @@ unsafe impl<T> Send for Ptr<T> {}
 enum Msg {
     Round { cells: Ptr<HalfDbCells>, cands: Ptr<(SyncCandidate, u8)>, n: usize, next: Ptr<AtomicUsize>, depth: DecodeDepth },
     Osd { cells: Ptr<HalfDbCells>, share: Vec<(usize, OsdAttempt)>, depth: DecodeDepth },
+    /// the ranked attempts, claimed one at a time through an atomic index (as the round's candidates are) instead of dealt out in turn
+    OsdClaim { cells: Ptr<HalfDbCells>, att: Ptr<OsdAttempt>, n: usize, next: Ptr<AtomicUsize>, depth: DecodeDepth },
     Band { cells: Ptr<HalfDbCells>, search: Ptr<GatedSearch>, lo: usize, hi: usize },
     /// make the OSD fallback's memory now (`CellsWorker::reserve_osd_work`)
     Reserve,
@@ -201,6 +209,23 @@ fn arm(internal: bool, wavs: &'static [(&'static str, &'static [u8])]) {
                         .collect();
                     Reply::Osd(res, each)
                 }
+                Msg::OsdClaim { cells, att, n, next, depth } => {
+                    // SAFETY: the sender blocks on the reply
+                    let (cells, next) = unsafe { (&*cells.0, &*next.0) };
+                    let (mut res, mut each) = (Vec::new(), Vec::new());
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        if i >= n {
+                            break;
+                        }
+                        let a = unsafe { &*att.0.add(i) };
+                        let t0 = now_us();
+                        let f = w1.run_osd_attempt(cells, a, depth);
+                        each.push(now_us() - t0);
+                        res.push((i, f));
+                    }
+                    Reply::Osd(res, each)
+                }
                 Msg::Reserve => {
                     w1.reserve_osd_work();
                     Reply::Done
@@ -283,6 +308,7 @@ fn arm(internal: bool, wavs: &'static [(&'static str, &'static [u8])]) {
             let (mut r2, mut o2) = (0i64, 0i64);
             let mut set2 = Vec::new();
             let mut round_split = (0i64, 0usize, 0i64, 0usize);
+            let (mut claim0, mut claim1, mut o3, mut claim_n, mut claim_ok) = (0i64, 0i64, 0i64, (0usize, 0usize), false);
             let (mut each0, mut each1): (Vec<i64>, Vec<i64>) = (Vec::new(), Vec::new());
             let (mut share0, mut share1) = (0i64, 0i64);
             for _ in 0..2 {
@@ -312,6 +338,8 @@ fn arm(internal: bool, wavs: &'static [(&'static str, &'static [u8])]) {
                 r2 = now_us() - t0;
                 let t1 = now_us();
                 rank_osd_attempts(&mut att, k);
+                let att_claim: Vec<OsdAttempt> = att.to_vec();
+                let pre_msgs = texts(&known);
                 let (mut mine, mut share) = (Vec::new(), Vec::new());
                 for (r, a) in att.into_iter().enumerate() {
                     if r % 2 == 0 {
@@ -347,11 +375,55 @@ fn arm(internal: bool, wavs: &'static [(&'static str, &'static [u8])]) {
                 }
                 o2 = now_us() - t1;
                 set2 = texts(&known);
+                // the same attempts, claimed one at a time by whichever core is free
+                let t2 = now_us();
+                let next = AtomicUsize::new(0);
+                let n = att_claim.len();
+                tx.send(Msg::OsdClaim { cells: Ptr(&cells), att: Ptr(att_claim.as_ptr()), n, next: Ptr(&next), depth }).unwrap();
+                let (mut ran, mut e0) = (Vec::new(), Vec::new());
+                let tc = now_us();
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= n {
+                        break;
+                    }
+                    let t0 = now_us();
+                    let f = w0.run_osd_attempt(&cells, &att_claim[i], depth);
+                    e0.push(now_us() - t0);
+                    ran.push((i, f));
+                }
+                claim0 = now_us() - tc;
+                let Reply::Osd(theirs, e1c) = done_rx.recv().unwrap() else { panic!("reply") };
+                claim1 = e1c.iter().sum();
+                claim_n = (e0.len(), e1c.len());
+                ran.extend(theirs);
+                ran.sort_by_key(|x| x.0);
+                let mut set_c = pre_msgs;
+                for (_, f) in ran {
+                    if let Some(f) = f {
+                        if let Some(t) = unpack77(f.res.message77()) {
+                            if !set_c.contains(&t) {
+                                set_c.push(t);
+                            }
+                        }
+                    }
+                }
+                set_c.sort();
+                set_c.dedup();
+                claim_ok = set_c == set2;
+                o3 = now_us() - t2;
             }
             let ms = |v: &[i64]| -> String { v.iter().map(|x| alloc::format!("{}", x / 1000)).collect::<Vec<_>>().join(" ") };
             log::info!(
                 "two-core-bench: [{place}] {label} K {k} per core: round main {} us ({} cands) w1 {} us ({} cands); osd main {share0} us [{} ms] w1 {share1} us [{} ms] (wall {o2} us)",
                 round_split.0, round_split.1, round_split.2, round_split.3, ms(&each0), ms(&each1)
+            );
+            log::info!(
+                "two-core-bench: [{place}] {label} K {k} osd claim: wall {o3} us (main {claim0} us for {} attempts, w1 {claim1} us for {}) against dealt in turn {o2} us ({:+.1} %); set {} the dealt one's",
+                claim_n.0,
+                claim_n.1,
+                (o3 as f64 / o2 as f64 - 1.0) * 100.0,
+                if claim_ok { "=" } else { "DIFFERS FROM" }
             );
             log::info!(
                 "two-core-bench: [{place}] {label} K {k} 2 cores: round {r2} us + osd {o2} us = {} us, {} decodes, set {} the one core's; round x{:.2}, osd x{:.2}; min free internal {} B, stack free {} B",
