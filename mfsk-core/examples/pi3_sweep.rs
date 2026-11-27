@@ -1114,9 +1114,134 @@ fn probe10(truth: &str, dir: &str, slot: &str, target: &str, out: &str) {
     std::fs::write(out, w).unwrap();
 }
 
+/// `probe11 <truth2.tsv> <dir>`: which signals to subtract, and how well. For every reference signal the cells flow misses (one pass, OSD, 100 candidates), the slot's audio with
+/// (a) **only the signals that same pass decodes** subtracted (jt9's precise places, `refine_freq` + `subtract_tones_lpf_refine_dt`: the subtraction's quality is not at issue), then decoded again
+/// by one pass; (b) **every other reference signal** subtracted (the oracle). Prints `X <slot> <snr> <decoded after (a)> <decoded after (b)> <subtracted in (a)> <msg>` and a summary.
+#[cfg(feature = "fixed-point")]
+fn probe11(truth: &str, dir: &str) {
+    use mfsk_core::engine::dsp::resample::resample_to_8k;
+    use mfsk_core::engine::dsp::subtract::{
+        GfskParams, SubtractCfg, refine_freq, subtract_tones_lpf_refine_dt,
+    };
+    use mfsk_core::ft8::decode::DecodeDepth;
+    use mfsk_core::ft8::decode_block::{Ft8Rate, GatedSearch, decode_block_cells};
+    use mfsk_core::msg::wsjt77::{pack77, unpack77};
+    let cfg = SubtractCfg {
+        sample_rate: 12_000.0,
+        tone_spacing_hz: 6.25,
+        samples_per_symbol: 1920,
+        base_offset_s: 0.5,
+        gfsk: Some(GfskParams {
+            bt: 2.0,
+            hmod: 1.0,
+            ramp_samples: 1920 / 8,
+            frame_ramp: false,
+        }),
+    };
+    let mut by_slot: std::collections::BTreeMap<String, Vec<Truth>> = Default::default();
+    for l in std::fs::read_to_string(truth).unwrap().lines() {
+        let f: Vec<&str> = l.splitn(6, '\t').collect();
+        by_slot.entry(f[0].to_string()).or_default().push((
+            f[1].parse().unwrap(),
+            f[2].parse().unwrap(),
+            f[3].parse().unwrap(),
+            norm(f[4]),
+            f[5].parse().unwrap(),
+        ));
+    }
+    let depth = DecodeDepth {
+        osd: true,
+        ..DecodeDepth::EMBEDDED
+    };
+    let search = GatedSearch::new(200.0, 3000.0, 1.3, 100);
+    // the cells flow's own pass-0 decodes with the places it estimated
+    let decode_places = |audio: &[i16]| -> Vec<(String, f32, f32)> {
+        let a8 = resample_to_8k(audio, 12_000);
+        decode_block_cells(&a8, Ft8Rate::Hz8000, &search, 100, depth)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|d| unpack77(d.message77()).map(|m| (norm(&m), d.freq_hz, d.dt_sec)))
+            .collect()
+    };
+    let decode_set = |audio: &[i16]| -> std::collections::HashSet<String> {
+        let a8 = resample_to_8k(audio, 12_000);
+        decode_block_cells(&a8, Ft8Rate::Hz8000, &search, 100, depth)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|d| unpack77(d.message77()))
+            .map(|m| norm(&m))
+            .collect()
+    };
+    let tones_of = |msg: &str| -> Option<Vec<u8>> {
+        let t: Vec<&str> = msg.split(' ').collect();
+        let bits = match t.len() {
+            3 => pack77(t[0], t[1], t[2]),
+            2 => pack77(t[0], t[1], ""),
+            _ => None,
+        }?;
+        Some(mfsk_core::engine::tx::message_to_tones::<Ft8>(&bits))
+    };
+    let subtract = |audio: &mut Vec<i16>, f: f32, dt: f32, msg: &str| -> bool {
+        let Some(tones) = tones_of(msg) else {
+            return false;
+        };
+        let f0 = refine_freq(audio, &tones, f, dt, &cfg, 2.5, 0.1);
+        subtract_tones_lpf_refine_dt(audio, &tones, f0, dt, &cfg, 2000, true);
+        true
+    };
+    let (mut n, mut a_ok, mut b_ok, mut c_ok) = (0, 0, 0, 0);
+    for (slot, mut sigs) in by_slot {
+        sigs.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+        let orig = load(&format!("{dir}/{slot}.wav"));
+        let pass0 = decode_set(&orig);
+        let own = decode_places(&orig);
+        for (f, dt, snr, msg, missed) in &sigs {
+            if *missed == 0 {
+                continue;
+            }
+            n += 1;
+            let (mut ra, mut rb) = (orig.clone(), orig.clone());
+            let mut na = 0;
+            for (f2, dt2, _, m2, _) in &sigs {
+                if m2 == msg {
+                    continue;
+                }
+                subtract(&mut rb, *f2, *dt2, m2);
+                if pass0.contains(m2) && subtract(&mut ra, *f2, *dt2, m2) {
+                    na += 1;
+                }
+            }
+            // (c): the cells flow's own decodes at the places it estimated
+            let mut rc = orig.clone();
+            for (m2, f2, dt2) in &own {
+                subtract(&mut rc, *f2, *dt2, m2);
+            }
+            let oc = decode_set(&rc).contains(msg);
+            c_ok += oc as usize;
+            let (oa, ob) = (decode_set(&ra).contains(msg), decode_set(&rb).contains(msg));
+            a_ok += oa as usize;
+            b_ok += ob as usize;
+            println!(
+                "X {slot} {snr} {} {} {} {na} {msg} (f {f} dt {dt})",
+                oa as u8, ob as u8, oc as u8
+            );
+        }
+    }
+    println!(
+        "T {n} missed: decoded after subtracting only what the cells flow decoded, at jt9's precise places (a): {a_ok}; at the places the cells flow estimated (c): {c_ok}; every other reference signal (b): {b_ok}"
+    );
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let config = args.next().expect("config");
+    #[cfg(feature = "fixed-point")]
+    if config == "probe11" {
+        let truth = args.next().unwrap();
+        let dir = args.next().unwrap();
+        probe11(&truth, &dir);
+        return;
+    }
     if config == "probe10" {
         let truth = args.next().unwrap();
         let dir = args.next().unwrap();
