@@ -261,7 +261,11 @@ fn tcal(d: f32) -> f32 {
 /// The slot's noise floor on its cells, for the SNR of its decodes: WSJT-X's `baseline.f90` (the lower envelope of the slot's average spectrum: a polynomial through the 10th percentile
 /// of each of ten segments, `engine::baseline::fit_baseline`) run over the **cells' own time-averaged power**, so that the signal's power and the floor come from one spectrum (the
 /// calibration of `ft8b.f90:451`'s `xsnr2` is fitted to a matching pair, `process_candidates.rs`). Made **once a slot from the complete cells of the first pass** (the subtraction
-/// passes overwrite the store with a residual), about 456 columns read over 174 rows; applied to each decode with [`apply`](Self::apply).
+/// passes overwrite the store with a residual), about 456 columns read over 184 rows; applied to each decode with [`apply`](Self::apply).
+///
+/// **A deliberate divergence from WSJT-X** (`ft8b.f90:449-454`: `xsnr2 = xsig / xbase / 3e6 - 1`, dB - 27): the baseline is fitted over the half-dB cells, not `get_spectrum_baseline.f90`'s
+/// Nuttall spectrum; the signal is the best of 3 x 3 cells; `SNR_K` and `SNR_REF_DB` are **empirical**, fitted on the 22 recordings of `tests/cells_flow_accuracy.rs` against `jt9`. The
+/// accuracy quoted for it (mean 0, SD 2.1 dB) is therefore **in-sample**, measured with the OSD off; it is not a held-out figure.
 pub struct SnrBaseline {
     first_bin: usize,
     /// dB (of the cells' power units) at each column.
@@ -271,11 +275,16 @@ pub struct SnrBaseline {
 /// `xsig / xbase` of `ft8b.f90:451` is `xsig / xbase / K - 1` here; `K` and the dB scale are **fitted** to `jt9`'s SNR on the 22 recordings (`tests/cells_flow_accuracy.rs`).
 const SNR_K: f32 = 58.0;
 const SNR_REF_DB: f32 = 26.12;
-const SNR_FLOOR_DB: f32 = -25.0;
+use super::process_candidates::FT8_SNR_FLOOR_DB as SNR_FLOOR_DB;
 
 impl SnrBaseline {
     /// The baseline of `cells` (call it on the complete store of a slot, before any subtraction pass).
     pub fn new(cells: &HalfDbCells, tables: &CellTables) -> Self {
+        // a partial store gives another baseline than the slot's (the early emit must not use it), a residual store another again
+        debug_assert!(
+            cells.filled_rows() == cells.n_time(),
+            "SnrBaseline::new wants the complete cells of the slot"
+        );
         let n_freq = cells.row_len();
         let rows = cells.filled_rows();
         let mut avg = alloc::vec![0.0f32; n_freq];
@@ -736,7 +745,7 @@ impl<'a> CellsWorker<'a> {
 /// `None` unless `rate.coarse_ft8lib()` (`Hz8000`, `fixed-point`). `depth` is the staircase's (`DecodeDepth::EMBEDDED` with `osd` on is
 /// the S3's). A decode found on the second try reports the place it was found at (`freq_hz`, `dt_sec` moved by the estimate); one found
 /// at the grid, the grid's (3.125 Hz, 80 ms: coarser than a fine sync's). `DecodeResult::sync_score` is the search's score in 0.5 dB units, and
-/// `snr_db` is [`SnrBaseline`]'s (against `jt9`'s: mean 0, SD 2.1 dB, `tests/cells_flow_accuracy.rs`).
+/// `snr_db` is [`SnrBaseline`]'s (against `jt9`'s: mean 0, SD 2.1 dB **in-sample**, OSD off, `tests/cells_flow_accuracy.rs`).
 ///
 /// **A deliberate divergence from WSJT-X** (see this module). Peak memory: the cells (172 KB at 200-3000 Hz, made as bytes by the demux: no
 /// `u16` band in between) plus the scores of the band (n_carriers x 60 bytes) and the spectra of one candidate; 258 KB on the host heap meter

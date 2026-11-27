@@ -53,7 +53,7 @@ use num_complex::Complex;
 /// the last lines before `return`). −24 dB through WSJT-X 2.7, −25 dB
 /// from 3.0 (read at the `v2.7.0` / `v3.0.0` tags). The gate and the
 /// clamp share one number upstream, so they share one constant here.
-const FT8_SNR_FLOOR_DB: f32 = -25.0;
+pub(super) const FT8_SNR_FLOOR_DB: f32 = -25.0;
 
 // ── Stage-timing trace (host diagnostic only) ───────────────────────────────
 //

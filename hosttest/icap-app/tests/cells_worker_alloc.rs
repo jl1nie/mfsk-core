@@ -117,8 +117,8 @@ fn the_p0_window_round_allocates_small_blocks_only() {
     );
     assert!(!known.is_empty());
     assert!(
-        largest < core::mem::size_of::<[[Cmplx<f32>; 8]; 79]>(),
-        "an allocation of {largest} B"
+        largest < 2048,
+        "an allocation of {largest} B: at or over the 2 KB internal-DRAM line"
     );
     assert!(
         made <= 16 * cands.len(),

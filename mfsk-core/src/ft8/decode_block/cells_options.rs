@@ -4,6 +4,10 @@
 //! tests check each preset against the chain it stands for. A firmware that drives the worker itself (two cores, a producer filling the store a row at a time) builds the worker with
 //! [`CellsWorker::with_options`] and runs the rounds as it does today.
 //!
+//! **The API is not frozen** (Issue #766, `PROFILES.md` D3: the owner has not agreed to defaults): the types are plain values so an application overrides a field, at the price of a field
+//! or a variant being a breaking change. Combinations outside the two presets and [`CellsOptions::PLAIN`] (an inline OSD in the SIC, `CELLS_GATE` with an OSD, a `k` of 0) are **not covered
+//! by a precision guard**; only `p0_window()` and `p0_late()` are (`hosttest/icap-app/tests/icap_profile.rs`).
+//!
 //! **Every option here but [`CellsOptions::PLAIN`] is a divergence from WSJT-X** (the cells flow's search and stage 3 above all; the gate, `OsdSeeds::AD` and the capped OSD each have their record in Issue #766).
 
 use alloc::boxed::Box;
@@ -88,7 +92,7 @@ impl CellsOptions {
     /// The depth the staircase runs at: the board's (`DecodeDepth::EMBEDDED`), with the OSD on when the options have one.
     pub fn depth(&self) -> DecodeDepth {
         DecodeDepth {
-            osd: self.osd != OsdOptions::Off,
+            osd: !matches!(self.osd, OsdOptions::Off | OsdOptions::Capped { k: 0, .. }),
             ..DecodeDepth::EMBEDDED
         }
     }

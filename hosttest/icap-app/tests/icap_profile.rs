@@ -456,7 +456,7 @@ fn noise_slot(seed: u64, sigma: f32) -> Vec<i16> {
         .collect()
 }
 
-/// **The precision guard of the P0 configurations**: 200 slots of noise (50 each at four levels, from a few counts to a loud floor) decode **nothing** with the window path and the late path (the
+/// **The precision guard of the P0 configurations**: 200 slots of noise a path, 400 in all (50 each at four levels, from a few counts to a loud floor) decode **nothing** with the window path and the late path (the
 /// capped OSD reads the best-ranked failed words of a slot, and the subtraction passes read what is left: both are where a CRC-passing phantom would come from). A decode here is a regression
 /// or a real discovery about the CRC and the plausibility checks, and the test reports it by slot and message. **Fails if** any slot decodes; try it with the OSD's CRC check removed.
 #[cfg(feature = "fixed-point")]
