@@ -62,7 +62,7 @@ to internal DRAM changed the two-core pass by 5-6 % only: the cost is not that m
   8 281 times a call); written out over all six words it took **17 % off the pass on one core and on two (537 / 362 -> 447 / 303 ms), 23 % off one OSD call (7.26 -> 5.60 ms)**, bit for bit the same answers. The
   two-core / one-core ratio did not move (0.68): this is the loop overhead of an inner loop whose trip count is not a constant, not the cost of the second core. The other loop tried, the `npre1` gate
   (4 095 tests a call, a software popcount in each), tested four pairs a round: 1 %, not kept. **Predicted before the run: 5 % at most; wrong for the elimination.** Variable-trip inner loops
-  with a few instructions in the body are the first place to look in a hot path; the `trailing_zeros` scatter that builds the generator (about 8 000 trips a call) is untried.
+  with a few instructions in the body are the first place to look in a hot path; the `trailing_zeros` scatter that builds the generator (about 8 000 data-dependent trips a call) was replaced by 18 32 x 32 bit transposes (constant trip counts): **5.60 -> 5.13 ms a call (-8 %)**, bit for bit the same answers (predicted 5.15-5.35 ms). Together with the elimination, one OSD call went 7.26 -> 5.13 ms.
 - **Do not assume 2x from two cores.** Budget **x1.5 for compute- and internal-memory-bound work** (BP, OSD) and **about x1.1 for work that streams a PSRAM working set** (the band search), and
   measure the one-core figure on the board: the old S3 dual-core note's "244 ms of single-core work" was the 122 ms wall times two, an assumption (`PHASE_D_PIE_SIMD.md`), so the
   cost of two cores was not visible in it.

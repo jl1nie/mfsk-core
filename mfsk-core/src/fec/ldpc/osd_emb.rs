@@ -150,6 +150,7 @@ fn transpose32(a: &mut [u32; 32]) {
     }
 }
 
+/// (On the CoreS3 this took 0.47 ms off a 5.60 ms call, -8 %, against scattering every set bit with a `trailing_zeros` loop of about 8 000 data-dependent trips.)
 /// The generator by row, columns in reliability order: `g[r]` has bit `c` set when column `indices[c]` has bit `r` (`COLS`). The same answer as scattering every set bit, from a 32 x 32 transpose of each
 /// block of 32 columns and 32 rows (18 blocks) in place of about 8 000 data-dependent trips of `trailing_zeros`.
 fn build_generator_transposed(g: &mut [Row; K], indices: &[usize; N]) {
@@ -268,23 +269,7 @@ pub fn osd174_91_into(
     });
 
     // ── Generator, held by row, columns in reliability order ────────────
-    if cfg!(feature = "osd-gen-transpose") {
-        build_generator_transposed(g, indices);
-    } else {
-        for r in g.iter_mut() {
-            *r = [0; W];
-        }
-        for (c, &j) in indices.iter().enumerate() {
-            for (q, &word) in COLS[j].iter().enumerate() {
-                let mut v = word;
-                while v != 0 {
-                    let r = q * 32 + v.trailing_zeros() as usize;
-                    g[r][c / 32] |= 1 << (c % 32);
-                    v &= v - 1;
-                }
-            }
-        }
-    }
+    build_generator_transposed(g, indices);
 
     // ── Gaussian elimination, upstream's column-swap search ─────────────
     let upper = (K + PIVOT_WINDOW_SLACK).min(N);
