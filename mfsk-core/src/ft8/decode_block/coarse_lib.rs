@@ -239,6 +239,9 @@ fn better(a: &Pos, b: &Pos) -> core::cmp::Ordering {
 /// `ft8_sync_score` of the position (carrier bin `rel_k` of `cells`, row `j0`): the mean over the Costas symbols of the
 /// Costas tone's dB minus the adjacent tones' and the adjacent symbols' (the previous and the next row of the same
 /// tone), integer, divided once by the number of terms (`ft8_lib`'s `num`; a symbol off the slot adds none).
+///
+/// This is the **reference** the search is checked against (`carrier_scores` must give its values for every position): the search itself scores a carrier at a time.
+#[cfg(test)]
 #[inline]
 fn score(cells: &CellsRef<'_>, rel_k: usize, j0: i32) -> i32 {
     let (nf, rows) = (cells.n_freq, cells.n_time);
@@ -303,6 +306,107 @@ fn hard_sync(cells: &CellsRef<'_>, rel_k: usize, j0: i32) -> u8 {
     ok
 }
 
+/// The terms one Costas symbol adds to a position's score, for the symbol `k` of the pattern read at row `r` of the carrier at bin `rel_k`: `(sum, count)` of `score`'s: the
+/// Costas tone's cell minus the cell of the tone below (not for tone 0), of the tone above, of the same tone two rows before (not for the first symbol of a block, nor before row 2) and
+/// two rows after (not for the last, nor at the last two rows of the slot). They depend on the carrier, the row and the symbol only, **not on the position's row**, which is what lets
+/// a carrier compute them once for every row and read them back 60 times.
+#[inline]
+fn symbol_terms(d: &[u8], nf: usize, rows: usize, rel_k: usize, r: usize, k: usize) -> (i32, u8) {
+    let sm = COSTAS[k];
+    let base = r * nf + rel_k + 2 * sm;
+    let c = d[base] as i32;
+    let (mut sum, mut num) = (0i32, 0u8);
+    if sm > 0 {
+        sum += c - d[base - 2] as i32;
+        num += 1;
+    }
+    if sm < NTONES - 1 {
+        sum += c - d[base + 2] as i32;
+        num += 1;
+    }
+    if k > 0 && r >= 2 {
+        sum += c - d[base - 2 * nf] as i32;
+        num += 1;
+    }
+    if k + 1 < COSTAS.len() && r + 2 < rows {
+        sum += c - d[base + 2 * nf] as i32;
+        num += 1;
+    }
+    (sum, num)
+}
+
+/// The stride of the per-row table of [`carrier_scores`]: seven Costas symbols, padded to eight.
+const SYM_STRIDE: usize = 8;
+/// A table entry is `COUNT_RADIX * sum + num` (`num` is at most 4 terms a symbol, 84 for 21 symbols): one load and one add a symbol, and `acc >> 7` / `acc & 127` split the total back.
+const COUNT_RADIX: i32 = 128;
+const _: () = assert!(COUNT_RADIX == 128 && 21 * 4 < COUNT_RADIX);
+
+/// The scores of the [`NJ`] positions of the carrier at bin `rel_k` of `cells` (`out[jj]` is `score(cells, rel_k, J0_MIN + jj)`, **to the integer**: the same terms, the same
+/// truncating division, the same positions off the slot skipped), by `ft8_sync_score`'s sum **regrouped**: the terms of a symbol do not depend on the position (`symbol_terms`), so they are made
+/// once for every row and symbol of the carrier into `w` (`rows x SYM_STRIDE`), and each position adds up its 21 symbols' entries. A position cost about 1 200 host instructions
+/// with 260 conditional branches before (the CoreS3 spends about 4 000 cycles on it: the scoring is CPU-bound, not memory-bound, measured with narrow and whole ranges).
+fn carrier_scores(cells: &CellsRef<'_>, rel_k: usize, w: &mut [i32], out: &mut [i32; NJ]) {
+    let (nf, rows) = (cells.n_freq, cells.n_time);
+    let d = cells.data;
+    debug_assert!(w.len() >= rows * SYM_STRIDE);
+    // rows 2 ..= rows - 3 have every neighbour row: one 15-byte window a row (tones 0..=7 are 14 bins) and no per-symbol test
+    let interior = 2..rows.saturating_sub(2);
+    for r in 0..rows {
+        if interior.contains(&r) {
+            let win = |row: usize| -> &[u8; 15] { d[row * nf + rel_k..][..15].try_into().unwrap() };
+            let (cur, back, fwd) = (win(r), win(r - 2), win(r + 2));
+            for (k, &sm) in COSTAS.iter().enumerate() {
+                let c = cur[2 * sm] as i32;
+                let mut sum = 0i32;
+                let mut num = 0u8;
+                if sm > 0 {
+                    sum += c - cur[2 * sm - 2] as i32;
+                    num += 1;
+                }
+                if sm < NTONES - 1 {
+                    sum += c - cur[2 * sm + 2] as i32;
+                    num += 1;
+                }
+                if k > 0 {
+                    sum += c - back[2 * sm] as i32;
+                    num += 1;
+                }
+                if k + 1 < COSTAS.len() {
+                    sum += c - fwd[2 * sm] as i32;
+                    num += 1;
+                }
+                w[r * SYM_STRIDE + k] = sum * COUNT_RADIX + num as i32;
+            }
+        } else {
+            for k in 0..COSTAS.len() {
+                let (sum, num) = symbol_terms(d, nf, rows, rel_k, r, k);
+                w[r * SYM_STRIDE + k] = sum * COUNT_RADIX + num as i32;
+            }
+        }
+    }
+    let rows_i = rows as i32;
+    for (jj, o) in out.iter_mut().enumerate() {
+        let j0 = J0_MIN + jj as i32;
+        let mut acc = 0i32;
+        for m in 0..3i32 {
+            // the row of the block's first symbol; symbol k is at b + 2k, on the slot while 0 <= b + 2k < rows
+            let b = j0 + 72 * m;
+            let k_lo = if b >= 0 { 0 } else { (-b + 1) / 2 };
+            let k_hi = if rows_i - b <= 0 {
+                0
+            } else {
+                ((rows_i - b + 1) / 2).min(7)
+            };
+            for k in k_lo..k_hi {
+                acc += w[(b + 2 * k) as usize * SYM_STRIDE + k as usize];
+            }
+        }
+        // acc = COUNT_RADIX * sum + num with 0 <= num <= 84 < COUNT_RADIX: the floor division and the remainder give them back
+        let (sum, num) = (acc >> 7, acc & (COUNT_RADIX - 1));
+        *o = if num > 0 { sum / num } else { sum };
+    }
+}
+
 /// Score every position of the carriers `k_first..=k_last` (bins of the full spectrogram; `cells` starts at bin `lo`) and
 /// return the best `keep_raw` of them by [`better`] (ties at the cut are all kept: the cut is by score, then trimmed by the
 /// total order), each with its hard-sync count.
@@ -320,14 +424,17 @@ fn band_best(
     let mut scores = alloc::vec![i8::MIN; n_car * NJ];
     // the scores 0..=127 only matter above MIN_SCORE: a histogram finds the cut without sorting every position above the minimum (hundreds a slot)
     let mut hist = [0u32; 128];
+    // the per-row terms of one carrier (`carrier_scores`), made once per call and rewritten for each carrier
+    let mut w = alloc::vec![0i32; cells.n_time * SYM_STRIDE];
+    let mut carrier = [0i32; NJ];
     for ci in 0..n_car {
         // a carrier that is not allowed is not scored (`ft8dec.c` 833-841: after a subtraction only the bins next to a new signal)
         if allowed.is_some_and(|f| !f(k_first + ci)) {
             continue;
         }
         let rel_k = k_first + ci - lo;
-        for jj in 0..NJ {
-            let s = score(cells, rel_k, J0_MIN + jj as i32);
+        carrier_scores(cells, rel_k, &mut w, &mut carrier);
+        for (jj, &s) in carrier.iter().enumerate() {
             if s >= MIN_SCORE {
                 let s = s.min(127);
                 scores[ci * NJ + jj] = s as i8;
@@ -1339,5 +1446,56 @@ mod tests {
                 .any(|(c, _)| (c.freq_hz - 1000.0).abs() < 3.2 && c.dt_sec > 2.47),
             "the signal at DT +2.6 s is not a candidate"
         );
+    }
+
+    /// `carrier_scores` gives `score`'s value at **every position of every carrier**, on a slot with signals and with rows missing: a store read to 184 rows (the whole slot) and to the rows a store
+    /// partly written has (100, 40, 7, 5, 4, 3, 2, 1, 0 of them: the edges of the interior fast path at 2 and `rows - 2`, and the positions whose symbols are all off the slot). Cells of a real slot,
+    /// and a second store of arbitrary bytes (0..255, so the sums and the truncating division see negatives and large terms). **Fails if** the regrouped sum differs by one at any position: a
+    /// neighbour term missing at a row edge, a block's first or last symbol counted wrongly, a symbol off the slot added, a division by a different count.
+    #[test]
+    fn carrier_scores_are_the_scores_at_every_position() {
+        let s = slot(
+            &[
+                ("CQ", "K1ABC", "FN42", 1200.0, 0.0, 4000),
+                ("K1ABC", "W9XYZ", "-10", 1800.0, 0.5, 3000),
+            ],
+            5,
+        );
+        let df = SAMPLE_RATE_HZ / super::super::types::NFFT_SPEC as f32;
+        let n_freq = spectrogram_n_freq(3000.0, Ft8Rate::Hz8000);
+        let ia = (200.0f32 / df).round() as usize;
+        let ib = ((3000.0f32 / df).round() as usize).min(n_freq - MAX_TONE_OFF);
+        let mut src = SliceSource(&s);
+        let gain = spectrogram_gain(&mut src);
+        let real =
+            compute_half_db_bytes_src(&mut src, Ft8Rate::Hz8000, ia, ib + MAX_TONE_OFF, gain);
+        let mut noise =
+            compute_half_db_bytes_src(&mut src, Ft8Rate::Hz8000, ia, ib + MAX_TONE_OFF, gain);
+        let mut x = 12345u32;
+        for b in noise.data.iter_mut() {
+            x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+            *b = (x >> 24) as u8;
+        }
+        for (name, cells) in [("real", &real), ("arbitrary bytes", &noise)] {
+            let full = view_of(cells);
+            let mut checked = 0usize;
+            for rows in [full.n_time, 100, 40, 7, 5, 4, 3, 2, 1, 0] {
+                let view = CellsRef {
+                    n_time: rows.min(full.n_time),
+                    ..full
+                };
+                let mut w = alloc::vec![0i32; view.n_time * SYM_STRIDE];
+                let mut out = [0i32; NJ];
+                for rel_k in (0..=(ib - ia)).step_by(if name == "real" { 1 } else { 7 }) {
+                    carrier_scores(&view, rel_k, &mut w, &mut out);
+                    for (jj, &got) in out.iter().enumerate() {
+                        let want = score(&view, rel_k, J0_MIN + jj as i32);
+                        assert_eq!(got, want, "{name}: rows {rows}, carrier {rel_k}, lag {jj}");
+                        checked += 1;
+                    }
+                }
+            }
+            assert!(checked > 50_000, "{name}: {checked} positions checked");
+        }
     }
 }

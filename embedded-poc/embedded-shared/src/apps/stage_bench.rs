@@ -30,6 +30,11 @@
 //! the cache: 21 symbols x up to 4 reads a position, rows a stride apart): a narrow range costs **at most 55 %** of a position's time in the whole band. `band narrow W` times `search_cells` over
 //! four ranges of W carriers (64 and 256; each range once to warm, once timed) and gives nanoseconds a position, beside the whole band's.
 //!
+//! **The regrouped scoring (`carrier_scores`), predicted before its run:** `band_best` on the host went from 63.8 M instructions / 14.0 M conditional branches to 42.4 M / 5.6 M (bit for bit the same scores).
+//! The board spent about 4 000 cycles a position on the old loop (16.7 us). If the time follows the instructions, `band` falls to 0.60 s (-34 %); if it follows the branches (an in-order core with no
+//! prediction pays for each taken one), toward 0.40 s. **Predicted: `band` 0.40-0.62 s** (it was 0.90-0.94 s); `band narrow` per position equal to the whole band's within 5 % (still CPU-bound);
+//! the rest of the table unchanged (the demux, stage 3, the BP pass). Stop rule as above.
+//!
 //! One BP pass (`b`): **0.57-0.70 ms**; a candidate apart from BP (`a`): about 1.5 ms. The stage-3 figures are +-10 %. **Stop rule:** if any stage is more than 25 % off its prediction,
 //! stop and explain it on the host before the next flash. The prediction rests on one ns-per-instruction ratio for every stage; the point of the run is to see where it breaks.
 
