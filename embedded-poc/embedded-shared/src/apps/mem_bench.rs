@@ -14,6 +14,8 @@
 //! | `flash-8k`, `flash-128k` | one `static` table (flash `.rodata`, through the data cache: where `NMS_EDGES` and the OSD's `COLS` are) of 8 KB (fits the cache) and of 128 KB (does not) |
 //! | `psram-32k`, `psram-512k`, `psram-shr` | a table per core in PSRAM, 32 KB and 512 KB; one 32 KB table shared |
 //!
+//! The shared-table arms start the second core half a cycle on (the first version of this bench walked them in step). The CPU frequency is read back and logged.
+//!
 //! **The first run (2026-11-27) is void for the memory arms**: its walk made the index from the low bits of a state that depends only on those bits, so it cycled through a few hundred entries in
 //! every table and every arm ran from the cache at the same 54.2 ns a step. What it did show is real: the two **compute-only** loops, `alu` (x1.15) and the multiply chain of the walk (x1.23), ran
 //! slower on each core while the other core ran the same loop, with no data memory on the critical path. That points at the code's fetch, or at the core itself, before any data memory.
@@ -81,10 +83,10 @@ fn fill_perm(p: *mut u32, n: usize, seed: u32) {
 static FLASH_8K: [u32; 2048] = perm_table::<2048>();
 static FLASH_128K: [u32; 32768] = perm_table::<32768>();
 
-/// `n` steps of `i = table[i]` over a cyclic permutation.
+/// `n` steps of `i = table[i]` over a cyclic permutation, from entry `start`.
 #[inline(never)]
-fn chase(table: &[u32], n: usize) -> u32 {
-    let (mut i, mut acc) = (0usize, 0u32);
+fn chase(table: &[u32], n: usize, start: usize) -> u32 {
+    let (mut i, mut acc) = (start, 0u32);
     for _ in 0..n {
         i = unsafe { *table.get_unchecked(i) } as usize;
         acc ^= i as u32;
@@ -156,7 +158,7 @@ enum Kernel {
     AluIram(usize),
     Mul(usize),
     MulIram(usize),
-    Walk(Tab, usize),
+    Walk(Tab, usize, usize),
 }
 fn run_kernel(k: Kernel, _seed: u32) -> u32 {
     match k {
@@ -164,7 +166,7 @@ fn run_kernel(k: Kernel, _seed: u32) -> u32 {
         Kernel::AluIram(n) => alu_iram(n),
         Kernel::Mul(n) => mul(n),
         Kernel::MulIram(n) => mul_iram(n),
-        Kernel::Walk(t, n) => chase(t.slice(), n),
+        Kernel::Walk(t, n, start) => chase(t.slice(), n, start),
     }
 }
 
@@ -238,27 +240,37 @@ fn body() {
     let (f8, f128) = (Tab(FLASH_8K.as_ptr(), FLASH_8K.len()), Tab(FLASH_128K.as_ptr(), FLASH_128K.len()));
 
     // (arm, kernel of core 0, kernel of core 1, reads)
+    // a table both cores read starts the second core half a cycle on, so that they do not walk the same lines in step (one core's miss would fill the other's hit)
+    let half = |t: Tab| -> usize {
+        let s = t.slice();
+        let mut i = 0usize;
+        for _ in 0..s.len() / 2 {
+            i = s[i] as usize;
+        }
+        i
+    };
     let arms: [(&str, Kernel, Kernel); 12] = [
         ("alu       ", Kernel::Alu(2_000_000), Kernel::Alu(2_000_000)),
         ("alu-iram  ", Kernel::AluIram(2_000_000), Kernel::AluIram(2_000_000)),
         ("mul       ", Kernel::Mul(20_000_000), Kernel::Mul(20_000_000)),
         ("mul-iram  ", Kernel::MulIram(20_000_000), Kernel::MulIram(20_000_000)),
-        ("int-sep   ", Kernel::Walk(t8(0), 6_000_000), Kernel::Walk(t8(32768), 6_000_000)),
-        ("int-same  ", Kernel::Walk(t8(0), 6_000_000), Kernel::Walk(t8(8192), 6_000_000)),
-        ("int-shared", Kernel::Walk(t8(0), 6_000_000), Kernel::Walk(t8(0), 6_000_000)),
-        ("flash-8k  ", Kernel::Walk(f8, 6_000_000), Kernel::Walk(f8, 6_000_000)),
-        ("flash-128k", Kernel::Walk(f128, 2_000_000), Kernel::Walk(f128, 2_000_000)),
-        ("psram-32k ", Kernel::Walk(p32a, 3_000_000), Kernel::Walk(p32b, 3_000_000)),
-        ("psram-512k", Kernel::Walk(p512a, 600_000), Kernel::Walk(p512b, 600_000)),
-        ("psram-shr ", Kernel::Walk(p32a, 3_000_000), Kernel::Walk(p32a, 3_000_000)),
+        ("int-sep   ", Kernel::Walk(t8(0), 6_000_000, 0), Kernel::Walk(t8(32768), 6_000_000, 0)),
+        ("int-same  ", Kernel::Walk(t8(0), 6_000_000, 0), Kernel::Walk(t8(8192), 6_000_000, 0)),
+        ("int-shared", Kernel::Walk(t8(0), 6_000_000, 0), Kernel::Walk(t8(0), 6_000_000, half(t8(0)))),
+        ("flash-8k  ", Kernel::Walk(f8, 6_000_000, 0), Kernel::Walk(f8, 6_000_000, half(f8))),
+        ("flash-128k", Kernel::Walk(f128, 2_000_000, 0), Kernel::Walk(f128, 2_000_000, half(f128))),
+        ("psram-32k ", Kernel::Walk(p32a, 3_000_000, 0), Kernel::Walk(p32b, 3_000_000, 0)),
+        ("psram-512k", Kernel::Walk(p512a, 600_000, 0), Kernel::Walk(p512b, 600_000, 0)),
+        ("psram-shr ", Kernel::Walk(p32a, 3_000_000, 0), Kernel::Walk(p32a, 3_000_000, half(p32a))),
     ];
+    log::info!("mem-bench: CPU {} MHz (esp_clk_cpu_freq); the data cache is 32 KB, 8 ways, 32 B lines, shared by the two cores (sdkconfig)", unsafe { esp_idf_svc::sys::esp_clk_cpu_freq() } / 1_000_000);
     let mut gen = 0u32;
     let mut sink = 0u32;
     for (name, k0, k1) in arms {
         let ops = match k0 {
             Kernel::Alu(n) | Kernel::AluIram(n) => n * 8,
             Kernel::Mul(n) | Kernel::MulIram(n) => n,
-            Kernel::Walk(_, n) => n,
+            Kernel::Walk(_, n, _) => n,
         } as f64;
         // core 0 alone, core 1 alone (the other idle), then both; the second run of each is kept
         let (mut a0, mut a1, mut b0, mut b1) = (0i64, 0i64, 0i64, 0i64);
