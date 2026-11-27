@@ -23,6 +23,12 @@
 //! (independent: more steps in flight) shows less than x1.25. Alone, an unrolled chain is 8.0 cycles a step if the chain's latency sets the time (the multiply-add), less if the branch is part of it
 //! (`mul-i4` alone: 2-4 cycles a step if the multiplier overlaps the independent chains). Not a pass / fail test; the point is which row the numbers follow.
 //!
+//! **What the first unrolling run showed, and why it was not the experiment.** LLVM folded `mul-u2/4/8` (repeated `x*a+c` is one affine map): every one is **8.0 cycles an iteration** alone (4.0, 2.0, 1.0 a
+//! step) and **10.0 with the other core**: +2.0 an *iteration* whatever the unrolling. `mul-i4` (four independent multiply-adds a round, four times the instructions) +1.96 an iteration (16.0 -> 17.96);
+//! `alu`'s inner loop over 8 elements 13.0 -> 14.9 a trip (+1.9). So **every loop measured pays about 2 cycles per iteration** (per back-edge), not per instruction. **Predicted for the `mx-u*` arms
+//! (non-foldable steps, so `mx-uN` is N times the work an iteration): the extra is `2 / N` cycles a step**, i.e. with both cores `alone + 2/N`: `mx-u1` +2.0, `mx-u2` +1.0, `mx-u4` +0.5, `mx-u8` +0.25,
+//! `mx-u32` +0.06 (x1.00-1.01); a cost per instruction would be a constant x1.25 at every N. Alone: about 8 + 3 = 11 cycles a step if the multiply-add and the xorshift each keep their latency.
+//!
 //! **The first run (2026-11-27) is void for the memory arms**: its walk made the index from the low bits of a state that depends only on those bits, so it cycled through a few hundred entries in
 //! every table and every arm ran from the cache at the same 54.2 ns a step. What it did show is real: the two **compute-only** loops, `alu` (x1.15) and the multiply chain of the walk (x1.23), ran
 //! slower on each core while the other core ran the same loop, with no data memory on the critical path. That points at the code's fetch, or at the core itself, before any data memory.
@@ -128,6 +134,37 @@ macro_rules! mul_unrolled {
 mul_unrolled!(mul_u2, x, st!(x); st!(x););
 mul_unrolled!(mul_u4, x, st!(x); st!(x); st!(x); st!(x););
 mul_unrolled!(mul_u8, x, st!(x); st!(x); st!(x); st!(x); st!(x); st!(x); st!(x); st!(x););
+/// A step LLVM cannot fold into the next one (a multiply-add then an xorshift: not an affine map), so that an unrolling is more work a round, not the same work.
+macro_rules! sx {
+    ($x:ident) => {
+        $x = $x.wrapping_mul(1664525).wrapping_add(1013904223);
+        $x ^= $x >> 11;
+    };
+}
+macro_rules! mx_unrolled {
+    ($name:ident, $x:ident, $($step:tt)*) => {
+        #[inline(never)]
+        fn $name(iters: usize) -> u32 {
+            let mut $x = 12345u32;
+            for _ in 0..iters {
+                $($step)*
+            }
+            black_box($x)
+        }
+    };
+}
+mx_unrolled!(mx_u1, x, sx!(x););
+mx_unrolled!(mx_u2, x, sx!(x); sx!(x););
+mx_unrolled!(mx_u4, x, sx!(x); sx!(x); sx!(x); sx!(x););
+mx_unrolled!(mx_u8, x, sx!(x); sx!(x); sx!(x); sx!(x); sx!(x); sx!(x); sx!(x); sx!(x););
+mx_unrolled!(
+    mx_u32, x,
+    sx!(x); sx!(x); sx!(x); sx!(x); sx!(x); sx!(x); sx!(x); sx!(x);
+    sx!(x); sx!(x); sx!(x); sx!(x); sx!(x); sx!(x); sx!(x); sx!(x);
+    sx!(x); sx!(x); sx!(x); sx!(x); sx!(x); sx!(x); sx!(x); sx!(x);
+    sx!(x); sx!(x); sx!(x); sx!(x); sx!(x); sx!(x); sx!(x); sx!(x);
+);
+
 /// Independent chains: two (and four) dependent chains interleaved, one branch per round.
 #[inline(never)]
 fn mul_i4(iters: usize) -> u32 {
@@ -206,6 +243,7 @@ enum Kernel {
     Mul(usize),
     MulIram(usize),
     MulU(usize, usize),
+    MxU(usize, usize),
     Walk(Tab, usize, usize),
 }
 fn run_kernel(k: Kernel, _seed: u32) -> u32 {
@@ -218,6 +256,11 @@ fn run_kernel(k: Kernel, _seed: u32) -> u32 {
         Kernel::MulU(n, 4) => mul_u4(n),
         Kernel::MulU(n, 8) => mul_u8(n),
         Kernel::MulU(n, _) => mul_i4(n),
+        Kernel::MxU(n, 1) => mx_u1(n),
+        Kernel::MxU(n, 2) => mx_u2(n),
+        Kernel::MxU(n, 4) => mx_u4(n),
+        Kernel::MxU(n, 8) => mx_u8(n),
+        Kernel::MxU(n, _) => mx_u32(n),
         Kernel::Walk(t, n, start) => chase(t.slice(), n, start),
     }
 }
@@ -302,7 +345,7 @@ fn body() {
         }
         i
     };
-    let arms: [(&str, Kernel, Kernel); 16] = [
+    let arms: [(&str, Kernel, Kernel); 21] = [
         ("alu       ", Kernel::Alu(2_000_000), Kernel::Alu(2_000_000)),
         ("alu-iram  ", Kernel::AluIram(2_000_000), Kernel::AluIram(2_000_000)),
         ("mul       ", Kernel::Mul(20_000_000), Kernel::Mul(20_000_000)),
@@ -311,6 +354,11 @@ fn body() {
         ("mul-u4    ", Kernel::MulU(5_000_000, 4), Kernel::MulU(5_000_000, 4)),
         ("mul-u8    ", Kernel::MulU(2_500_000, 8), Kernel::MulU(2_500_000, 8)),
         ("mul-i4    ", Kernel::MulU(5_000_000, 0), Kernel::MulU(5_000_000, 0)),
+        ("mx-u1     ", Kernel::MxU(8_000_000, 1), Kernel::MxU(8_000_000, 1)),
+        ("mx-u2     ", Kernel::MxU(4_000_000, 2), Kernel::MxU(4_000_000, 2)),
+        ("mx-u4     ", Kernel::MxU(2_000_000, 4), Kernel::MxU(2_000_000, 4)),
+        ("mx-u8     ", Kernel::MxU(1_000_000, 8), Kernel::MxU(1_000_000, 8)),
+        ("mx-u32    ", Kernel::MxU(250_000, 32), Kernel::MxU(250_000, 32)),
         ("int-sep   ", Kernel::Walk(t8(0), 6_000_000, 0), Kernel::Walk(t8(32768), 6_000_000, 0)),
         ("int-same  ", Kernel::Walk(t8(0), 6_000_000, 0), Kernel::Walk(t8(8192), 6_000_000, 0)),
         ("int-shared", Kernel::Walk(t8(0), 6_000_000, 0), Kernel::Walk(t8(0), 6_000_000, half(t8(0)))),
@@ -329,6 +377,7 @@ fn body() {
             Kernel::Mul(n) | Kernel::MulIram(n) => n,
             // the steps of an unrolled loop: `u` a round (`mul-i4` is four independent chains: 4 steps a round)
             Kernel::MulU(n, u) => n * if u == 0 { 4 } else { u },
+            Kernel::MxU(n, u) => n * u,
             Kernel::Walk(_, n, _) => n,
         } as f64;
         // core 0 alone, core 1 alone (the other idle), then both; the second run of each is kept
