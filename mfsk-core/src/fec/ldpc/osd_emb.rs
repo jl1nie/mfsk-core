@@ -178,10 +178,15 @@ pub struct OsdWork {
 
 #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
 impl OsdWork {
+    /// Everything the fallback will ever allocate, now: the buffers the BP scratch grows on its first use (`ensure_tanhtoc`, `ensure_zsum`) are grown here, so that where
+    /// they live is decided by the caller of [`crate::ft8::decode_block::CellsWorker::reserve_osd_work`] and not by the first candidate that needs the OSD.
     pub(crate) fn new() -> Self {
+        let mut zsum = BpScratch::new();
+        zsum.ensure_tanhtoc();
+        zsum.ensure_zsum();
         Self {
             osd: Osd174Scratch::new(),
-            zsum: BpScratch::new(),
+            zsum,
             #[cfg(feature = "fixed-point")]
             deferred: None,
         }

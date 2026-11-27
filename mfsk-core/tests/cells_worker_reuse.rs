@@ -969,3 +969,43 @@ fn the_osd_pass_split_between_two_workers_equals_one_workers() {
     }
     assert_eq!(ranked_checks, 9);
 }
+
+/// A worker that made the OSD fallback's memory up front (`reserve_osd_work`) decodes what one that makes it on its first use does. **Fails if** the decodes differ over the three
+/// recordings at K = 6 (the reserved scratch must be the one the fallback uses, with its buffers already grown).
+#[test]
+fn a_worker_that_reserved_the_osd_memory_decodes_the_same() {
+    use mfsk_core::ft8::decode_block::OsdSeeds;
+    let osd = DecodeDepth {
+        osd: true,
+        ..DecodeDepth::EMBEDDED
+    };
+    let tables = CellTables::new();
+    let mk = || -> (Box<[[Cmplx<f32>; 8]; 79]>, Box<Ft8BpScratch>) {
+        (
+            vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap(),
+            Box::new(Ft8BpScratch::new()),
+        )
+    };
+    let ((mut cs0, mut bp0), (mut cs1, mut bp1)) = (mk(), mk());
+    let mut lazy = CellsWorker::new(&mut cs0, &mut bp0, &tables).with_osd_seeds(OsdSeeds::AD);
+    let mut made = CellsWorker::new(&mut cs1, &mut bp1, &tables).with_osd_seeds(OsdSeeds::AD);
+    made.reserve_osd_work();
+    for name in ["qso3_busy", "qso1", "qso2"] {
+        let a = audio(name);
+        let (cands, cells) = coarse_sync_gated_cells(
+            &mut SliceSource(&a),
+            Ft8Rate::Hz8000,
+            &GatedSearch::new(200.0, 3000.0, 1.3, 30),
+            1,
+        )
+        .unwrap();
+        let (mut x, mut y) = (Vec::new(), Vec::new());
+        lazy.decode_round_osd(&cells, &cands, 30, osd, 0.25, &mut x, 6);
+        made.decode_round_osd(&cells, &cands, 30, osd, 0.25, &mut y, 6);
+        let (mut x, mut y) = (texts(&x), texts(&y));
+        x.sort();
+        y.sort();
+        assert_eq!(x, y, "{name}");
+        assert!(x.len() >= 4, "{name}: decodes: {}", x.len());
+    }
+}

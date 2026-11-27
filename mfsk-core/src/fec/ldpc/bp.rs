@@ -902,7 +902,7 @@ impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
     /// unconditionally overwritten before being read each iteration —
     /// see [`Self::reset`]'s comment).
     #[inline]
-    fn ensure_tanhtoc(&mut self) {
+    pub(crate) fn ensure_tanhtoc(&mut self) {
         // The tables hold indices as `u16`: every index must fit.
         const {
             assert!(P::M * P::MAX_ROW < u16::MAX as usize);
@@ -951,7 +951,7 @@ impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
     /// must start fresh each [`bp_llr_zsum_with_scratch`] call, not a
     /// fully-overwritten-per-iteration buffer.
     #[inline]
-    fn ensure_zsum(&mut self) {
+    pub(crate) fn ensure_zsum(&mut self) {
         if self.zsum.is_empty() {
             self.zsum = vec![T::wide_zero(); P::N];
         } else {

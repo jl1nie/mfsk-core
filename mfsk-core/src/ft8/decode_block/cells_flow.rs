@@ -375,6 +375,13 @@ impl<'a> CellsWorker<'a> {
         )
     }
 
+    /// Make the OSD fallback's memory now (about 17 KB: the OSD's own scratch and the f32 BP scratch of its inputs; the fallback otherwise makes it on the first candidate
+    /// that reaches it and keeps it). A firmware that wants it in a particular heap (internal DRAM) makes it at a point of its choosing, before the first decode.
+    #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
+    pub fn reserve_osd_work(&mut self) {
+        let _ = self.bp.osd_work();
+    }
+
     /// How many attempts wait for [`osd_pass`](Self::osd_pass).
     pub fn osd_pending(&self) -> usize {
         self.pending.len()

@@ -15,6 +15,16 @@
 //! `qso2` 5 at K = 6; one more or fewer at K = 14: 12 / 5 / 5), the two sets equal. Allowing for the two cores' PSRAM and FFT-scratch contention is the point of the run: if `round` or the pass
 //! is more than 25 % off, stop and find which (the host cannot tell). Window arithmetic if it holds (emit 0.81 s before the boundary): `band` on two cores ends at -0.54 s, the round at -0.2 s and
 //! the pass at K = 6 at -0.07 s; at K = 14 at +0.05 s.
+//!
+//! **Measured (the first run, 2026-11-27) against the above:** `band` x1.10 (2 cores 0.416 / 0.418 / 0.406 s), the round x1.5 (0.383 / 0.297 / 0.308 s), the pass x1.5 (K = 6 0.148 / 0.168 / 0.161 s, K = 14
+//! 0.363 / 0.388 / 0.385 s against 0.537 / 0.597 / 0.572 s on one core), sets equal. An OSD attempt: 38 ms on one core, 52 ms with both running. Hypothesis: the two cores share the PSRAM, where the OSD
+//! fallback's memory is (the 4.5 KB `Osd174Scratch` and the f32 BP scratch's buffers above 2 KB: `tov` 2 088 B, `toc` 2 324 B, `tanhtoc`, the index tables).
+//!
+//! **The test of it, predicted before its run:** the same bench twice in one boot, `[psram]` (the OSD memory made by `reserve_osd_work` under the 2 KB malloc limit: where the first run had it) and
+//! `[internal]` (made while `heap_caps_malloc_extmem_enable(16 KB)`: in internal DRAM; the limit is put back to 2 KB after). The round, `band` and the staging are the same in both. **If the hypothesis is right:**
+//! `[internal]` takes about 17 KB x 2 of internal DRAM, the OSD pass on **two cores at K = 14 falls to 0.27-0.31 / 0.30-0.34 / 0.30-0.34 s** (an attempt at about 40 ms: x1.8-2.0 against one core) and K = 6 to 0.11-0.13 s,
+//! and the one-core pass (`[internal]`) stays within 10 % of `[psram]`'s or gets faster (0.54 / 0.60 / 0.57 s at K = 14; an attempt's own PSRAM reads are the cost it would lose). **If it is wrong** the two arms agree within 5 %
+//! and the 52 ms is something else (the cores' shared cache or the FFT scratch lock). The round and `band` do not move in either case (their memory is not touched by this). The decode sets stay equal. Stop rule as above.
 
 extern crate alloc;
 extern crate std;
@@ -41,6 +51,10 @@ const MAX_CAND: usize = 30;
 fn now_us() -> i64 {
     unsafe { esp_idf_svc::sys::esp_timer_get_time() }
 }
+fn free(caps: u32) -> usize {
+    unsafe { esp_idf_svc::sys::heap_caps_get_free_size(caps) }
+}
+const PSRAM: u32 = (1 << 10) | (1 << 2);
 fn min_free_internal() -> usize {
     unsafe { esp_idf_svc::sys::heap_caps_get_minimum_free_size(INTERNAL) }
 }
@@ -62,11 +76,14 @@ enum Msg {
     Round { cells: Ptr<HalfDbCells>, cands: Ptr<(SyncCandidate, u8)>, n: usize, next: Ptr<AtomicUsize>, depth: DecodeDepth },
     Osd { cells: Ptr<HalfDbCells>, share: Vec<(usize, OsdAttempt)>, depth: DecodeDepth },
     Band { cells: Ptr<HalfDbCells>, search: Ptr<GatedSearch>, lo: usize, hi: usize },
+    /// make the OSD fallback's memory now (`CellsWorker::reserve_osd_work`)
+    Reserve,
 }
 enum Reply {
     Round(Vec<(usize, Option<Found>)>, Vec<OsdAttempt>),
     Osd(Vec<(usize, Option<Found>)>),
     Band(mfsk_core::ft8::decode_block::CellsPart),
+    Done,
 }
 
 fn claim(w: &mut CellsWorker<'_>, cells: &HalfDbCells, cands: *const (SyncCandidate, u8), n: usize, next: &AtomicUsize, depth: DecodeDepth) -> Vec<(usize, Option<Found>)> {
@@ -113,6 +130,16 @@ fn worker<'a>(cs: &'a mut [[mfsk_core::engine::scalar::Cmplx<f32>; 8]; 79], bp: 
 
 fn body(wavs: &'static [(&'static str, &'static [u8])]) {
     log::info!("two-core-bench: boot min free internal {} B; stack free {} B", min_free_internal(), stack_free());
+    for internal in [false, true] {
+        arm(internal, wavs);
+    }
+    log::info!("two-core-bench: done");
+}
+
+/// Everything above, with the OSD fallback's memory (about 17 KB a worker: the `Osd174Scratch` and the f32 BP scratch of its inputs, whose buffers are above the 2 KB
+/// `SPIRAM_MALLOC_ALWAYSINTERNAL` limit) made by `reserve_osd_work` while the malloc limit is `internal ? 16 KB : 2 KB`: in internal DRAM or in PSRAM. The two arms run in turn in one boot.
+fn arm(internal: bool, wavs: &'static [(&'static str, &'static [u8])]) {
+    let place = if internal { "internal" } else { "psram" };
     let search = GatedSearch::new(200.0, 3000.0, 1.3, MAX_CAND);
     let rate = Ft8Rate::Hz8000;
     let tables = CellTables::new();
@@ -125,7 +152,7 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
     let (tx, rx): (Sender<Msg>, Receiver<Msg>) = channel();
     let (done_tx, done_rx): (Sender<Reply>, Receiver<Reply>) = channel();
     let tables_addr = &tables as *const CellTables as usize;
-    let _w1 = spawn_pinned(c"tc_w1", esp_idf_svc::hal::cpu::Core::Core1, 24 * 1024, move || {
+    let w1h = spawn_pinned(c"tc_w1", esp_idf_svc::hal::cpu::Core::Core1, 24 * 1024, move || {
         // SAFETY: only this thread touches the worker half of the arena; `tables` outlives it (the bench never returns)
         let cs1 = unsafe { crate::internal_pool::cs_scratch_worker() };
         let mut bp1 = Box::new(Ft8BpScratch::new());
@@ -143,6 +170,10 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
                     let cells = unsafe { &*cells.0 };
                     Reply::Osd(share.iter().map(|(r, a)| (*r, w1.run_osd_attempt(cells, a, depth))).collect())
                 }
+                Msg::Reserve => {
+                    w1.reserve_osd_work();
+                    Reply::Done
+                }
                 Msg::Band { cells, search, lo, hi } => {
                     let (cells, search) = unsafe { (&*cells.0, &*search.0) };
                     Reply::Band(search_cells(cells, search, lo..hi))
@@ -153,7 +184,24 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
             }
         }
     });
-    log::info!("two-core-bench: workers made; min free internal {} B", min_free_internal());
+    log::info!("two-core-bench: [{place}] workers made; min free internal {} B", min_free_internal());
+    // the OSD fallback's memory: made now, in the heap the malloc limit picks (the limit is restored after; both workers are made inside it)
+    let (i0, p0) = (free(INTERNAL), free(PSRAM));
+    if internal {
+        unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(16 * 1024) };
+    }
+    w0.reserve_osd_work();
+    tx.send(Msg::Reserve).unwrap();
+    let Reply::Done = done_rx.recv().unwrap() else { panic!("reply") };
+    if internal {
+        unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+    }
+    log::info!(
+        "two-core-bench: [{place}] the OSD memory of both workers took {} B of internal DRAM and {} B of PSRAM; internal free {} B",
+        i0 as i64 - free(INTERNAL) as i64,
+        p0 as i64 - free(PSRAM) as i64,
+        free(INTERNAL)
+    );
 
     for (label, wav) in wavs {
         let slot12: Vec<i16> = wav[44..].chunks_exact(2).take(180_000).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
@@ -177,7 +225,7 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
             t2 = now_us() - t0;
             same = split.len() == whole.len() && split.iter().zip(&whole).all(|(a, b)| a.0.freq_hz.to_bits() == b.0.freq_hz.to_bits() && a.0.dt_sec.to_bits() == b.0.dt_sec.to_bits() && a.1 == b.1);
         }
-        log::info!("two-core-bench: {label} band: 1 core {t1} us, 2 cores {t2} us, the candidate lists {}", if same { "equal" } else { "DIFFER" });
+        log::info!("two-core-bench: [{place}] {label} band: 1 core {t1} us, 2 cores {t2} us, the candidate lists {}", if same { "equal" } else { "DIFFER" });
 
         for k in [6usize, 14] {
             // one core
@@ -196,7 +244,7 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
                 set1 = texts(&known);
             }
             log::info!(
-                "two-core-bench: {label} K {k} 1 core: round {r1} us + osd {o1} us = {} us, {} decodes, queued {queued} run {ran}",
+                "two-core-bench: [{place}] {label} K {k} 1 core: round {r1} us + osd {o1} us = {} us, {} decodes, queued {queued} run {ran}",
                 r1 + o1,
                 set1.len()
             );
@@ -249,7 +297,7 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
                 set2 = texts(&known);
             }
             log::info!(
-                "two-core-bench: {label} K {k} 2 cores: round {r2} us + osd {o2} us = {} us, {} decodes, set {} the one core's; round x{:.2}, osd x{:.2}; min free internal {} B, stack free {} B",
+                "two-core-bench: [{place}] {label} K {k} 2 cores: round {r2} us + osd {o2} us = {} us, {} decodes, set {} the one core's; round x{:.2}, osd x{:.2}; min free internal {} B, stack free {} B",
                 r2 + o2,
                 set2.len(),
                 if set1 == set2 { "=" } else { "DIFFERS FROM" },
@@ -260,5 +308,6 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
             );
         }
     }
-    log::info!("two-core-bench: done");
+    drop(tx);
+    let _ = w1h.join();
 }
