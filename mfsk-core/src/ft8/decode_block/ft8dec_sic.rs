@@ -564,7 +564,8 @@ pub fn decode_block_cells_sic<S: AudioSample>(
         .try_into()
         .expect("79 x 8");
     let mut bp = alloc::boxed::Box::new(Ft8BpScratch::new());
-    let mut worker = CellsWorker::new(&mut cs, &mut bp, &tables);
+    let mut worker =
+        CellsWorker::new(&mut cs, &mut bp, &tables).with_d_min_score(super::CELLS_D_MIN_SCORE);
     let mut storage = SicStorage::new(rate, sic_signal_capacity(max_cand, passes));
     Some(sic_passes(
         &mut SliceSource(audio),

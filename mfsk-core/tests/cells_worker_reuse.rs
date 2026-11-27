@@ -384,3 +384,93 @@ fn a_worker_reports_the_bp_work_it_ran() {
     assert!(st.passes > 0);
     assert_eq!(w.bp_stats(), Default::default());
 }
+
+/// `CellsWorker::with_d_min_score` (Issue #765): under the floor a candidate gets variant `a` only, at the grid and at the retry; from the floor up the worker is the default one. On the
+/// three recordings' 30 candidates each, against a default worker: for a candidate of score 16 or more the decode (message, frequency, DT) and the BP stats are **identical**; under it
+/// the gated worker never decodes what the default one does not, never makes more BP calls, makes exactly half the calls on a candidate that fails (`a` and `d` become `a`), and
+/// over all of them makes fewer. **Fails if** the floor is not applied (no call saved), applied above its score (a candidate of 16 or more differs), or the gate lets a decode through the
+/// default worker does not have.
+#[test]
+fn a_worker_skips_variant_d_under_its_score_floor() {
+    use mfsk_core::ft8::decode_block::CELLS_D_MIN_SCORE;
+    let tables = CellTables::new();
+    let mut cs0: Box<[[Cmplx<f32>; 8]; 79]> =
+        vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
+    let mut cs1: Box<[[Cmplx<f32>; 8]; 79]> =
+        vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
+    let (mut bp0, mut bp1) = (Box::new(Ft8BpScratch::new()), Box::new(Ft8BpScratch::new()));
+    let mut base = CellsWorker::new(&mut cs0, &mut bp0, &tables);
+    let mut gated =
+        CellsWorker::new(&mut cs1, &mut bp1, &tables).with_d_min_score(CELLS_D_MIN_SCORE);
+    let (mut low, mut low_failed, mut calls_base, mut calls_gated) = (0, 0, 0u32, 0u32);
+    for name in ["qso3_busy", "qso1", "qso2"] {
+        let a = audio(name);
+        let (cands, cells) = coarse_sync_gated_cells(
+            &mut SliceSource(&a),
+            Ft8Rate::Hz8000,
+            &GatedSearch::new(200.0, 3000.0, 1.3, 30),
+            1,
+        )
+        .unwrap();
+        for (c, _) in cands.iter().take(30) {
+            let b = base.decode_candidate(&cells, c, DecodeDepth::EMBEDDED, 0.25);
+            let sb = base.take_bp_stats();
+            let g = gated.decode_candidate(&cells, c, DecodeDepth::EMBEDDED, 0.25);
+            let sg = gated.take_bp_stats();
+            let key = |f: &Option<mfsk_core::ft8::decode_block::Found>| {
+                f.as_ref().map(|f| {
+                    (
+                        f.res.message77().to_vec(),
+                        f.res.freq_hz.to_bits(),
+                        f.res.dt_sec.to_bits(),
+                    )
+                })
+            };
+            calls_base += sb.calls;
+            calls_gated += sg.calls;
+            if c.score >= CELLS_D_MIN_SCORE {
+                assert_eq!(
+                    key(&g),
+                    key(&b),
+                    "{name}: score {} decodes as the default worker",
+                    c.score
+                );
+                assert_eq!(
+                    sg, sb,
+                    "{name}: score {} costs what the default worker's does",
+                    c.score
+                );
+            } else {
+                low += 1;
+                if g.is_some() {
+                    assert_eq!(
+                        key(&g).map(|k| k.0),
+                        key(&b).map(|k| k.0),
+                        "{name}: a gated decode is the default worker's"
+                    );
+                }
+                assert!(
+                    sg.calls <= sb.calls,
+                    "{name}: score {}: {sg:?} against {sb:?}",
+                    c.score
+                );
+                if b.is_none() {
+                    low_failed += 1;
+                    assert_eq!(
+                        sg.calls * 2,
+                        sb.calls,
+                        "{name}: a failing candidate under the floor makes half the calls"
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        low >= 20 && low_failed >= 10,
+        "the recordings must have candidates under the floor: {low}, {low_failed}"
+    );
+    assert!(
+        calls_gated < calls_base,
+        "the floor saves BP calls: {calls_gated} against {calls_base}"
+    );
+}

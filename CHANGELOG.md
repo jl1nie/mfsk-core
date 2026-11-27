@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Cells flow: variant `d` only from score 16 up (Issue #765; host, measured over 4 780 slots and the SNR ladders)
+
+- **New** `CellsWorker::with_d_min_score` and `CELLS_D_MIN_SCORE` (16): a candidate of lower search score gets the staircase's `llra` only (grid and retry); `CellsWorker::new` keeps the whole staircase. `decode_block_cells` and `decode_block_cells_sic` set 16: **-49 % of the BP passes over the set, -24.5 % on the 60 real slots, 4 of 6 935 decodes lost (1 of 975 real), no ladder slot lost**; `Decoder<Ft8>`, `DecodeDepth` and every WSJT-X-shaped path are untouched (`PassCtx::skip_d`, internal). A divergence from `ft8b` (it tries all variants), like the flow itself.
+- Instructions at 30 candidates, OSD off, no AP (x86, `scripts/s3-stage-instr.sh`): `qso3_busy` / `qso1` / `qso2` 312 / 286 / 303 -> 276 / 239 / 249 M (stage 3's BP 139 / 115 / 131 -> 103 / 68 / 77); decodes 9 / 4 / 5 unchanged. Board time not measured (prediction: 0.2-0.4 s a 30-candidate pass).
+- Test `a_worker_skips_variant_d_under_its_score_floor` (identical decode and BP stats from the floor up, half the calls on a failing candidate under it; seen to fail with the floor not applied and applied to every candidate).
+
 ### Cells flow: which BP work is wasted (host, board's build; design note sections 26-27)
 
 - **New** `BpStats` (`calls`, `decoded`, `passes`; `#[non_exhaustive]`) on `BpScratch` (`stats`, `take_stats`) and `CellsWorker::{bp_stats, take_bp_stats}`: the message-update passes BP ran on that scratch, the unit its time scales with (the Mac and x86 counts of section 26 were by probe). Plain integer adds at the exits of the NMS and kind decoders; no result changes. Not counted: the `zsum` entry points, the host build's AP pass and OSD (the boards' build has neither pass). Tests: exact counts at the decode and loop-end exits, a pinned table at the stall exits, a rejected converged word; each seen to fail with its exit off by one. The 12 kHz resampler golden test that had failed on CI since the 8 kHz decimator commit is fixed (its constants were wrong, not the code).

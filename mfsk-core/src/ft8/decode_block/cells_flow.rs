@@ -29,7 +29,8 @@ use super::super::params::{COSTAS, DEFAULT_BP_MAX_ITER};
 use super::coarse_lib::{HalfDbCells, coarse_sync_gated_cells};
 use super::coarse_sync::GatedSearch;
 use super::fill_symbol_spectra::{SymMask, sym_in_mask};
-use super::process_candidates::{Ft8BpScratch, process_candidate_with_scratch};
+use super::process_candidates::{Ft8BpScratch, process_candidate_with_scratch_ctx};
+use super::types::PassCtx;
 use super::types::{AudioSample, DEFAULT_Q_THRESH, Ft8Rate, SAMPLE_RATE_HZ};
 use crate::engine::scalar::Cmplx;
 use crate::engine::source::SliceSource;
@@ -40,6 +41,13 @@ use crate::engine::sync::SyncCandidate;
 /// of 1 338 `jt9` decodes), and each skipped retry saves its LLRs, BP and OSD (451 -> 400 M instructions at 30 candidates in the experiment of
 /// section 19; the landed flow is 382 M).
 pub(super) const RETRY_MIN_SHIFT: f32 = 0.25;
+
+/// The lowest search score (`ft8_lib`'s, 8..127, in 0.5 dB units) at which the cells flow runs the staircase's variant `d` (the second BP, on `llrd`) for a candidate: below it a
+/// candidate gets `llra` only (at the grid and, if the retry applies, at the retry). Measured over 4 780 slots and the SNR ladders (Issue #765, design note section 27):
+/// **-49 % of the BP passes** over the whole set (-24.5 % on the 60 real slots), **4 of 6 935 decodes lost** (1 of 975 real), no slot of the ladders lost. 21 loses 28, 0 (every candidate) is
+/// the staircase as it was. **A deliberate divergence from WSJT-X** (`ft8b` tries all the variants), like the cells flow itself. [`CellsWorker::new`] keeps the staircase whole
+/// ([`CellsWorker::with_d_min_score`] sets the floor); [`decode_block_cells`] and [`decode_block_cells_sic`] set this one.
+pub const CELLS_D_MIN_SCORE: f32 = 16.0;
 /// Largest half-dB cell: `20 log10 (2^32 - 1)` in 0.5 dB units of power (`spectrogram::half_db`).
 const MAX_CELL: usize = 193;
 
@@ -256,6 +264,7 @@ pub struct CellsWorker<'a> {
     cs: &'a mut [[Cmplx<f32>; 8]; 79],
     bp: &'a mut Ft8BpScratch,
     tables: &'a CellTables,
+    d_min_score: f32,
 }
 
 impl<'a> CellsWorker<'a> {
@@ -265,7 +274,19 @@ impl<'a> CellsWorker<'a> {
         bp: &'a mut Ft8BpScratch,
         tables: &'a CellTables,
     ) -> Self {
-        Self { cs, bp, tables }
+        Self {
+            cs,
+            bp,
+            tables,
+            d_min_score: 0.0,
+        }
+    }
+
+    /// This worker running the staircase's variant `d` only for a candidate whose search score ([`SyncCandidate::score`]) is `d_min_score` or more
+    /// ([`CELLS_D_MIN_SCORE`] is the measured value; the default, 0, runs it for every candidate). Applies to the grid try and to the retry alike.
+    pub fn with_d_min_score(mut self, d_min_score: f32) -> Self {
+        self.d_min_score = d_min_score;
+        self
     }
 
     /// The belief-propagation work this worker has run **on its own BP scratch** ([`BpStats`](crate::fec::ldpc::bp::BpStats): calls and message-update passes, which is
@@ -294,7 +315,7 @@ impl<'a> CellsWorker<'a> {
             cells,
             t: self.tables,
         };
-        process_candidate_with_scratch(
+        process_candidate_with_scratch_ctx(
             self.cs,
             self.bp,
             cand,
@@ -303,6 +324,7 @@ impl<'a> CellsWorker<'a> {
             DEFAULT_Q_THRESH,
             DEFAULT_BP_MAX_ITER,
             &[],
+            PassCtx::FIRST.skip_d(cand.score < self.d_min_score),
         )
     }
 
@@ -427,6 +449,7 @@ pub(super) fn decode_round(
         .expect("79 x 8");
     let mut bp = Box::new(Ft8BpScratch::new());
     CellsWorker::new(&mut cs, &mut bp, tables)
+        .with_d_min_score(CELLS_D_MIN_SCORE)
         .decode_round(cells, cands, max_cand, depth, min_shift, known)
 }
 

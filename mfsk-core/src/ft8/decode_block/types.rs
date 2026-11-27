@@ -342,6 +342,9 @@ pub(in crate::ft8) struct PassCtx {
     /// checkpoint; the final one and everything without a checkpoint
     /// structure run AP.
     pub ap: bool,
+    /// Skip the staircase's variant `d` (`llrd` at one symbol, run after `llra` fails): the cells flow sets it for a candidate whose search score is under
+    /// `CellsWorker`'s floor ([`CELLS_D_MIN_SCORE`](super::CELLS_D_MIN_SCORE)). Off in every WSJT-X-shaped path.
+    pub skip_d: bool,
 }
 
 impl PassCtx {
@@ -351,7 +354,17 @@ impl PassCtx {
         low_depth: false,
         contest: false,
         ap: true,
+        skip_d: false,
     };
+
+    /// This context without the staircase's variant `d` when `skip` is set.
+    #[cfg(feature = "fixed-point")]
+    pub(in crate::ft8) const fn skip_d(self, skip: bool) -> PassCtx {
+        PassCtx {
+            skip_d: skip,
+            ..self
+        }
+    }
 
     /// This context without the AP passes (the early checkpoint).
     pub(in crate::ft8) const fn without_ap(self) -> PassCtx {

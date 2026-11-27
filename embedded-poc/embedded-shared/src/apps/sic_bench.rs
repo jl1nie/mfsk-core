@@ -29,7 +29,7 @@ use mfsk_core::engine::dsp::resample::resample_to_8k;
 use mfsk_core::engine::source::SliceSource;
 use mfsk_core::ft8::decode::{DecodeDepth, DecodeResult};
 use mfsk_core::ft8::decode_block::{
-    CellTables, CellsWorker, Found, Ft8BpScratch, Ft8Rate, GatedSearch, HalfDbCells, SicScratch,
+    CELLS_D_MIN_SCORE, CellTables, CellsWorker, Found, Ft8BpScratch, Ft8Rate, GatedSearch, HalfDbCells, SicScratch,
     SicStorage, SigState, coarse_sync_gated_cells, decode_block_cells_sic, sic_passes,
     sic_passes_with, sic_signal_capacity,
 };
@@ -128,7 +128,7 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
     // SAFETY: this thread is the only user of the main staging buffer here.
     let cs = unsafe { crate::internal_pool::cs_scratch_main() };
     let mut bp = Box::new(Ft8BpScratch::new());
-    let mut worker = CellsWorker::new(cs, &mut bp, &tables);
+    let mut worker = CellsWorker::new(cs, &mut bp, &tables).with_d_min_score(CELLS_D_MIN_SCORE);
     log::info!(
         "sic-bench: worker made; free internal {} B, PSRAM {} B",
         free(INTERNAL),
@@ -165,7 +165,7 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
         let cs = unsafe { crate::internal_pool::cs_scratch_worker() };
         let mut bp = Box::new(Ft8BpScratch::new());
         let tables = unsafe { &*(tables_addr as *const CellTables) };
-        let mut w = CellsWorker::new(cs, &mut bp, tables);
+        let mut w = CellsWorker::new(cs, &mut bp, tables).with_d_min_score(CELLS_D_MIN_SCORE);
         log::info!("sic-bench: sic_w1 up on core {}, stack free {} B", unsafe { esp_idf_svc::sys::xTaskGetCoreID(core::ptr::null_mut()) }, stack_free());
         while let Ok(j) = job_rx.recv() {
             let _ = done_tx.send(claim(&mut w, &j));

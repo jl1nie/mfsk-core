@@ -1843,11 +1843,40 @@ pub fn process_candidate_with_scratch<F>(
     cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
     bp_scratch: &mut Ft8BpScratch,
     cand: &SyncCandidate,
+    fill: F,
+    depth: DecodeDepth,
+    q_thresh: u32,
+    bp_max_iter: u32,
+    known: &[DecodeResult],
+) -> Option<DecodeResult>
+where
+    F: FnMut(&mut [[Cmplx<f32>; 8]; 79], &SyncCandidate, SymMask),
+{
+    process_candidate_with_scratch_ctx(
+        cs_scratch,
+        bp_scratch,
+        cand,
+        fill,
+        depth,
+        q_thresh,
+        bp_max_iter,
+        known,
+        PassCtx::FIRST,
+    )
+}
+
+/// [`process_candidate_with_scratch`] with the pass context the caller chooses (the cells flow: `skip_d` under its score floor).
+#[allow(clippy::too_many_arguments)]
+pub(in crate::ft8) fn process_candidate_with_scratch_ctx<F>(
+    cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
+    bp_scratch: &mut Ft8BpScratch,
+    cand: &SyncCandidate,
     mut fill: F,
     depth: DecodeDepth,
     q_thresh: u32,
     bp_max_iter: u32,
     known: &[DecodeResult],
+    pass: PassCtx,
 ) -> Option<DecodeResult>
 where
     F: FnMut(&mut [[Cmplx<f32>; 8]; 79], &SyncCandidate, SymMask),
@@ -1864,7 +1893,7 @@ where
         known,
         None,
         DecodeStrictness::Normal,
-        PassCtx::FIRST,
+        pass,
     )
 }
 
@@ -2198,7 +2227,8 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // unconditional — every `LlrEffort` tier ran it even before this
     // struct existed, so there was never a real third state here.
     // `b`/`c` add nsym=2 / nsym=3 LLR work on top of the BP.
-    let run_d = true;
+    // the cells flow skips `d` under its score floor (`PassCtx::skip_d`); every other caller runs it
+    let run_d = !pass.skip_d;
     let (run_b, run_c) = match depth.llr_effort {
         LlrEffort::Minimal => (false, false),
         LlrEffort::Full => (true, true),
