@@ -13,6 +13,11 @@
 //! candidates from one atomic index and are merged by candidate index (`sic_passes_with`; the host test `a_round_shared_by_two_workers_equals_the_sequential_round` shows the
 //! merge equals the sequential round). The search, the subtraction and the signals stay on core 0. The `search` figure is the same in every arm (one core).
 //!
+//! **Predicted before the run of 2026-11-27 (after the `d` floor, the regrouped scoring and the flat-table BP; the S2 run, 2026-11-27 morning, was `storage` 5.99 / 4.77 / 4.97 s at 2 passes and 8.44 / 4.83 / 4.96 s at 3, `qso3_busy` / `qso1` / `qso2`):**
+//! the first search loses the 0.45 s of `band` (1.79 -> 1.35 s) and the rounds lose the BP they ran (host: the BP of two passes 189 -> 68 M instructions on `qso3_busy`, 73 -> 36 on `qso1`, 93 -> 46
+//! on `qso2`, at about 10 ns each). `storage` at 2 passes: **4.4 s (4.0-4.8) / 3.9 s (3.6-4.2) / 4.05 s (3.7-4.4)**; at 3 passes **6.8 s (6.3-7.3)** for `qso3_busy` (the others stop after the second
+//! pass, as before: 3.9 / 4.05 s); the decoded sets as before (11 / 5 / 5 at 2 passes, 12 at 3 on `qso3_busy`) and equal across the arms. The `2core` arm: as `storage`, less what core 1 takes of the rounds.
+//!
 //! Logged: the time of the search and of the passes, the decodes (each arm's set against `alloc`'s), what making the memory cost in each heap, the heap minima
 //! since boot (**cumulative**: an arm shows only what goes below an earlier arm's, so the order is alloc, storage, ring-int and the minima are floors, not
 //! per-arm peaks) and the thread's stack high-water mark. No WiFi, no USB host: this says nothing about the 15.8 kB floor of the running firmware.
