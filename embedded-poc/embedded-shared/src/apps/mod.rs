@@ -19,6 +19,8 @@ pub mod stage_bench;
 pub mod osd_bench;
 #[cfg(feature = "two-core-bench")]
 pub mod two_core_bench;
+#[cfg(feature = "mem-bench")]
+pub mod mem_bench;
 /// FT8 gate + `fine_sync_12k` + OSD against the shipped pipeline, on the board (the S3 plan's stage 1).
 #[cfg(feature = "gate-bench")]
 pub mod gate_bench;

@@ -104,6 +104,13 @@ path = "src/bin/ft8_two_core_bench.rs"
 harness = false
 required-features = ["ft8-two-core-bench"]
 
+# What two cores share: the same loops over internal DRAM, flash and PSRAM on one core and on two. Build: `cargo build --release --features ft8-mem-bench --bin ft8-mem-bench`.
+[[bin]]
+name = "ft8-mem-bench"
+path = "src/bin/ft8_mem_bench.rs"
+harness = false
+required-features = ["ft8-mem-bench"]
+
 # The FT4 receiver's desk demo: replays the vendored golden at 12 kHz
 # and runs the shipping slot pipeline over it. No USB host, so the
 # serial console survives and the board stays flashable.
@@ -276,6 +283,7 @@ ft8-sic-bench = ["embedded-shared/sic-bench"]
 ft8-stage-bench = ["embedded-shared/stage-bench"]
 ft8-osd-bench = ["embedded-shared/osd-bench"]
 ft8-two-core-bench = ["embedded-shared/two-core-bench"]
+ft8-mem-bench = ["embedded-shared/mem-bench"]
 
 [dependencies]
 log = "0.4"

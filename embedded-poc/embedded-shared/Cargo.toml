@@ -42,6 +42,8 @@ stage-bench = ["mfsk-core/osd"]
 osd-bench = ["mfsk-core/osd"]
 # stage 3, the OSD pass and the band search on one core and on two (`apps/two_core_bench.rs`).
 two-core-bench = ["mfsk-core/osd"]
+# what two cores of the CoreS3 share (`apps/mem_bench.rs`): the same loops over different memories on one core and on two.
+mem-bench = []
 
 # Enable LX7 PIE _aes3_ esp-dsp kernels (fc32 + sc16 radix-2 FFT).
 # Default-off so LX6 (Core2, xtensa-esp32-espidf) keeps the _ae32_ path.
