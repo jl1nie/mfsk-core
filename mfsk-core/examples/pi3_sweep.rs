@@ -840,12 +840,14 @@ fn probe7(truth: &str, dir: &str) {
                     .count()
             };
             let mut best: Option<(usize, Vec<[f64; 8]>)> = None;
+            let mut best_at = (f, dt);
             for i in -2i32..=2 {
                 for j in -3i32..=3 {
                     let p = powers(f + 0.25 * i as f32, dt + 0.01 * j as f32);
                     let e = errs_of(&p);
                     if best.as_ref().is_none_or(|b| e < b.0) {
                         best = Some((e, p));
+                        best_at = (f + 0.25 * i as f32, dt + 0.01 * j as f32);
                     }
                 }
             }
@@ -867,17 +869,153 @@ fn probe7(truth: &str, dir: &str) {
                 dbs.push(format!("{:.1}", 10.0 * (good / other.max(1e-9)).log10()));
             }
             println!(
-                "V {slot} {missed} {snr} {} {} {msg}",
+                "V {slot} {missed} {snr} {} {} {:.3} {:.3} {msg}",
                 es.join(","),
-                dbs.join(",")
+                dbs.join(","),
+                best_at.0,
+                best_at.1
             );
         }
+    }
+}
+
+/// `probe8 <probe7 output> <dir>`: the cells' **design** in `f64`, without the 16-bit transform and the half-dB byte: 8 kHz audio, the row of 80 ms read with a Hann window over two symbols (2 560
+/// samples starting 640 before the symbol's start), the cell at bin `b` (3.125 Hz) the magnitude of the DFT at `b x 3.125` Hz; the same hard decision per symbol at the grid place (nearest row and bin
+/// of the 12 kHz search's best place) and the best of the 3 x 3; and, for comparison, a plain one-symbol rectangular window at the exact place. `W <slot> <missed> <12k> <hann grid> <hann 3x3> <rect exact> <msg>`.
+fn probe8(probe: &str, dir: &str) {
+    use mfsk_core::engine::dsp::resample::resample_to_8k;
+    use mfsk_core::msg::wsjt77::pack77;
+    let hann: Vec<f64> = (0..2560usize)
+        .map(|k| {
+            let s = (std::f64::consts::PI * k as f64 / 2560.0).sin();
+            s * s
+        })
+        .collect();
+    let mut cache: Option<(String, Vec<i16>)> = None;
+    for l in std::fs::read_to_string(probe).unwrap().lines() {
+        if !l.starts_with("V ") {
+            continue;
+        }
+        let t: Vec<&str> = l.splitn(9, ' ').collect();
+        let slot = t[1].to_string();
+        let e12: usize = t[4].split(',').map(|x| x.parse::<usize>().unwrap()).sum();
+        let (bf, bd): (f64, f64) = (t[6].parse().unwrap(), t[7].parse().unwrap());
+        let msg = t[8].to_string();
+        if cache.as_ref().is_none_or(|c| c.0 != slot) {
+            cache = Some((
+                slot.clone(),
+                resample_to_8k(&load(&format!("{dir}/{slot}.wav")), 12_000),
+            ));
+        }
+        let a8 = &cache.as_ref().unwrap().1;
+        let parts: Vec<&str> = msg.split(' ').collect();
+        let bits = match parts.len() {
+            3 => pack77(parts[0], parts[1], parts[2]),
+            2 => pack77(parts[0], parts[1], ""),
+            _ => None,
+        };
+        let Some(bits) = bits else { continue };
+        let tones = mfsk_core::engine::tx::message_to_tones::<Ft8>(&bits);
+        // magnitude^2 of a DFT of `len` samples from `start`, windowed by `w` (or rectangular), at `hz`
+        let dft = |start: i64, len: usize, w: Option<&Vec<f64>>, hz: f64| -> f64 {
+            let om = 2.0 * std::f64::consts::PI * hz / 8000.0;
+            let (mut re, mut im) = (0f64, 0f64);
+            for n in 0..len {
+                let i = start + n as i64;
+                if i >= 0 && (i as usize) < a8.len() {
+                    let x = a8[i as usize] as f64 * w.map_or(1.0, |w| w[n]);
+                    re += x * (om * n as f64).cos();
+                    im -= x * (om * n as f64).sin();
+                }
+            }
+            re * re + im * im
+        };
+        let errors_hann = |j0: i64, k0: i64| -> usize {
+            tones
+                .iter()
+                .enumerate()
+                .filter(|(k, tr)| {
+                    let row = j0 + 2 * *k as i64;
+                    let p: Vec<f64> = (0..8)
+                        .map(|tt| {
+                            dft(
+                                row * 640 - 640,
+                                2560,
+                                Some(&hann),
+                                (k0 + 2 * tt as i64) as f64 * 3.125,
+                            )
+                        })
+                        .collect();
+                    (0..8)
+                        .max_by(|&x, &y| p[x].partial_cmp(&p[y]).unwrap())
+                        .unwrap()
+                        != **tr as usize
+                })
+                .count()
+        };
+        let (j0, k0) = (
+            ((bd + 0.5) / 0.08).round() as i64,
+            (bf / 3.125).round() as i64,
+        );
+        let grid = errors_hann(j0, k0);
+        let mut best = grid;
+        for dr in -1i64..=1 {
+            for dc in -1i64..=1 {
+                best = best.min(errors_hann(j0 + dr, k0 + dc));
+            }
+        }
+        let rect = tones
+            .iter()
+            .enumerate()
+            .filter(|(k, tr)| {
+                let start = ((bd + 0.5) * 8000.0).round() as i64 + 1280 * *k as i64;
+                let p: Vec<f64> = (0..8)
+                    .map(|tt| dft(start, 1280, None, bf + 6.25 * tt as f64))
+                    .collect();
+                (0..8)
+                    .max_by(|&x, &y| p[x].partial_cmp(&p[y]).unwrap())
+                    .unwrap()
+                    != **tr as usize
+            })
+            .count();
+        // the same search the 12 kHz figure had (+-0.5 Hz in 0.25 Hz, +-0.03 s in 0.01 s), on the 8 kHz audio, a one-symbol rectangular window: the minimum of 35 places, as the 12 kHz one is
+        let mut rect35 = usize::MAX;
+        for i in -2i32..=2 {
+            for j in -3i32..=3 {
+                let (ff, dd) = (bf + 0.25 * i as f64, bd + 0.01 * j as f64);
+                let e = tones
+                    .iter()
+                    .enumerate()
+                    .filter(|(k, tr)| {
+                        let start = ((dd + 0.5) * 8000.0).round() as i64 + 1280 * *k as i64;
+                        let p: Vec<f64> = (0..8)
+                            .map(|tt| dft(start, 1280, None, ff + 6.25 * tt as f64))
+                            .collect();
+                        (0..8)
+                            .max_by(|&x, &y| p[x].partial_cmp(&p[y]).unwrap())
+                            .unwrap()
+                            != **tr as usize
+                    })
+                    .count();
+                rect35 = rect35.min(e);
+            }
+        }
+        println!(
+            "W {slot} {} {e12} {grid} {best} {rect} {rect35} {msg}",
+            t[2]
+        );
     }
 }
 
 fn main() {
     let mut args = std::env::args().skip(1);
     let config = args.next().expect("config");
+    if config == "probe8" {
+        let probe = args.next().expect("probe7 output");
+        let dir = args.next().expect("corpus dir");
+        probe8(&probe, &dir);
+        return;
+    }
     if config == "probe7" {
         let truth = args.next().expect("truth.tsv");
         let dir = args.next().expect("corpus dir");
