@@ -24,7 +24,7 @@ Every one of these is a knob that already exists, or would be one. A profile is 
 
 | axis | values (existing -> to build) |
 |---|---|
-| flow | **cells flow** (8 kHz, fixed-point, half-dB byte cells from the producer: `decode_block_cells[_sic]`, `CellsWorker`) / **faithful pipeline** (12 kHz, f32, `Decoder<Ft8>` through `engine::pipeline`) / the old S3 flow (12 kHz, `sync8`, Goertzel; retained, not extended) |
+| flow | **cells flow** (8 kHz, fixed-point, half-dB byte cells from the producer: `decode_block_cells[_sic]`, `CellsWorker`) / **faithful pipeline** (12 kHz, f32, `Decoder<Ft8>` through `engine::pipeline`) / the old S3 flow (12 kHz, `sync8`, Goertzel: **to be replaced wholesale by the cells flow**, section 9) |
 | numeric path | `fixed-point` (`nstep-half`, LLR in f32 or `fixed-point-llr`) / f32 with `fft-rustfft` |
 | FFT backend | esp-dsp (`fft-extern`) / rustfft (scalar on armv7, NEON on aarch64: **to verify**) |
 | candidates | 15 / 30 (cells) / the WSJT-X count (faithful) |
@@ -108,3 +108,51 @@ The discipline of `AGENT_WORKFLOW.md` holds: host first, predictions written bef
 - **D3** whether `OsdSeeds::AD` and the capped OSD may become the default on any profile (Issue #766: all are options, off, until the owner agrees and a reviewer has seen the public API).
 - **D4** whether P0 keeps the post-window SIC (needs the second cell store and the held audio, plan section 14) or stays inside the window.
 - **D5** the classic ESP32 (P0-lite): worth a measurement of the cells flow on a Core2, or left as a documented variant.
+
+## 8. Extrapolation from P0 to P1 (Cortex-A9) and P2 (Pi 3B class)
+
+**An estimate, not a measurement.** There is no A9 or Pi here. The method: the CoreS3 measurements give a cost in nanoseconds per host (x86-64) instruction, the host gives the instruction count of each flow, and a class's cost per instruction is
+reasoned from its core type. Error bars are wide (plus or minus 50 % is honest); a first measurement on the real board replaces every figure here.
+
+**Measured on P0 (CoreS3, one core).** BP pass 37 600 host instructions in 0.41 ms (10.9 ns an instruction); the band search 42.4 M in 0.46 s (10.8 ns); the embedded OSD call 0.76 M in 5.13 ms (6.7 ns: the hand-tuned
+loops). So the S3 costs **about 10-11 ns per host instruction** (about 2.5 cycles at 240 MHz: single-issue, the FPU and PSRAM latencies).
+
+**Reasoned for the other classes (one core).** A Cortex-A9 (about 1 GHz, 2-wide, out of order, 512 KB L2) and an A53 (1.2 GHz, 2-wide in order) run this kind of code at an IPC of about 0.7-1.2; ARM needs 20-40 % more instructions than x86 for the
+same work (no memory operands): **about 1.0-1.6 ns per host instruction** per core, i.e. **7-10 times the S3 per core**. The cells (172 KB) fit the L2, so the PSRAM-bound phases of the S3 (the band search) should gain more than the
+compute-bound ones. The S3's two-core costs (section 3 of `ESP32S3_TWO_CORE_BEHAVIOUR.md`) are **not** assumed to carry over to a Cortex-A's cache hierarchy.
+
+**Host instruction counts (x86-64, `qso3_busy`, 30 candidates; the faithful rows measured on 2026-11-27 with callgrind, the cells rows from design notes sections 26-29).**
+
+| flow | M instructions | decodes on `qso3_busy` | A9, one core (1.0-1.6 ns) | Pi 3B, one core (1.0-1.5 ns) | Pi 3B, four cores (60-80 % efficiency) |
+|---|---|---|---|---|---|
+| cells, OSD off, 1 pass | 312 | 9 | 0.31-0.5 s | 0.31-0.47 s | |
+| cells, OSD seeds `AD` at once, 1 pass | about 430 | 13 | 0.43-0.69 s | 0.43-0.65 s | |
+| cells, SIC 2 passes, OSD `AD` at once | about 700-850 | 14-16 | 0.7-1.4 s | 0.7-1.3 s | about 0.3-0.7 s |
+| cells, SIC 3 passes, OSD `AD` at once | about 1 000-1 200 | 15-17 | 1.0-1.9 s | 1.0-1.8 s | about 0.4-0.9 s |
+| faithful `Decoder<Ft8>`, Normal | **7 280** | 21 | **7.3-11.7 s** | 7.3-11 s | **2.3-4.9 s** |
+| faithful `Decoder<Ft8>`, Deep | **13 050** | 21 | 13-21 s | 13-20 s | 4.1-8.7 s |
+
+The cells rows beyond the first two are the least certain (the SIC's passes were last counted before the BP speed-ups: 628 / 930 M for 2 / 3 passes with the OSD off; the OSD adds about 120-250 M a round).
+
+**What it says for the assignment.**
+- **P1 (A9)**: the cells flow with the SIC and the OSD `AD` *at once* (no deferral, no cap, no gate) fits a reply deadline of boundary + 0.5 s on **one core** for the 1-pass flow (finishing about -0.1 s) and plausibly for a 2-pass SIC (about +0.1-0.6 s); the
+  cap K and the deferral that P0 needs are unnecessary there. The faithful pipeline (Normal) takes 7-12 s on one core: inside the 15 s slot, outside any reply deadline: a logger / receiver option, with two threads about 4-7 s.
+  Deep (13-21 s on one core) does not fit a slot on one core.
+- **P2 (Pi 3B)**: the same flows; with four threads the faithful pipeline (Normal) is 2-5 s and Deep 4-9 s: **host-equivalent decoding (the faithful pipeline, equal to jt9 on the golden tests) fits a slot on this class**; the cells flow with a 3-pass SIC
+  and the OSD is about 1-2 s on one core and finishes around the reply deadline with threads.
+- **How much the cells flow gives up against the faithful pipeline**: on the 60 real slots the cells flow with a 3-pass SIC and the OSD finds 1 206 of the 1 338 references (about 90 %); the faithful pipeline is the reference (on `qso3_busy` 21 decodes against 16-17).
+  That is the price of the cells flow's divergences (the search, 30 candidates, no AP); P1 / P2 can avoid it by running the faithful pipeline whenever the reply deadline allows.
+
+## 9. Replacing the old S3 flow wholesale
+
+Decision of the owner (2026-11-27): the old S3 flow (12 kHz spectrogram, `sync8`, fine sync, Goertzel stage 3, `dual_core.rs`, `decode_pipeline.rs`) is replaced by the cells flow, not kept beside it, because the cells flow is already faster (312 against 423 M
+host instructions at 30 candidates, OSD off) and decodes more (974 against 822 of the references with the same knobs; the old flow was the ft8dec-class result). The work, in order (the first two are the plan of `S3_CELLS_IMPLEMENTATION_PLAN.md` section 5, steps 1-3, not yet done):
+
+1. **The app's decode path onto the cells flow**: the producer (the demux into the half-dB cells as the slot is captured), the emit point (pair 87, 0.81 s before the boundary), the search, stage 3 over two workers, the deferred OSD pass (K = 6 on one core, up to 14 on two), the result to the auto-QSO FSM;
+   under WiFi and the USB host (the second worker's staging and scratch about 22 KB of internal DRAM against a 15.8 KB floor: **to find or to forgo**).
+2. **Parity before deletion**: the app's decodes against the old path's on the 22 vendored recordings and the wav-sim, at least equal on every one (tier B floors exist for the cells flow: `cells_flow_*` tests, `qso3_compare`).
+3. **An inventory of what else uses the old flow** (the library's `decode_block`, `decode_block_streaming`, `decode_block_low_mem`, `coarse_sync_gated_spec`, `fine_sync_12k`, the FFI, `gate-bench`, `ft8-bench`, the Core2 app, `m5stack-s3-app`): a read-only pass to decide what is deleted, what stays for another consumer, and what needs a new owner.
+4. **Deletion**, as its own change after parity: the modules, the `Cargo` features and the benches that only the old flow used, with `CHANGELOG` and the docs that name them.
+
+New open decisions: **D6** the inventory of step 3 (what the old flow's pieces are still used by); **D7** whether the classic ESP32 / Core2 app moves to the cells flow in the same change or keeps the old flow until D5 is answered.
+
