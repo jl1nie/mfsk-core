@@ -19,6 +19,10 @@
 //! | stack, embedded | **under 1.5 KB** used by the call (the `Osd174Scratch`, 4.5 KB, is on the heap) | |
 //! | stack, old | 9-12 KB used (`osd_npre`'s frame, 10.3 KB, in the gate bench's ELF) | |
 //!
+//! **The generator built from 32 x 32 transposes (feature `osd-gen-transpose`), predicted before its run.** The scatter it replaces is about 8 000 trips of a data-dependent `trailing_zeros` loop a call (174 columns x
+//! about 45 set bits), each a read-modify-write: say 10-14 cycles a trip and a branch that mispredicts, 80-110 k cycles, 0.35-0.45 ms of the 5.60 ms; the 18 transposes are 18 x 80 pair steps of constant
+//! trip counts, about 10 k cycles. **Predicted: `osd174_91_into` 5.60 -> 5.15-5.35 ms a call (-5 to -8 %), 44 of 44 equal, 6 of 44 decoded.** Stop rule: more than 25 % off, or one vector differing.
+//!
 //! **Stop rule:** if either call is outside its range by more than 25 %, or the two disagree on one vector, stop and explain it on the host before the next flash.
 
 extern crate alloc;

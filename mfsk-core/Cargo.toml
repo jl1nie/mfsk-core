@@ -57,6 +57,8 @@ fft-extern   = ["alloc"]
 # The ICAP profile (`decode_block_low_mem`) has the time and turns it on. Needs no FFT and no memory beyond
 # BP's own: the OSD works on the LLRs.
 osd          = ["alloc"]
+# Experiment on the embedded OSD (`fec::ldpc::osd_emb`): the generator built from 32 x 32 bit transposes, not a scatter of its set bits. Same answers bit for bit; off by default.
+osd-gen-transpose = []
 
 # Caller-provided real f32 dot-product backend for the DSP hot loops
 # (`engine::dsp::dotprod`). Same extern-hook shape as `fft-extern`: the

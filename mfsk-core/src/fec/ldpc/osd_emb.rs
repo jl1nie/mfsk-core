@@ -133,6 +133,46 @@ fn window(r: &Row) -> u64 {
     v & ((1u64 << NT) - 1)
 }
 
+/// Transpose a 32 x 32 bit matrix in place: bit `i` of `a[k]` and bit `k` of `a[i]` trade places (five stages of constant trip counts, no branch on the data).
+fn transpose32(a: &mut [u32; 32]) {
+    let mut m = 0x0000_FFFFu32;
+    let mut j = 16;
+    while j != 0 {
+        let mut k = 0;
+        while k < 32 {
+            let t = ((a[k] >> j) ^ a[k + j]) & m;
+            a[k + j] ^= t;
+            a[k] ^= t << j;
+            k = (k + j + 1) & !j;
+        }
+        j >>= 1;
+        m ^= m << j;
+    }
+}
+
+/// The generator by row, columns in reliability order: `g[r]` has bit `c` set when column `indices[c]` has bit `r` (`COLS`). The same answer as scattering every set bit, from a 32 x 32 transpose of each
+/// block of 32 columns and 32 rows (18 blocks) in place of about 8 000 data-dependent trips of `trailing_zeros`.
+fn build_generator_transposed(g: &mut [Row; K], indices: &[usize; N]) {
+    for w in 0..W {
+        for q in 0..3 {
+            let mut a = [0u32; 32];
+            for (k, x) in a.iter_mut().enumerate() {
+                let c = w * 32 + k;
+                if c < N {
+                    *x = COLS[indices[c]][q];
+                }
+            }
+            transpose32(&mut a);
+            for (i, &x) in a.iter().enumerate() {
+                let r = q * 32 + i;
+                if r < K {
+                    g[r][w] = x;
+                }
+            }
+        }
+    }
+}
+
 /// Working memory of [`osd174_91_into`]: about 4.5 KB. Hold one per decoder and pass it to every call; nothing in it carries over.
 pub struct Osd174Scratch {
     indices: [usize; N],
@@ -228,16 +268,20 @@ pub fn osd174_91_into(
     });
 
     // ── Generator, held by row, columns in reliability order ────────────
-    for r in g.iter_mut() {
-        *r = [0; W];
-    }
-    for (c, &j) in indices.iter().enumerate() {
-        for (q, &word) in COLS[j].iter().enumerate() {
-            let mut v = word;
-            while v != 0 {
-                let r = q * 32 + v.trailing_zeros() as usize;
-                g[r][c / 32] |= 1 << (c % 32);
-                v &= v - 1;
+    if cfg!(feature = "osd-gen-transpose") {
+        build_generator_transposed(g, indices);
+    } else {
+        for r in g.iter_mut() {
+            *r = [0; W];
+        }
+        for (c, &j) in indices.iter().enumerate() {
+            for (q, &word) in COLS[j].iter().enumerate() {
+                let mut v = word;
+                while v != 0 {
+                    let r = q * 32 + v.trailing_zeros() as usize;
+                    g[r][c / 32] |= 1 << (c % 32);
+                    v &= v - 1;
+                }
             }
         }
     }
