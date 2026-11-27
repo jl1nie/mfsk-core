@@ -100,7 +100,18 @@ impl Receiver for Ft8Controller {
         match ctx.mode {
             BootMode::Decode => {
                 crate::log_free_internal("pre-thread-spawn");
+                #[cfg(not(feature = "ft8-cells-flow"))]
                 spawn_decode(|| crate::decode_pipeline::run());
+                #[cfg(feature = "ft8-cells-flow")]
+                spawn_decode(|| {
+                    crate::cells_pipeline::run_with_source("wav", |q| {
+                        embedded_shared::wav_sim::spawn_with_tap(
+                            crate::decode_pipeline::QSO_WAVS,
+                            q,
+                            crate::waterfall_feed::push,
+                        )
+                    })
+                });
             }
             BootMode::Uac => {
                 crate::log_free_internal("pre-thread-spawn");
@@ -110,8 +121,13 @@ impl Receiver for Ft8Controller {
                 // driver, so the chunk queue is live when the reader
                 // thread (created on the first `RxConnected`) calls
                 // `set_chunk_q`; until then samples are dropped.
+                #[cfg(not(feature = "ft8-cells-flow"))]
                 spawn_decode(|| {
                     crate::decode_pipeline::run_with_source("uac", |q| crate::uac::set_chunk_q(q))
+                });
+                #[cfg(feature = "ft8-cells-flow")]
+                spawn_decode(|| {
+                    crate::cells_pipeline::run_with_source("uac", |q| crate::uac::set_chunk_q(q))
                 });
             }
             other => log::info!("decode_pipeline skipped ({})", other.label()),

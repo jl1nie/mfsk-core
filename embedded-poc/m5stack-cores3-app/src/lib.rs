@@ -18,6 +18,8 @@ pub mod boot;
 pub mod civ_usb;
 pub mod coredump;
 pub mod decode_pipeline;
+#[cfg(feature = "ft8-cells-flow")]
+pub mod cells_pipeline;
 pub mod display;
 pub mod esp_log_bridge;
 pub mod log_slot;

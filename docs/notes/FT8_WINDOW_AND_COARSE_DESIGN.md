@@ -1029,3 +1029,14 @@ Step 0d of the board plan (section 25): how much of the window path's work can b
 **Allocation** (`cells_worker_alloc.rs`, P0 window round on `191111_110130`): 312 allocations over 30 candidates (10.4 a candidate), 119 937 B in all, largest block 696 B: under the 2 KB `SPIRAM_MALLOC_ALWAYSINTERNAL` line, so internal DRAM, each freed at once. Nothing changed; whether the churn matters is the board's heap behaviour (the app's tlsf warnings), not measured here.
 
 **Not done**: tier C (before the release), the app's use of any of this, the board's time of the gate with the capped OSD.
+
+## 33. The cells flow in the CoreS3 app, first run (`ft8-cells-flow`, wav_sim `qso3_busy`, 2026-11-28)
+
+`m5stack-cores3-app/src/cells_pipeline.rs` (plan step 2): chunk queue (12 kHz) -> `LinearResamplerI16To8k` -> `CellsProducer` -> row pair 87 emit -> jobs -> `SnrBaseline` -> `publish_slot`. Build: `MFSK_CORES3_FORCE_MODE=decode cargo build --release --features ft8-cells-flow` (wav_sim feeds the same `ChunkMsg`s as the UAC sink). Logs `logs/cells_flow_step2_*` (not committed).
+
+* **Same decodes as the host, to the message.** The 11 decodes of `qso3_busy` on the board (frequency, DT, message) are the 11 of `decode_block_cells_with(p0_window())` on the host; SNR within 0.1 dB (the board takes the gain from the first second, the host from the slot's peak). The old S3 flow gave 7 on this slot (`old-s3-bench`).
+* **After the slot's end: 378-380 ms** until the list is out (`PROFILES.md` section 10 estimated 0.31-0.42 s from bench stages: this is the first measurement in the app). The jobs of a slot: search 454-478 ms (8 ranges of carriers, about 60 ms each), decode 613-615 ms (25 candidates at the emit, 5 after the end), OSD pass 207 ms, SNR + publish about 65 ms. 9 of the 11 decodes are in hand at the emit.
+* **The first version would have dropped audio.** It did the whole emit in one go (985 ms) inside the task that drains the chunk queue; the UAC ring (85 ms) and the 4-chunk queue (400 ms) hold 485 ms. The loop now takes one job between two looks at the queue (`try_recv_box`); the longest job is the OSD pass (207 ms, one `osd_pass` call: splitting it by attempt, 5 ms each, is the next cut if the margin is needed). The next slot's audio is kept in a second 240 KB buffer while the first slot's jobs run.
+* **No second search after the end**: only the candidates the partial search found and did not decode are decoded from the complete store. Host, 60 slots (`icap-early`, `NO_FULL=1`): 1 014 decodes against the complete flow's 1 019 (6 lost, 1 gained), 470 ms less on the board.
+* **Memory**: min free internal 128 887 B, largest block 49 152 B at the slot's end; the decode task (32 KB) keeps 8.8 KB free at its lowest (the OSD pass).
+* **Not yet**: a real radio (UAC path), the QSO machine, cold acquisition and the grid trim, the 20-minute run, the old flow side by side.

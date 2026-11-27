@@ -91,7 +91,19 @@ fn main() {
         let at_emit: HashSet<String> = early.iter().map(msg).collect();
         // after the fill: the full search; the candidates with no early counterpart
         let mut late = 0;
-        for (c, hs) in cands.iter().take(30) {
+        // NO_FULL=1: no second search; the candidates the partial search found and did not decode (their rows had not arrived) are decoded from the complete store
+        let no_full = std::env::var("NO_FULL").is_ok_and(|v| v == "1");
+        let late_list: Vec<_> = if no_full {
+            plist
+                .iter()
+                .take(30)
+                .filter(|(c, _)| !candidate_ready(&part, c))
+                .cloned()
+                .collect()
+        } else {
+            cands.iter().take(30).cloned().collect()
+        };
+        for (c, hs) in late_list.iter() {
             let has = early_cands.iter().any(|e| {
                 (e.freq_hz - c.freq_hz).abs() <= 3.2 && (e.dt_sec - c.dt_sec).abs() <= 0.12
             });

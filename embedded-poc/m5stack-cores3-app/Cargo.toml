@@ -285,6 +285,8 @@ ft8-osd = ["mfsk-core/osd"]
 # shipped pipeline, stage by stage, with the stack and heap figures. Also turns on `mfsk-core/osd` through
 # `embedded-shared`; the `ft8-bench` bin does not have OSD and is the reference to run beside it on the same board.
 ft8-gate-bench = ["embedded-shared/gate-bench"]
+# The FT8 receive path on the cells flow (`src/cells_pipeline.rs`) in place of the old S3 flow (`decode_pipeline`): plan `plan_cores3_cells_app`, PROFILES section 10.
+ft8-cells-flow = ["mfsk-core/osd"]
 ft8-cells-bench = ["embedded-shared/cells-bench"]
 ft8-sic-bench = ["embedded-shared/sic-bench"]
 ft8-stage-bench = ["embedded-shared/stage-bench"]
