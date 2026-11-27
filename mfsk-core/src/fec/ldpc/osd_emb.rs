@@ -244,10 +244,8 @@ pub fn osd174_91_into(
 
     // ── Gaussian elimination, upstream's column-swap search ─────────────
     let upper = (K + PIVOT_WINDOW_SLACK).min(N);
-    let mut all_pivoted = true;
     for id in 0..K {
         let Some(icol) = (id..upper).find(|&c| bit(&g[id], c)) else {
-            all_pivoted = false;
             continue;
         };
         if icol != id {
@@ -259,25 +257,16 @@ pub fn osd174_91_into(
             indices.swap(id, icol);
         }
         let pivot = g[id];
-        let w0 = if all_pivoted { id / 32 } else { 0 };
-        if cfg!(feature = "osd-unroll-elim") {
-            // all six words, written out: no loop of two or three trips, no `w0` (the words below it of `pivot` are zero when every row so far found its pivot)
-            for (ii, r) in g.iter_mut().enumerate() {
-                let m = (((r[id / 32] >> (id % 32)) & 1) & (ii != id) as u32).wrapping_neg();
-                r[0] ^= pivot[0] & m;
-                r[1] ^= pivot[1] & m;
-                r[2] ^= pivot[2] & m;
-                r[3] ^= pivot[3] & m;
-                r[4] ^= pivot[4] & m;
-                r[5] ^= pivot[5] & m;
-            }
-        } else {
-            for (ii, r) in g.iter_mut().enumerate() {
-                let m = (((r[id / 32] >> (id % 32)) & 1) & (ii != id) as u32).wrapping_neg();
-                for w in w0..W {
-                    r[w] ^= pivot[w] & m;
-                }
-            }
+        // All six words, written out: a loop of `w0..W` (two to six trips, 8 281 times a call) cost 17 % of the call on the CoreS3 (`ESP32S3_TWO_CORE_BEHAVIOUR.md`); the words below `w0` of
+        // `pivot` are zero when every row so far found its pivot, so xoring them is the same.
+        for (ii, r) in g.iter_mut().enumerate() {
+            let m = (((r[id / 32] >> (id % 32)) & 1) & (ii != id) as u32).wrapping_neg();
+            r[0] ^= pivot[0] & m;
+            r[1] ^= pivot[1] & m;
+            r[2] ^= pivot[2] & m;
+            r[3] ^= pivot[3] & m;
+            r[4] ^= pivot[4] & m;
+            r[5] ^= pivot[5] & m;
         }
     }
 
@@ -334,10 +323,13 @@ pub fn osd174_91_into(
                 cw = ce1;
             }
         }
-        // the `npre1` gate of a pair (iflag, n): its inputs do not depend on `dmin`, so testing four of them before evaluating any keeps the order of the evaluations
-        let gate = |n: usize| !apm[n] && (e2sub_w ^ gw[n]).count_ones() + 2 <= NTHETA;
-        // the evaluation of a pair that passed it
-        let eval = |n1: usize, dmin: &mut f32, cw: &mut Row| {
+        for n1 in (0..iflag).rev() {
+            if apm[n1] {
+                continue;
+            }
+            if (e2sub_w ^ gw[n1]).count_ones() + 2 > NTHETA {
+                continue;
+            }
             let mut e2 = e2sub;
             xor_into(&mut e2, &g[n1]);
             let mut ce = ce1;
@@ -348,47 +340,11 @@ pub fn osd174_91_into(
                 0.0
             };
             let base = d1 + x;
-            if let Some(sum) = weighted_below(&e2, &PARITY, absrx, base, *dmin) {
+            if let Some(sum) = weighted_below(&e2, &PARITY, absrx, base, dmin) {
                 let dd = base + sum;
-                if dd < *dmin {
-                    *dmin = dd;
-                    *cw = ce;
-                }
-            }
-        };
-        if cfg!(feature = "osd-unroll-gate") {
-            // four gate tests a round (a branch every four tests, not every one: a tight loop pays more for the other core's presence, `ESP32S3_TWO_CORE_BEHAVIOUR.md`); a pair that
-            // passes (about 0.6 %) is evaluated in the same descending order as the one-at-a-time loop
-            let mut n1 = iflag;
-            while n1 >= 4 {
-                let (a, b, c, d) = (n1 - 1, n1 - 2, n1 - 3, n1 - 4);
-                let (ga, gb, gc, gd) = (gate(a), gate(b), gate(c), gate(d));
-                if ga | gb | gc | gd {
-                    if ga {
-                        eval(a, &mut dmin, &mut cw);
-                    }
-                    if gb {
-                        eval(b, &mut dmin, &mut cw);
-                    }
-                    if gc {
-                        eval(c, &mut dmin, &mut cw);
-                    }
-                    if gd {
-                        eval(d, &mut dmin, &mut cw);
-                    }
-                }
-                n1 -= 4;
-            }
-            while n1 > 0 {
-                n1 -= 1;
-                if gate(n1) {
-                    eval(n1, &mut dmin, &mut cw);
-                }
-            }
-        } else {
-            for n1 in (0..iflag).rev() {
-                if gate(n1) {
-                    eval(n1, &mut dmin, &mut cw);
+                if dd < dmin {
+                    dmin = dd;
+                    cw = ce;
                 }
             }
         }
