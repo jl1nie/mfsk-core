@@ -349,3 +349,38 @@ fn a_round_shared_by_two_workers_equals_the_sequential_round() {
         }
     }
 }
+
+/// `CellsWorker::bp_stats` / `take_bp_stats` report the BP work of the rounds a worker ran. **Fails if** the counters stay at zero through a round that
+/// decoded something, count fewer successes than the round has decodes, or `take_bp_stats` does not start again from zero.
+#[test]
+fn a_worker_reports_the_bp_work_it_ran() {
+    let tables = CellTables::new();
+    let mut cs: Box<[[Cmplx<f32>; 8]; 79]> =
+        vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
+    let mut bp = Box::new(Ft8BpScratch::new());
+    let mut w = CellsWorker::new(&mut cs, &mut bp, &tables);
+    assert_eq!(w.bp_stats(), Default::default());
+    let a = audio("qso3_busy");
+    let (cands, cells) = coarse_sync_gated_cells(
+        &mut SliceSource(&a),
+        Ft8Rate::Hz8000,
+        &GatedSearch::new(200.0, 3000.0, 1.3, 30),
+        1,
+    )
+    .unwrap();
+    let mut known = Vec::new();
+    w.decode_round(&cells, &cands, 30, DecodeDepth::EMBEDDED, 0.25, &mut known);
+    let st = w.take_bp_stats();
+    assert!(!known.is_empty());
+    assert!(
+        st.decoded as usize >= known.len(),
+        "{st:?} for {} decodes",
+        known.len()
+    );
+    assert!(
+        st.calls >= 30,
+        "every candidate runs BP at least once or twice: {st:?}"
+    );
+    assert!(st.passes > 0);
+    assert_eq!(w.bp_stats(), Default::default());
+}

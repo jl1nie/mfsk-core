@@ -294,6 +294,7 @@ pub fn bp_decode_generic_kind_with_scratch<P: LdpcParams>(
         sign_xor,
         zn,
         cw,
+        stats,
         ..
     } = scratch;
 
@@ -365,6 +366,7 @@ pub fn bp_decode_generic_kind_with_scratch<P: LdpcParams>(
                 message77.copy_from_slice(&decoded[..77]);
                 // Codeword is small (174 / 240 bytes); clone instead of
                 // moving so the scratch's `cw` Vec stays in the pool.
+                stats.add(iter, true);
                 return Some(BpResult {
                     message77,
                     info: decoded,
@@ -383,6 +385,7 @@ pub fn bp_decode_generic_kind_with_scratch<P: LdpcParams>(
                 ncnt += 1;
             }
             if ncnt >= 5 && iter >= 10 && ncheck > 15 {
+                stats.add(iter, false);
                 return None;
             }
         }
@@ -515,6 +518,7 @@ pub fn bp_decode_generic_kind_with_scratch<P: LdpcParams>(
         }
     }
 
+    stats.add(max_iter + 1, false);
     None
 }
 
@@ -696,6 +700,30 @@ pub fn bp_decode_kind(
 
 use crate::engine::scalar::LlrScalar;
 
+/// What the belief-propagation decoders ran on one [`BpScratch`]: the cost of BP in the unit it scales with.
+///
+/// A **pass** is one round of message updates (the part of an iteration that costs, about 25 000 instructions for FT8's code on x86): a decode that
+/// converges at iteration `i` ran `i` passes, a stall exit at iteration `i` ran `i`, a call that never converges ran `max_iter + 1`. Counted by
+/// [`bp_decode_generic_nms_with_scratch`] (so [`bp_decode_nms_with_scratch`]) and [`bp_decode_generic_kind_with_scratch`]; the other entry points make
+/// a scratch of their own and do not report. Plain integer adds, no allocation, no feature: the same on every target. It changes no result.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BpStats {
+    /// Decoder calls.
+    pub calls: u32,
+    /// Calls that ended with a decode accepted by the verifier.
+    pub decoded: u32,
+    /// Message-update passes over all the calls.
+    pub passes: u64,
+}
+
+impl BpStats {
+    fn add(&mut self, passes: u32, decoded: bool) {
+        self.calls += 1;
+        self.decoded += decoded as u32;
+        self.passes += passes as u64;
+    }
+}
+
 /// Generic Normalized-Min-Sum Belief-Propagation decode.
 ///
 /// Architectural counterpart of [`bp_decode_generic_kind`]'s NMS
@@ -757,6 +785,8 @@ pub struct BpScratch<P: LdpcParams, T: LlrScalar> {
     /// by [`Self::ensure_zsum`] on first use; callers that never reach
     /// the zsum-seeded OSD retry pay zero extra bytes.
     zsum: Vec<T::Wide>,
+    /// What the NMS and kind decoders have run on this scratch: [`BpStats`].
+    stats: BpStats,
     _p: core::marker::PhantomData<P>,
 }
 
@@ -788,8 +818,19 @@ impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
             zn: vec![T::wide_zero(); n],
             cw: vec![0u8; n],
             zsum: Vec::new(),
+            stats: BpStats::default(),
             _p: core::marker::PhantomData,
         }
+    }
+
+    /// What the decoders have run on this scratch since it was made or since [`take_stats`](Self::take_stats).
+    pub fn stats(&self) -> BpStats {
+        self.stats
+    }
+
+    /// [`stats`](Self::stats), and start counting from zero again.
+    pub fn take_stats(&mut self) -> BpStats {
+        core::mem::take(&mut self.stats)
     }
 
     /// Re-establish the pre-loop state of a fresh allocation. Matches
@@ -944,6 +985,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
         sign_xor,
         zn,
         cw,
+        stats,
         ..
     } = scratch;
 
@@ -1016,6 +1058,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
                 // Codeword is small (174 / 240 bytes); clone instead
                 // of moving so the scratch's `cw` Vec stays in the pool
                 // for the next call.
+                stats.add(iter, true);
                 return Some(BpResult {
                     message77,
                     info: decoded,
@@ -1034,6 +1077,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
                 ncnt += 1;
             }
             if ncnt >= 5 && iter >= 10 && ncheck > 15 {
+                stats.add(iter, false);
                 return None;
             }
         }
@@ -1120,6 +1164,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
         }
     }
 
+    stats.add(max_iter + 1, false);
     None
 }
 
@@ -1345,5 +1390,96 @@ mod tests {
             let actual = bp_llr_zsum_with_scratch::<Ldpc174_91Params>(&mut scratch, &llr, 2);
             assert_eq!(expected, actual, "seed {seed}: zsum mismatch");
         }
+    }
+
+    /// `BpStats` counts the message-update passes a call ran: a call that decodes at iteration `i` ran `i`, one that never does ran `max_iter + 1`, a stall exit
+    /// ran at least 10. **Fails if** a counter is off by one at any of the three exits (decode, stall, end of the loop), counts a call twice, or the kinds
+    /// disagree about what a pass is.
+    #[test]
+    fn bp_stats_count_the_passes_each_call_ran() {
+        // all-zero codeword, strong LLRs (LLR < 0 is bit 0): converges before any message passes
+        let clean = vec![-10.0f32; 174];
+        // the same with 6 weak wrong bits: converges after some passes (or not; the stats must say what the result says)
+        let mut dirty = vec![-6.0f32; 174];
+        for i in [3usize, 40, 77, 101, 130, 160] {
+            dirty[i] = 3.0;
+        }
+        let mut inputs: Vec<Vec<f32>> = vec![clean, dirty];
+        inputs.extend((0..8u32).map(|seed| synth_llr(174, seed)));
+        let kinds = [BpKind::SumProduct, BpKind::NormalizedMinSum { alpha: 0.8 }];
+        let mut scratch = BpScratch::<Ldpc174_91Params, f32>::new();
+        let mut seen_end_of_loop = false;
+        let mut seen_decode = false;
+        for (n, llr) in inputs.iter().enumerate() {
+            for (k, kind) in kinds.iter().enumerate() {
+                let r = bp_decode_generic_kind_with_scratch::<Ldpc174_91Params>(
+                    &mut scratch,
+                    llr,
+                    None,
+                    30,
+                    None,
+                    *kind,
+                );
+                let st = scratch.take_stats();
+                assert_eq!(st.calls, 1, "input {n} kind {k}: one call");
+                assert_eq!(
+                    st.decoded,
+                    r.is_some() as u32,
+                    "input {n} kind {k}: decoded"
+                );
+                match &r {
+                    Some(res) => {
+                        assert_eq!(
+                            st.passes, res.iterations as u64,
+                            "input {n} kind {k}: a decode's passes are its iterations"
+                        );
+                        seen_decode = true;
+                    }
+                    None => {
+                        assert!(
+                            (10..=31).contains(&st.passes),
+                            "input {n} kind {k}: a failure ran {} passes",
+                            st.passes
+                        );
+                        seen_end_of_loop |= st.passes == 31;
+                    }
+                }
+            }
+        }
+        assert!(seen_decode, "the inputs include a decode");
+        assert!(
+            seen_end_of_loop,
+            "the inputs include a call that runs to the end of the loop"
+        );
+        // the NMS entry point counts the same way
+        let r = bp_decode_generic_nms_with_scratch::<Ldpc174_91Params, f32>(
+            &mut scratch,
+            &inputs[0],
+            None,
+            30,
+            None,
+            0.8,
+        );
+        let st = scratch.take_stats();
+        assert_eq!(
+            (st.calls, st.decoded, st.passes),
+            (1, 1, r.unwrap().iterations as u64)
+        );
+        // totals accumulate over calls and `take_stats` starts again from zero
+        for llr in &inputs {
+            let _ = bp_decode_generic_nms_with_scratch::<Ldpc174_91Params, f32>(
+                &mut scratch,
+                llr,
+                None,
+                30,
+                None,
+                0.8,
+            );
+        }
+        let total = scratch.stats();
+        assert_eq!(total.calls, inputs.len() as u32);
+        assert!(total.passes > 0);
+        assert_eq!(scratch.take_stats(), total);
+        assert_eq!(scratch.stats(), BpStats::default());
     }
 }

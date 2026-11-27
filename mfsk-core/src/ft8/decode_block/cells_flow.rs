@@ -268,6 +268,17 @@ impl<'a> CellsWorker<'a> {
         Self { cs, bp, tables }
     }
 
+    /// The belief-propagation work this worker has run ([`BpStats`](crate::fec::ldpc::bp::BpStats): calls and message-update passes, which is what BP's time scales with)
+    /// since it was made or since [`take_bp_stats`](Self::take_bp_stats).
+    pub fn bp_stats(&self) -> crate::fec::ldpc::bp::BpStats {
+        self.bp.stats()
+    }
+
+    /// [`bp_stats`](Self::bp_stats), and start counting from zero again.
+    pub fn take_bp_stats(&mut self) -> crate::fec::ldpc::bp::BpStats {
+        self.bp.take_stats()
+    }
+
     /// One attempt at the staircase for the spectra read at (`g`, `p`): `None` if the candidate does not decode.
     fn attempt(
         &mut self,

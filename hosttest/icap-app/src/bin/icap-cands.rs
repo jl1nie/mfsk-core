@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! `icap-cands <slot.wav>...`: every candidate of the cells flow (30 of them, the board's build: no AP pass, OSD off), one decode attempt each.
 //! Each slot has `<slot>.ref` beside it (one reference message per line). TSV on stdout: slot, rank, freq, dt, score, hard sync, decoded,
-//! in the reference, message. `scripts/cands-yield.py` reads it (design note section 27).
+//! in the reference, message, BP calls the candidate cost, BP message-update passes ([`BpStats`](mfsk_core::fec::ldpc::bp::BpStats)). `scripts/cands-yield.py`
+//! reads it (design note section 27).
 use icap_app_hosttest::{fft_shim, resample::resample, wav};
 use mfsk_core::engine::scalar::Cmplx;
 use mfsk_core::engine::source::SliceSource;
@@ -39,7 +40,9 @@ fn main() {
             .to_string_lossy()
             .to_string();
         for (i, (c, hs)) in cands.iter().take(30).enumerate() {
+            let _ = w.take_bp_stats();
             let f = w.decode_candidate(&cells, c, DecodeDepth::EMBEDDED, 0.25);
+            let bp = w.take_bp_stats();
             let (dec, truth, msg) = match &f {
                 Some(f) => {
                     let m = unpack77(f.res.message77())
@@ -50,8 +53,8 @@ fn main() {
                 None => (0, 0, String::new()),
             };
             println!(
-                "{slot}\t{i}\t{:.2}\t{:.3}\t{}\t{hs}\t{dec}\t{truth}\t{msg}",
-                c.freq_hz, c.dt_sec, c.score
+                "{slot}\t{i}\t{:.2}\t{:.3}\t{}\t{hs}\t{dec}\t{truth}\t{msg}\t{}\t{}",
+                c.freq_hz, c.dt_sec, c.score, bp.calls, bp.passes
             );
         }
     }

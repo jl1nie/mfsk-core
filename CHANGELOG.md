@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Cells flow: which BP work is wasted (host, board's build; design note sections 26-27)
+
+- **New** `BpStats` (`calls`, `decoded`, `passes`) on `BpScratch` (`stats`, `take_stats`) and `CellsWorker::{bp_stats, take_bp_stats}`: the message-update passes BP ran, the unit its time scales with (a pass is about 25 000 instructions; the Mac and x86 counts of section 26 were by probe). Plain integer adds in `bp_decode_generic_nms_with_scratch` and `bp_decode_generic_kind_with_scratch`; no result changes (gate: every test binary passes but `the_12k_outputs_are_what_they_were`, which fails on the untouched HEAD too).
+- `icap-profile --no-osd`, `scripts/s3-stage-instr.sh` (instructions per stage, old S3 against the cells flow), `icap-cands` + `scripts/cands-yield.py` (what each candidate costs and decodes: 60 slots, 1 800 candidates, 975 decodes in the reference).
+- Measured: the cells flow's excess over `ft8dec` is all BP passes (139 M against 24 M instructions; the spectrogram and search sides are 168 M against 179 M); **95 % of the 76 155 passes go to candidates that do not decode**; a score floor of 11 skips 14.8 % of the tries, 28.0 % of the passes and loses none of the 975 decodes. Not applied (a change of the candidate rule: Issue and the owner first); the corpus is the one the design was tuned on. Detail: `FT8_WINDOW_AND_COARSE_DESIGN.md` section 27.
+
 ### Cells flow against ft8dec on Apple Silicon: where the BP calls go (measurement only; design note section 26)
 
 - The cells flow is 3.3x `ft8dec`'s instructions (4.4x its wall time) at 30 candidates / OSD off on an M5, the x86 direction, not a reversal. BP is 60 % of the time: 87 candidates reach BP against `ft8dec`'s 35 (68 failed against 16), 2.7 calls against 2.0 on a failed one, 29.6 iterations a call against 24.1. A BP cap of 25 (not applied) keeps every decode on 60 slots and saves 2-3 % of instructions. The x86 record's 179 BP calls are these 63 plus 116 of the host build's blind-CQ AP pass, which the board does not have, so the 3.3x includes that pass (x86 with it off: 1.54x).
