@@ -32,9 +32,12 @@ cyclic permutation (`i = table[i]`: the working set is the whole table, each ste
 | chase over 128 KB of flash `.rodata` (misses) | 385 (1.60 us) | 768 (3.20 us) | **x2.00** | **flash misses likewise** |
 
 **Measured facts.**
-1. **A loop that touches no shared memory still runs about 2 cycles an iteration slower on each core while the other core runs a loop** (8 -> 10 cycles; 13 -> 14.8-15). It is the same
-   for code in IRAM and code in flash, for any internal-DRAM placement, and the clock does not change (the cycle counter counts the extra cycles). The cause is **not found**; it is
-   some path both cores use every iteration. Inference only: the instruction fetch or another path shared by the cores.
+1. **A loop that touches no shared memory still runs slower on each core while the other core runs a loop**: about **12 % more cycles for the work itself, plus about 2-3 cycles per loop
+   iteration**. The same for code in IRAM and code in flash, for any internal-DRAM placement, and the clock does not change (the cycle counter counts the extra cycles). Measured with a
+   non-foldable step (a multiply-add and an xorshift, 5 cycles alone) unrolled N times (`mx-uN`; cycles a step alone -> with both cores): N = 1 10.0 -> 14.0 (x1.40), 2 7.5 -> 10.0 (x1.33),
+   4 6.25 -> 7.5 (x1.20), 8 5.63 -> 6.52 (x1.16), 32 5.16 -> 5.76 (x1.12). So **a tight loop of one or two short steps pays x1.3-1.4, a long unrolled body x1.12**; the x1.12 does not go away.
+   The tight loops of the first runs (`mul`: 8 -> 10 cycles an iteration, x1.25; `alu`'s inner loop 13 -> 14.9) are the small-N end of this. The cause is **not found**; inference only: a path both
+   cores use for fetching or issuing (the fetch of a loop's head costs more than a straight run).
 2. **A cache miss to PSRAM (1.09 us) or to flash (1.60 us) is serialized across the two cores**: two cores missing at once take twice as long each. A second core adds no miss throughput.
 3. **The data cache is shared and 32 KB**: two cores whose PSRAM working sets together exceed it thrash it (x36 for two 32 KB tables).
 4. A hit costs what internal DRAM costs (8 cycles a step here); a miss is 260-385 cycles (the 1.1-1.6 us above), 30-50 times a hit.
@@ -55,6 +58,8 @@ to internal DRAM changed the two-core pass by 5-6 % only: the cost is not that m
 
 ## 4. Rules for a design on these boards
 
+- **Unroll a hot loop that is a few instructions an iteration** (a `for w in 0..6` of two instructions pays x1.3-1.4 with the other core running, an unrolled body x1.12): measured only on a synthetic
+  chain, **not yet tried on the BP / OSD loops** (the 1.45 of the OSD attempt fits a loop of a few steps).
 - **Do not assume 2x from two cores.** Budget **x1.5 for compute- and internal-memory-bound work** (BP, OSD) and **about x1.1 for work that streams a PSRAM working set** (the band search), and
   measure the one-core figure on the board: the old S3 dual-core note's "244 ms of single-core work" was the 122 ms wall times two, an assumption (`PHASE_D_PIE_SIMD.md`), so the
   cost of two cores was not visible in it.
@@ -67,9 +72,9 @@ to internal DRAM changed the two-core pass by 5-6 % only: the cost is not that m
 
 ## 5. Not known
 
-- **Why a loop with no shared data runs 2 cycles an iteration slower when the other core runs.** Not the clock, not the instruction cache, not the memory banks (as measured). Untested: a
-  loop with a different iteration length (does the +2 scale with the iterations or with the branches?), the instruction bus, other tasks and interrupts on the second core, ESP-IDF's per-core
-  FreeRTOS tick, the two cores' load/store units contending for the same internal-SRAM port.
+- **Why a loop with no shared data is slower when the other core runs** (12 % of the work and 2-3 cycles an iteration). Not the clock, not the instruction cache, not the memory banks (as
+  measured); it depends on the iterations and on the work, not on either alone. Untested: the instruction bus, other tasks and interrupts on the second core, ESP-IDF's per-core FreeRTOS tick, the
+  two cores' load/store units contending for the same internal-SRAM port, whether the 12 % depends on the instruction mix (loads and stores, floating point).
 - The cache sizes and the PSRAM mode are the ones in section 1; the 64 KB data cache option, the 32 KB instruction cache, octal PSRAM and the "SPIRAM_FETCH_INSTRUCTIONS" / "SPIRAM_RODATA"
   options were not measured.
 - Whether the 2-cycle cost applies to every core pair state (core 1 idle in the FreeRTOS idle task was the "alone" case; a core halted in `waiti` against one running a different, light task).

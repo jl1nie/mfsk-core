@@ -29,6 +29,12 @@
 //! (non-foldable steps, so `mx-uN` is N times the work an iteration): the extra is `2 / N` cycles a step**, i.e. with both cores `alone + 2/N`: `mx-u1` +2.0, `mx-u2` +1.0, `mx-u4` +0.5, `mx-u8` +0.25,
 //! `mx-u32` +0.06 (x1.00-1.01); a cost per instruction would be a constant x1.25 at every N. Alone: about 8 + 3 = 11 cycles a step if the multiply-add and the xorshift each keep their latency.
 //!
+//! **Outcome of the `mx-u*` run against that prediction.** Cycles a step, alone -> with the other core running (extra): `mx-u1` 10.01 -> 14.01 (+4.0, x1.40), `mx-u2` 7.50 -> 10.01 (+2.5, x1.33), `mx-u4` 6.25 -> 7.51
+//! (+1.26, x1.20), `mx-u8` 5.63 -> 6.52 (+0.89, x1.16), `mx-u32` 5.16 -> 5.76 (+0.60, x1.12). Alone it is exactly 5 cycles a step and 5 cycles an iteration. **The prediction (2/N extra) is wrong in its
+//! small-N part and in its large-N limit**: the extra per step is about **0.12 of the work (0.6 a step at 5.16) plus about 2-3 cycles an iteration** (4.0, 2.5, 1.26, 0.89, 0.60 against 0.6 + 3.4/N
+//! = 4.0, 2.3, 1.45, 1.03, 0.71): neither pure per-instruction (x1.25 at every N) nor pure per-iteration (x1.01 at N = 32). Unrolling a tight loop takes its slowdown from x1.40 to x1.12; the x1.12 stays.
+//! The folded `mul-u*` run: +2.0 an iteration at 8 cycles an iteration (x1.25), `mul-i4` x1.13: consistent with the same two terms.
+//!
 //! **The first run (2026-11-27) is void for the memory arms**: its walk made the index from the low bits of a state that depends only on those bits, so it cycled through a few hundred entries in
 //! every table and every arm ran from the cache at the same 54.2 ns a step. What it did show is real: the two **compute-only** loops, `alu` (x1.15) and the multiply chain of the walk (x1.23), ran
 //! slower on each core while the other core ran the same loop, with no data memory on the critical path. That points at the code's fetch, or at the core itself, before any data memory.
