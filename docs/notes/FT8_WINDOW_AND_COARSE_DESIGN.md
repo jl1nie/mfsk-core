@@ -944,5 +944,16 @@ A decoded candidate costs 1-2 calls and about 10 iterations; **95 % or more of t
 
 **What it says.** The same number of OSD runs (K = 6 a round is 32 k; one pass of 6 at the end is 29 k) keeps 50 of the real slots' 71 OSD decodes when each round's OSD decodes are subtracted and 29 when they are not: the OSD's decodes are signals, and taking them out of the residual lets the next pass search what they hid. The cap per round is not a cap per slot: with 2 passes a slot runs up to 2 K attempts, 6.8 on average over the corpora (12 on `qso3_busy`). On the three recordings (OSD queued / run): 2 passes K = 6 51 / 32 / 41 queued and 12 / 8 / 12 run, K = 8 16 / 10 / 15 run.
 
-**Not done**: K per slot rather than per round; the model's ranking on residual cells (fitted on first-pass attempts); the board's time (`ft8-sic-bench`'s `osd6` / `osd8` arms: predictions in its module doc).
+**The board (CoreS3, `ft8-sic-bench`, one core, 30 candidates, 2026-11-27; predictions in its module doc, written before the run, all inside the 25 % stop rule).** SIC with the OSD at K = 6 / 8 a round against the `storage` arm (OSD off), seconds, with the decodes:
+
+| | OSD off | `osd6` (predicted) | `osd6` | `osd8` (predicted) | `osd8` |
+|---|---|---|---|---|---|
+| `qso3_busy`, 2 passes | 4.31 (11) | 4.55-4.80 | **4.94 (13)** | 4.75-4.95 | 5.11 (13) |
+| `qso1`, 2 passes | 3.52 (5) | 3.65-3.85 | 3.86 (5) | 3.75-3.95 | 3.94 (5) |
+| `qso2`, 2 passes | 3.57 (5) | 3.85-4.05 | 3.97 (5) | 4.0-4.2 | 4.09 (5) |
+| `qso3_busy`, 3 passes | 6.64 (11) | 7.0-7.3 | 7.60 (14) | 7.25-7.5 | 7.77 (14) |
+
+The OSD adds 0.63 / 0.34 / 0.40 s at K = 6 (2 passes; 12 / 8 / 12 attempts run on the host): 52 / 43 / 33 ms an attempt against the 36 ms of `ft8-stage-bench`'s `osd pass`; `qso3_busy`'s higher figure is above the prediction by 3-4 % (a guess, not measured: the extra signals its OSD decodes add to the subtraction). Decodes are within one of the host's (`osd8`, `qso3_busy`, 2 passes: 13 against 14).
+
+**Not done**: K per slot rather than per round; the model's ranking on residual cells (fitted on first-pass attempts); the OSD in the SIC under WiFi / USB host, and the cell store and audio the SIC needs held (plan section 14).
 
