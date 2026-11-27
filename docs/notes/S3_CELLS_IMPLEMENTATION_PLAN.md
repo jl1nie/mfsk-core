@@ -316,3 +316,22 @@ One core, 30 candidates, OSD off, the `d` floor 16, `qso3_busy` / `qso1` / `qso2
 | min free internal DRAM (qso2) | 251 647 B | 251 647 B | 247 059 B | 251 647 B |
 
 The scoring: `band_best` 63.8 -> 42.4 M host instructions, 14.0 -> 5.6 M conditional branches, bit for bit the same scores. The tables of the BP in the scratch cost 4.6 KB of internal DRAM on this board (every table under the 2 KB threshold goes to internal), which the compile-time version does not.
+
+## 14. Is there room for SIC? The board after the day's speed-ups (2026-11-27; `ft8-sic-bench`, log `ft8-sic-bench_after_2026-11-27.log`, git-ignored; predictions committed first, `f0267c3b`)
+
+One core, 30 candidates, OSD off, the `d` floor 16, wav replay from PSRAM, no WiFi / USB host, `storage` arm (`sic_passes` over a `SicStorage`), `qso3_busy` / `qso1` / `qso2`; the decoded set of every arm is `alloc`'s (11 / 5 / 5).
+
+| | S2 (morning) | predicted | measured |
+|---|---|---|---|
+| 2 passes, total | 5.99 / 4.77 / 4.97 s | 4.4 (4.0-4.8) / 3.9 (3.6-4.2) / 4.05 (3.7-4.4) s | **4.24 / 3.43 / 3.49 s** |
+| 3 passes, total (`qso3_busy`; the others stop at the second pass) | 8.44 s | 6.8 (6.3-7.3) s | **6.53 s** |
+| 2 passes: the first search / the passes | 1.79 / 4.2, 3.0, 3.2 s | | 1.32 / 2.91, 2.11, 2.17 s |
+| 2 passes, `2core` arm | | | 3.96 / 3.28 / 3.27 s (4-8 % under `storage`) |
+
+(`qso1` and `qso2` came in 5-6 % under their predicted ranges; everything inside 25 %.)
+
+**Room, by the clock.** In the app the first search (1.32 s: the demux and `band`) is the producer's and the emit point's; what SIC adds is the passes, **2.1-2.9 s for two passes** (5.2 s for three on the busiest slot). The primary decode ends at +0.1 to +0.25 s after the boundary (section 13), so two passes end at about +3 s, three at about +5.5 s; the next period's emit point is at about +14 s: **roughly 9-11 s of slack**. SIC is after the boundary by design (plan 4.6): its decodes are for the screen and the next period, not for the reply.
+
+**Conditions, apart from time:** the slot's 8 kHz audio (240 KB of PSRAM) must be kept for the subtraction to read again (the app keeps the cells, not the audio); `SicStorage` is 2.6 KB of internal DRAM and 38.5 KB of PSRAM, the ring may stay in PSRAM (internal is only 1-3 % faster); SIC runs on one core (the second is the next slot's producer; the `2core` arm saves 4-8 %).
+
+**Not measured:** the firmware's load (WiFi, USB host, display, the UAC reader: a decode thread preempted for 3-5 s is slower by what it loses); the phantom rate of the passes on noise-only slots (tier C: the two new decodes of the two-pass flow on the 22 recordings that read like subtraction ghosts, section 2); esp-dsp in the residual's demux (about half of the 0.9 s of FFT in each pass; the bench uses the soft FFT).
