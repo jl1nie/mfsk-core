@@ -28,6 +28,14 @@
 //! two busy times within 0.02 s of each other, the candidates split about 15 / 15 (imbalance would not be visible in it, the slowdown would: the same x1.5). A mixture of the two is likely; the sizes of the parts
 //! are what the run gives. Not a pass / fail test: the stop rule does not apply, the numbers are.
 //!
+//! **Unrolling the OSD's loops (features `osd-unroll-gate`: the `npre1` gate tested four pairs a round; `osd-unroll-elim`: the elimination's row update over all six words, written out), predicted before
+//! the run.** `ESP32S3_TWO_CORE_BEHAVIOUR.md`: with the other core running a loop of one short step costs x1.40, a long unrolled body x1.12; the OSD attempt costs x1.45 (38 -> 55 ms). The gate loop is 4 095 tests a
+//! call, each a software 64-bit popcount, two loads and a branch: say 35-45 cycles, so the 2-3 cycles an iteration are 6-8 % of it, and the four-way unroll removes three quarters of them (-5 % of the loop's
+//! two-core cost); the elimination's inner loops are 2-6 trips of 3 instructions and gain more per iteration but are a third of the call. **Predicted, K = 14, the two-core pass per attempt (55 ms now: 0.362 /
+//! 0.390 / 0.384 s for the pass): `osd-unroll-gate` 52-55 ms, `osd-unroll-elim` 52-56 ms, both 50-55 ms; on one core (38 ms an attempt) 37-38 ms for each: a change of 5 % at most either way.** If the change is larger the
+//! loops are the cause after all; if it is not, the 1.45 is mostly something these loops do not set (the popcount's instruction mix, the loads from the scratch, the BP's own loops: the zsum BP is a quarter of
+//! an attempt and is not touched), and the unrolling is not worth its code. The sets of decodes stay equal (the answers are bit-equal: `tests/osd_embedded.rs` with each feature).
+//!
 //! **The test of it, predicted before its run:** the same bench twice in one boot, `[psram]` (the OSD memory made by `reserve_osd_work` under the 2 KB malloc limit: where the first run had it) and
 //! `[internal]` (made while `heap_caps_malloc_extmem_enable(16 KB)`: in internal DRAM; the limit is put back to 2 KB after). The round, `band` and the staging are the same in both. **If the hypothesis is right:**
 //! `[internal]` takes about 17 KB x 2 of internal DRAM, the OSD pass on **two cores at K = 14 falls to 0.27-0.31 / 0.30-0.34 / 0.30-0.34 s** (an attempt at about 40 ms: x1.8-2.0 against one core) and K = 6 to 0.11-0.13 s,

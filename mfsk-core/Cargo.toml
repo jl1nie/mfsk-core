@@ -57,6 +57,10 @@ fft-extern   = ["alloc"]
 # The ICAP profile (`decode_block_low_mem`) has the time and turns it on. Needs no FFT and no memory beyond
 # BP's own: the OSD works on the LLRs.
 osd          = ["alloc"]
+# Experiments on the embedded OSD (`fec::ldpc::osd_emb`, results in `ESP32S3_TWO_CORE_BEHAVIOUR.md`): the `npre1` gate tested four pairs a round / the elimination's row update written out over all six words.
+# The answers are the same bit for bit (`tests/osd_embedded.rs` runs with them); off by default.
+osd-unroll-gate = []
+osd-unroll-elim = []
 
 # Caller-provided real f32 dot-product backend for the DSP hot loops
 # (`engine::dsp::dotprod`). Same extern-hook shape as `fft-extern`: the

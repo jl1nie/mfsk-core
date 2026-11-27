@@ -284,6 +284,8 @@ ft8-stage-bench = ["embedded-shared/stage-bench"]
 ft8-osd-bench = ["embedded-shared/osd-bench"]
 ft8-two-core-bench = ["embedded-shared/two-core-bench"]
 ft8-mem-bench = ["embedded-shared/mem-bench"]
+ft8-osd-unroll-gate = ["embedded-shared/osd-unroll-gate"]
+ft8-osd-unroll-elim = ["embedded-shared/osd-unroll-elim"]
 
 [dependencies]
 log = "0.4"
