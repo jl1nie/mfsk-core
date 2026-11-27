@@ -23,6 +23,10 @@ CI (`+esp` toolchain setup, esp-idf checkout, is not cheap for a
 lightweight runner). If you're doing any kind of cleanup/audit pass
 across the repo, remember to check here too — nothing else will.
 
+**Designing for two cores, or for a working set in PSRAM or a table in flash: read [`docs/notes/ESP32S3_TWO_CORE_BEHAVIOUR.md`](../docs/notes/ESP32S3_TWO_CORE_BEHAVIOUR.md) first**
+(measured on the CoreS3: a second core costs each about 2 cycles an iteration, cache misses to PSRAM and flash are served one after the other across the cores, and the 32 KB data cache is
+shared, so two PSRAM working sets that sum to more than it thrash it: x36 measured).
+
 ## One-time setup (already done on this machine)
 
 - `~/.rustup/toolchains/esp/` — Xtensa-fork Rust toolchain installed

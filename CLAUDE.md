@@ -156,6 +156,8 @@ via `embedded-poc/scripts/flash-monitor.sh` (no second `espflash monitor`, no `c
 unchanged ELF is not a flash). Never run `cargo fmt --all` with the `+esp` toolchain. Read `embedded-poc/CLAUDE.md`
 first ("USB host VBUS on CoreS3", "Stacks, heaps, and the space between them").
 Procedure: `docs/notes/EMBEDDED_WORKFLOW.md`, `docs/reference/MANUAL_M5STACK_CORES3.md`.
+**Before designing anything that assumes two cores, a working set in PSRAM or a table in flash, read `docs/notes/ESP32S3_TWO_CORE_BEHAVIOUR.md`** (measured: two cores cost each about 2 cycles an iteration, PSRAM / flash misses are
+serialized across the cores, the 32 KB data cache is shared; budget x1.5, not x2).
 
 ## Where to read next
 
@@ -169,5 +171,6 @@ Procedure: `docs/notes/EMBEDDED_WORKFLOW.md`, `docs/reference/MANUAL_M5STACK_COR
 | which tests to run, tier C | `docs/notes/TESTING_GUIDE.md`, `TIER_C_MANUAL.md` |
 | releasing | `docs/notes/RELEASE_PROCEDURE.md` |
 | hardware | `embedded-poc/CLAUDE.md`, board `CLAUDE.md`, `docs/notes/EMBEDDED_WORKFLOW.md` |
+| ESP32-S3 two cores, caches, PSRAM / flash misses (before any two-core or PSRAM-heavy design) | `docs/notes/ESP32S3_TWO_CORE_BEHAVIOUR.md` |
 | model choice, when to spawn agents, review requirement | `docs/notes/AGENT_WORKFLOW.md` |
 | plans, status | `docs/notes/ROADMAP.md`; embedded perf log: auto-memory `project_decode_block_embedded.md` (per machine, not synced: it is in the Linux box's `-home-minoru-src-mfsk-core/memory/`, not the Mac's; if missing, ask the user rather than reconstruct it) |
