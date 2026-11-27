@@ -564,8 +564,8 @@ pub fn decode_block_cells_sic<S: AudioSample>(
         .try_into()
         .expect("79 x 8");
     let mut bp = alloc::boxed::Box::new(Ft8BpScratch::new());
-    let mut worker =
-        CellsWorker::new(&mut cs, &mut bp, &tables).with_d_min_score(super::CELLS_D_MIN_SCORE);
+    let mut worker = CellsWorker::new(&mut cs, &mut bp, &tables)
+        .with_d_min_score(crate::ft8::decode_block::CELLS_D_MIN_SCORE);
     let mut storage = SicStorage::new(rate, sic_signal_capacity(max_cand, passes));
     Some(sic_passes(
         &mut SliceSource(audio),
@@ -819,6 +819,187 @@ mod tests {
             r.read((i * chunk) as i64, c);
         }
         out
+    }
+
+    /// How much of a decoded signal's own energy is left, per symbol, at its transmitted tone: the sum over the 79 symbols of the squared complex correlation of `x` with the tone
+    /// (`f0 + 6.25 tone`) over the symbol that starts at sample `t0 + k nsps`. A ratio of two of these (after / before) is the depth of a subtraction **for that signal only**:
+    /// the neighbours' energy is in both and cancels.
+    fn tone_energy(x: &[i16], fs: f64, f0: f64, t0: i64, tones: &[u8; NN]) -> f64 {
+        let nsps = (fs * 0.16).round() as usize;
+        let mut e = 0.0;
+        for (k, &t) in tones.iter().enumerate() {
+            let w = 2.0 * core::f64::consts::PI * (f0 + 6.25 * t as f64) / fs;
+            let (mut re, mut im) = (0.0, 0.0);
+            let start = t0 + (k * nsps) as i64;
+            for n in 0..nsps {
+                let i = start + n as i64;
+                if i >= 0 && (i as usize) < x.len() {
+                    let v = x[i as usize] as f64;
+                    re += v * (w * n as f64).cos();
+                    im -= v * (w * n as f64).sin();
+                }
+            }
+            e += re * re + im * im;
+        }
+        e
+    }
+
+    /// The depth of this module's subtraction (`ResidualSource`, 8 kHz, streaming) against the faithful pipeline's (`subtract_tones_lpf_refine_dt` after `refine_freq`, 12 kHz, as `ft8_decode.f90`'s
+    /// `subtractft8` does) **for the same decoded signals** of the 22 real recordings and `qso3_busy`: each signal's own tone energy left, in dB, by SNR band (printed with `--nocapture`).
+    /// Measured 2026-11-28 on 274 signals: **-13.9 / -16.7 / -19.7 / -21.3 / -24.9 dB** left (bands -30..-15, -15..-8, -8..0, 0..8, 8..40 dB) against the faithful -14.1 / -16.0 / -20.8 / -22.9 / -26.7:
+    /// at most 1.8 dB shallower. **Fails if** the mean depth of a band is more than 3 dB shallower than the faithful one (a phase or timing error in the reference, the correlation or the lag), or
+    /// if the strong signals (+8 dB and up) are not taken below -20 dB: the SIC is what the late path's recall rests on (278 -> 324 of `jt9`'s 402).
+    #[test]
+    #[cfg(feature = "fft-rustfft")]
+    fn depth_against_the_faithful_subtraction() {
+        use crate::engine::dsp::resample::resample_to_8k;
+        use crate::engine::dsp::subtract::{
+            GfskParams, SubtractCfg, refine_freq, subtract_tones_lpf_refine_dt,
+        };
+        let cfg = SubtractCfg {
+            sample_rate: 12_000.0,
+            tone_spacing_hz: 6.25,
+            samples_per_symbol: 1920,
+            base_offset_s: 0.5,
+            gfsk: Some(GfskParams {
+                bt: 2.0,
+                hmod: 1.0,
+                ramp_samples: 1920 / 8,
+                frame_ramp: false,
+            }),
+        };
+        let mut names: Vec<String> = [
+            "191111_110115",
+            "191111_110130",
+            "191111_110145",
+            "191111_110200",
+            "191111_110215",
+            "191111_110615",
+            "191111_110630",
+            "191111_110645",
+            "191111_110700",
+            "qso3_busy",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        names.extend((1..=13).map(|i| format!("websdr_test{i}")));
+        let rate = Ft8Rate::Hz8000;
+        let df = SAMPLE_RATE_HZ / super::super::types::NFFT_SPEC as f32;
+        let (nstep, fs) = (rate.nstep() as i64, rate.hz() as f32);
+        // (snr, depth cells, depth faithful)
+        let mut rows: Vec<(f32, f64, f64)> = Vec::new();
+        for name in &names {
+            let path = format!(
+                "{}/../embedded-poc/assets/{name}.wav",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let Ok(w) = std::fs::read(&path) else {
+                continue;
+            };
+            let a12: Vec<i16> = w[44..]
+                .chunks_exact(2)
+                .take(180_000)
+                .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                .collect();
+            let a8 = resample_to_8k(&a12, 12_000);
+            let search = GatedSearch::new(200.0, 3000.0, 1.3, 30);
+            let (cands, cells) =
+                coarse_sync_gated_cells(&mut SliceSource(&a8), rate, &search, 1).unwrap();
+            let tables = CellTables::new();
+            let mut cs: alloc::boxed::Box<[[Cmplx<f32>; 8]; 79]> =
+                vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
+            let mut bp = alloc::boxed::Box::new(Ft8BpScratch::new());
+            let mut worker = CellsWorker::new(&mut cs, &mut bp, &tables)
+                .with_d_min_score(crate::ft8::decode_block::CELLS_D_MIN_SCORE);
+            let mut known: Vec<Found> = Vec::new();
+            worker.decode_round(
+                &cells,
+                &cands,
+                30,
+                DecodeDepth::EMBEDDED,
+                RETRY_MIN_SHIFT,
+                &mut known,
+            );
+            let base = crate::ft8::decode_block::SnrBaseline::new(&cells, &tables);
+            let mut sigs = Vec::new();
+            add_signals(
+                &mut known,
+                0,
+                &View {
+                    cells: &cells,
+                    t: &tables,
+                },
+                &base,
+                &mut sigs,
+                df,
+                nstep,
+                fs,
+            );
+            let r8 = residual(&a8, &sigs, 3072);
+            let mut r12 = a12.clone();
+            for sg in &sigs {
+                let dt = sg.t0 as f32 / 8000.0 - 0.5;
+                let f0 = refine_freq(&r12, &sg.tones, sg.f0, dt, &cfg, 2.5, 0.1);
+                subtract_tones_lpf_refine_dt(&mut r12, &sg.tones, f0, dt, &cfg, 2000, true);
+            }
+            for (i, sg) in sigs.iter().enumerate() {
+                let (f0, t8) = (sg.f0 as f64, sg.t0);
+                let before8 = tone_energy(&a8, 8000.0, f0, t8, &sg.tones);
+                let after8 = tone_energy(&r8, 8000.0, f0, t8, &sg.tones);
+                let t12 = t8 * 3 / 2;
+                let before12 = tone_energy(&a12, 12000.0, f0, t12, &sg.tones);
+                let after12 = tone_energy(&r12, 12000.0, f0, t12, &sg.tones);
+                rows.push((
+                    known[i].res.snr_db,
+                    10.0 * (after8 / before8).log10(),
+                    10.0 * (after12 / before12).log10(),
+                ));
+            }
+        }
+        let med = |v: &mut Vec<f64>| {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v[v.len() / 2]
+        };
+        std::println!("signals {}", rows.len());
+        std::println!(
+            "SNR bin        n   cells subtraction: mean / median dB left   faithful: mean / median"
+        );
+        for (lo, hi) in [
+            (-30.0, -15.0),
+            (-15.0, -8.0),
+            (-8.0, 0.0),
+            (0.0, 8.0),
+            (8.0, 40.0),
+        ] {
+            let sel: Vec<&(f32, f64, f64)> =
+                rows.iter().filter(|r| r.0 >= lo && r.0 < hi).collect();
+            if sel.is_empty() {
+                continue;
+            }
+            let (mut c, mut f): (Vec<f64>, Vec<f64>) = (
+                sel.iter().map(|r| r.1).collect(),
+                sel.iter().map(|r| r.2).collect(),
+            );
+            let (mc, mf) = (
+                c.iter().sum::<f64>() / c.len() as f64,
+                f.iter().sum::<f64>() / f.len() as f64,
+            );
+            std::println!(
+                "{lo:+5.0}..{hi:+4.0}  {:4}      {mc:7.1} / {:7.1}                      {mf:7.1} / {:7.1}",
+                sel.len(),
+                med(&mut c),
+                med(&mut f)
+            );
+            assert!(
+                mc <= mf + 3.0,
+                "SNR {lo}..{hi}: the cells flow leaves {mc:.1} dB, the faithful subtraction {mf:.1} dB"
+            );
+            if lo >= 8.0 {
+                assert!(mc <= -20.0, "strong signals are left at {mc:.1} dB");
+            }
+        }
+        assert!(rows.len() >= 250, "signals measured: {}", rows.len());
     }
 
     fn energy(x: &[i16]) -> f64 {
