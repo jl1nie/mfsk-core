@@ -53,6 +53,14 @@
 //! The unknown is what the rest of a `try_fallback` costs on the LX7 (the zsum BP, an f32 LLR): the prediction uses the host's instruction ratio for it. Stack: the OSD's own scratch is
 //! on the heap, so the stack free should stay within 2 KB of the OSD-off arms' figure.
 //!
+//! **The OSD capped per slot (`OsdMode::Defer`, `CellsWorker::osd_pass`), predicted before its run:** two more arms, `osd ad-cap6` and `osd ad-cap8`: the 30 candidates run with the OSD queued, then
+//! `osd_pass` runs the best 6 / 8 queued attempts by `OsdRank` score (timed on its own, the `osd pass` line); the stage-3 total includes it. Host (4 780 slots, `icap-cands`): of the 124 902
+//! queued attempts 15 / 23 / 31 % are run at K = 4 / 6 / 8, 33 / 38 of the 50 OSD decodes of the real slots are kept at K = 6 / 8, and the BP work is +1 % (an `Only` attempt runs one BP pass).
+//! The OSD attempt costs about 33 ms on the board (the `osd ad` arm's extra over OSD off, 1.16-1.26 s over about 35 attempts), plus the attempt's own fill and BP pass (about 3 ms): with 36 / 37 / 37
+//! queued, **`osd pass`, K = 6: 0.21-0.26 s; K = 8: 0.28-0.34 s**, and **stage 3 at K = 6: 0.80-0.95 / 0.65-0.80 / 0.65-0.80 s, at K = 8: 0.88-1.02 / 0.72-0.88 / 0.72-0.88 s** (OSD off 0.62 / 0.49 / 0.47).
+//! Decodes on the host recordings (the test `a_deferred_osd_pass_runs_the_best_k_of_the_queue`): K = 6 21 and K = 8 22 of the OSD at once's 23 (OSD off 19) in all three; per recording on the board
+//! 10-12 / 4-5 / 5 at K = 6 (OSD at once 12 / 5 / 5, OSD off 9 / 4 / 5). Stop rule as above.
+//!
 //! One BP pass (`b`): **0.57-0.70 ms**; a candidate apart from BP (`a`): about 1.5 ms. The stage-3 figures are +-10 %. **Stop rule:** if any stage is more than 25 % off its prediction,
 //! stop and explain it on the host before the next flash. The prediction rests on one ns-per-instruction ratio for every stage; the point of the run is to see where it breaks.
 
@@ -185,28 +193,34 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
         );
 
         // stage 3 at floor 0 and at the flow's floor
-        for (floor, gate_on, osd) in [
-            (0.0f32, false, None),
-            (CELLS_D_MIN_SCORE, false, None),
-            (CELLS_D_MIN_SCORE, true, None),
-            (CELLS_D_MIN_SCORE, false, Some(OsdSeeds::Faithful)),
-            (CELLS_D_MIN_SCORE, false, Some(OsdSeeds::AD)),
+        for (floor, gate_on, osd, cap) in [
+            (0.0f32, false, None, None),
+            (CELLS_D_MIN_SCORE, false, None, None),
+            (CELLS_D_MIN_SCORE, true, None, None),
+            (CELLS_D_MIN_SCORE, false, Some(OsdSeeds::AD), None),
+            (CELLS_D_MIN_SCORE, false, Some(OsdSeeds::AD), Some(6usize)),
+            (CELLS_D_MIN_SCORE, false, Some(OsdSeeds::AD), Some(8usize)),
         ] {
             let depth = DecodeDepth { osd: osd.is_some(), ..DecodeDepth::EMBEDDED };
-            let osd_label = match osd {
-                None => "off",
-                Some(OsdSeeds::AD) => "ad",
-                Some(_) => "faithful",
+            let osd_label = match (osd, cap) {
+                (None, _) => "off".into(),
+                (Some(OsdSeeds::AD), None) => "ad".into(),
+                (Some(OsdSeeds::AD), Some(k)) => alloc::format!("ad-cap{k}"),
+                (Some(_), _) => "faithful".into(),
             };
+            let osd_label: &str = &osd_label;
             let mut rows: Vec<Row> = Vec::new();
             let mut set: Vec<alloc::string::String> = Vec::new();
             let mut total = 0i64;
+            let mut found: Vec<mfsk_core::ft8::decode_block::Found> = Vec::new();
             for k in 0..2 {
                 rows.clear();
                 set.clear();
+                found.clear();
                 worker = worker
                     .with_d_min_score(floor)
                     .with_osd_seeds(osd.unwrap_or(OsdSeeds::Faithful))
+                    .with_osd_deferred(cap.is_some())
                     .with_gate(gate_on.then_some(&CELLS_GATE));
                 let _ = worker.take_bp_stats();
                 let t_all = now_us();
@@ -221,6 +235,25 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
                         }
                     }
                     rows.push(Row { rank: i, score: c.score, hs: *hs, us, calls: st.calls, passes: st.passes, dec: f.is_some() });
+                    if let Some(f) = f {
+                        found.push(f);
+                    }
+                }
+                // the deferred OSD: the best `cap` queued attempts, run once the slot's candidates are done
+                if let Some(cap) = cap {
+                    let queued = worker.osd_pending();
+                    let t0 = now_us();
+                    let before = found.len();
+                    worker.osd_pass(&cells, cap, depth, &mut found);
+                    let us = now_us() - t0;
+                    for f in &found[before..] {
+                        if let Some(t) = unpack77(f.res.message77()) {
+                            set.push(t);
+                        }
+                    }
+                    if k == 1 {
+                        log::info!("stage-bench: osd pass {label} cap {cap}: queued {queued}, {us} us, added {}", found.len() - before);
+                    }
                 }
                 total = now_us() - t_all;
                 let _ = k;

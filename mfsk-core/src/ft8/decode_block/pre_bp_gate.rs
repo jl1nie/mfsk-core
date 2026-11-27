@@ -86,6 +86,37 @@ pub const CELLS_GATE_OSD: BpGate = BpGate {
     min_logit: -6.6924 - 1.0,
 };
 
+/// The score that ranks the attempts waiting for the OSD fallback ([`OsdMode::Defer`](super::types::OsdMode)): a logistic model on `[mean, std, max, mean / std]` of `|llra|`,
+/// the hard-sync count of the attempt's spectra (`q`), and the search's score and hard-sync count. Higher = more likely that the OSD returns. Only the order matters: the
+/// worker runs the best `k` of a slot ([`CellsWorker::osd_pass`](super::CellsWorker::osd_pass)). Fitted by `scripts/osd-gate-fit.py` on the generated sets of 4 780 slots with
+/// OSD seeds `a`, `d` (balanced weights: a return is 0.4 % of the attempts there, 5 % on the real slots); judged on the 60 real slots, held out: the best 4 / 6 / 8 of a slot's
+/// attempts (20 / 30 / 40 % of them) hold 36 / 44 / 51 of the 60 returns.
+pub struct OsdRank {
+    pub bias: f32,
+    pub coef: [f32; 7],
+}
+
+/// The fitted [`OsdRank`].
+pub const CELLS_OSD_RANK: OsdRank = OsdRank {
+    bias: 52.0026,
+    coef: [
+        -11.5437, -16.632, -0.28454, -6.51439, 0.258622, 0.470296, 0.583787,
+    ],
+};
+
+impl OsdRank {
+    /// The score of an attempt: `llra` its first LLR vector, `q` the hard-sync count of its spectra, `score` and `hs` the search's.
+    pub fn logit<T: LlrScalar>(&self, llra: &[T], q: u32, score: f32, hs: u8) -> f32 {
+        let f = BpGate::features(llra, score, hs);
+        let x = [f[0], f[1], f[2], f[3], q as f32, score, hs as f32];
+        let mut z = self.bias;
+        for (c, v) in self.coef.iter().zip(x) {
+            z += c * v;
+        }
+        z
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

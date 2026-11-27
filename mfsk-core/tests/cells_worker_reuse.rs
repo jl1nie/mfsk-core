@@ -641,3 +641,85 @@ fn osd_seeds_ad_decodes_what_the_ten_runs_do() {
     }
     assert!(decoded >= 14, "the recordings decode with OSD: {decoded}");
 }
+
+/// The messages a worker decodes over the three recordings (30 candidates each, OSD seeds `a`, `d`), with the OSD at once (`None`), not at all (`Some(0)`), or deferred and
+/// run for the best `k` of the slot (`Some(k)`); and how many attempts were queued.
+fn trio_messages(osd: Option<Option<usize>>) -> (Vec<String>, usize) {
+    use mfsk_core::ft8::decode_block::OsdSeeds;
+    let depth = DecodeDepth {
+        osd: osd.is_some(),
+        ..DecodeDepth::EMBEDDED
+    };
+    let tables = CellTables::new();
+    let mut cs: Box<[[Cmplx<f32>; 8]; 79]> =
+        vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
+    let mut bp = Box::new(Ft8BpScratch::new());
+    let mut w = CellsWorker::new(&mut cs, &mut bp, &tables)
+        .with_osd_seeds(OsdSeeds::AD)
+        .with_osd_deferred(matches!(osd, Some(Some(_))));
+    let (mut all, mut queued) = (Vec::new(), 0);
+    for name in ["qso3_busy", "qso1", "qso2"] {
+        let a = audio(name);
+        let (cands, cells) = coarse_sync_gated_cells(
+            &mut SliceSource(&a),
+            Ft8Rate::Hz8000,
+            &GatedSearch::new(200.0, 3000.0, 1.3, 30),
+            1,
+        )
+        .unwrap();
+        let mut known = Vec::new();
+        w.decode_round(&cells, &cands, 30, depth, 0.25, &mut known);
+        queued += w.osd_pending();
+        if let Some(Some(k)) = osd {
+            w.osd_pass(&cells, k, depth, &mut known);
+            assert_eq!(w.osd_pending(), 0, "the pass empties the queue");
+        }
+        all.extend(texts(&known).into_iter().map(|t| format!("{name}: {t}")));
+    }
+    all.sort();
+    (all, queued)
+}
+
+/// The deferred OSD: with every queued attempt run (`k` unbounded) the slot decodes what the OSD at once does; with none (`k = 0`) what the flow does without OSD; with the
+/// best few, in between, and the ones it takes are the right ones (`k` = 2 / 6 / 8 keeps 1 / 2 / 3 of the OSD's 4 decodes here; the model's sign reversed keeps none of them). **Fails if** the unbounded
+/// pass differs from the OSD at once, `k = 0` from no OSD, the cap's decodes are not a subset of the OSD's, or the best-`k` count falls short.
+#[test]
+fn a_deferred_osd_pass_runs_the_best_k_of_the_queue() {
+    let (inline, _) = trio_messages(Some(None));
+    let (off, _) = trio_messages(None);
+    let (all, queued) = trio_messages(Some(Some(usize::MAX)));
+    let (none, _) = trio_messages(Some(Some(0)));
+    assert!(
+        inline.len() > off.len(),
+        "the OSD decodes more here: {} / {}",
+        inline.len(),
+        off.len()
+    );
+    assert!(queued > 20, "attempts were queued: {queued}");
+    assert_eq!(all, inline, "every queued attempt run = the OSD at once");
+    assert_eq!(none, off, "none run = no OSD");
+    for k in [1usize, 2, 6, 8] {
+        let (capped, _) = trio_messages(Some(Some(k)));
+        assert!(
+            off.iter().all(|m| capped.contains(m)),
+            "k {k}: the BP decodes stay"
+        );
+        assert!(
+            capped.iter().all(|m| inline.contains(m)),
+            "k {k}: nothing the OSD at once does not decode"
+        );
+        // measured on these recordings, k 1 / 2 / 6 / 8 -> 19 / 20 / 21 / 22 decodes (OSD off 19, at once 23); with the rank reversed 19 at every k
+        let at_least = match k {
+            1 => 0,
+            2 => 1,
+            6 => 2,
+            _ => 3,
+        };
+        assert!(
+            capped.len() >= off.len() + at_least,
+            "k {k}: {} decodes, OSD off {}",
+            capped.len(),
+            off.len()
+        );
+    }
+}

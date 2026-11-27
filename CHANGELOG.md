@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### OSD capped per slot: `CellsWorker::with_osd_deferred` + `osd_pass` (off by default; a divergence, Issue #766; host, 4 780 slots)
+
+- The attempts that reach the OSD fallback are queued with an `OsdRank` score (a logistic model on the LLR statistics, the hard syncs and the search score; `CELLS_OSD_RANK`, fitted on the generated sets, the 60 real slots held out) and `osd_pass(cells, k, ..)` runs the best `k` after the slot's BP work. Unbounded it decodes what the OSD at once does (test), `k = 0` what the flow does without OSD.
+- Host (7 397 true decodes with the OSD at once, 6 931 without; real slots 1 024 / 974): K = 4 / 6 / 8 / 10 runs the OSD on 15 / 23 / 31 / 38 % of the attempts and keeps 28 / 33 / 38 / 44 of the 50 decodes the OSD adds on the real slots (7 308 / 7 347 / 7 371 / 7 381 over all). The OSD pass is the only way found to fit the window: the OSD at once costs 1.2 s a slot on the CoreS3.
+- The pre-existing `ft8dec_sic.rs` needless borrow under `fixed-point` clippy is fixed.
+
 ### OSD seeds `a` and `d` only (`OsdSeeds::AD`, off by default; a divergence, Issue #766; host, 143 400 candidates)
 
 - `CellsWorker::with_osd_seeds(OsdSeeds::AD)`: the OSD fallback runs variants `a` and `d` at both snapshots (4 runs) in place of `ft8b.f90`'s ten. Variants `b`, `c`, `e` never returned on 4 780 slots (600 returns): **0 of 143 400 candidates differ** (7 442 decodes, 7 397 in the reference, both ways).

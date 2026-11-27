@@ -347,6 +347,10 @@ pub(in crate::ft8) struct PassCtx {
     pub skip_d: bool,
     /// The OSD fallback's runs ([`OsdSeeds`]); `Faithful` everywhere but a cells worker that asks otherwise.
     pub osd_seeds: OsdSeeds,
+    /// When the OSD fallback runs ([`OsdMode`]).
+    pub osd_mode: OsdMode,
+    /// The candidate's hard-sync count from the search (of 21), for `OsdRank`; 0 where unknown.
+    pub hs: u8,
     /// The cells flow's gate before BP (`BpGate`) and the candidate's hard-sync count it reads; `None` everywhere else.
     #[cfg(feature = "fixed-point")]
     pub gate: Option<GateCtx>,
@@ -363,6 +367,20 @@ pub enum OsdSeeds {
     Faithful,
     /// Variants `a` and `d` only, each at snapshots 1 and 2 (four runs; the LLRs are the one-symbol ones the staircase made already).
     AD,
+}
+
+/// When the OSD fallback of an attempt runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OsdMode {
+    /// At once, when the BP staircase has failed (`ft8b.f90`'s order).
+    #[default]
+    Inline,
+    /// Not run: the attempt is queued with its `OsdRank` score (`CellsWorker::osd_pending`), to be run by
+    /// `CellsWorker::osd_pass` after the slot's BP work, the best `k` of the slot only.
+    Defer,
+    /// An attempt queued by `Defer`, run again at its place for the OSD alone (the BP staircase is given no iterations).
+    Only,
 }
 
 /// A gate and the hard-sync count of the candidate it is asked about. Equal when they are the same gate (by address) and the same count.
@@ -391,6 +409,8 @@ impl PassCtx {
         ap: true,
         skip_d: false,
         osd_seeds: OsdSeeds::Faithful,
+        osd_mode: OsdMode::Inline,
+        hs: 0,
         #[cfg(feature = "fixed-point")]
         gate: None,
     };
@@ -399,6 +419,16 @@ impl PassCtx {
     #[cfg(feature = "fixed-point")]
     pub(in crate::ft8) const fn with_gate(self, gate: Option<GateCtx>) -> PassCtx {
         PassCtx { gate, ..self }
+    }
+
+    /// This context with the OSD fallback's timing and the candidate's search hard-sync count set.
+    #[cfg(feature = "fixed-point")]
+    pub(in crate::ft8) const fn with_osd_mode(self, osd_mode: OsdMode, hs: u8) -> PassCtx {
+        PassCtx {
+            osd_mode,
+            hs,
+            ..self
+        }
     }
 
     /// This context with the OSD fallback's runs chosen.

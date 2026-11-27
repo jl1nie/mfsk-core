@@ -232,6 +232,7 @@ pub(super) fn try_fallback(
     let OsdWork {
         osd,
         zsum: zsum_scratch,
+        ..
     } = work;
     // The fifth variant (`llre`, ft8b.f90 pass 5) is tried last, as upstream's
     // `do ipass=1,5` reaches it last. Computed only if a-d all fail.

@@ -81,8 +81,8 @@ pub use ft8dec_sic::{
     sic_signal_capacity,
 };
 #[cfg(feature = "fixed-point")]
-pub use pre_bp_gate::{BpGate, CELLS_GATE, CELLS_GATE_OSD};
-pub use types::OsdSeeds;
+pub use pre_bp_gate::{BpGate, CELLS_GATE, CELLS_GATE_OSD, CELLS_OSD_RANK, OsdRank};
+pub use types::{OsdMode, OsdSeeds};
 mod coarse_sync;
 mod fill_symbol_spectra;
 mod fine_sync_12k;

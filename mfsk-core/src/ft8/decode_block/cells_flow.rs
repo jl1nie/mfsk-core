@@ -31,9 +31,9 @@ use super::coarse_sync::GatedSearch;
 use super::fill_symbol_spectra::{SymMask, sym_in_mask};
 use super::pre_bp_gate::BpGate;
 use super::process_candidates::{Ft8BpScratch, process_candidate_with_scratch_ctx};
-use super::types::OsdSeeds;
 use super::types::{AudioSample, DEFAULT_Q_THRESH, Ft8Rate, SAMPLE_RATE_HZ};
 use super::types::{GateCtx, PassCtx};
+use super::types::{OsdMode, OsdSeeds};
 use crate::engine::scalar::Cmplx;
 use crate::engine::source::SliceSource;
 use crate::engine::sync::SyncCandidate;
@@ -269,6 +269,18 @@ pub struct CellsWorker<'a> {
     d_min_score: f32,
     gate: Option<&'static BpGate>,
     osd_seeds: OsdSeeds,
+    /// `OsdMode::Defer`: an attempt that reaches the OSD fallback is queued in `pending`, not run.
+    osd_deferred: bool,
+    pending: Vec<PendingOsd>,
+}
+
+/// An attempt queued for the OSD fallback: the candidate, the place of the attempt (`None`: the grid place) and its [`OsdRank`](super::OsdRank) score.
+struct PendingOsd {
+    cand: SyncCandidate,
+    hs: u8,
+    g: Grid,
+    p: Option<Place>,
+    logit: f32,
 }
 
 impl<'a> CellsWorker<'a> {
@@ -285,6 +297,8 @@ impl<'a> CellsWorker<'a> {
             d_min_score: 0.0,
             gate: None,
             osd_seeds: OsdSeeds::Faithful,
+            osd_deferred: false,
+            pending: Vec::new(),
         }
     }
 
@@ -300,6 +314,19 @@ impl<'a> CellsWorker<'a> {
     pub fn with_osd_seeds(mut self, osd_seeds: OsdSeeds) -> Self {
         self.osd_seeds = osd_seeds;
         self
+    }
+
+    /// This worker with the OSD fallback **deferred** ([`OsdMode::Defer`]): an attempt that reaches it (the BP staircase failed, `depth.osd`) is queued with its
+    /// [`OsdRank`](super::OsdRank) score instead of run, and [`osd_pass`](Self::osd_pass), called after the slot's BP work, runs the best `k` of them. Without it
+    /// (the default) the OSD runs at once, as `ft8b.f90` does. A divergence from WSJT-X (the OSD decodes that the cap drops, and the order of the decodes).
+    pub fn with_osd_deferred(mut self, deferred: bool) -> Self {
+        self.osd_deferred = deferred;
+        self
+    }
+
+    /// How many attempts wait for [`osd_pass`](Self::osd_pass).
+    pub fn osd_pending(&self) -> usize {
+        self.pending.len()
     }
 
     /// This worker running the staircase's variant `d` only for a candidate whose search score ([`SyncCandidate::score`]) is `d_min_score` or more
@@ -331,6 +358,7 @@ impl<'a> CellsWorker<'a> {
         p: Place,
         hs: Option<u8>,
         depth: DecodeDepth,
+        mode: OsdMode,
     ) -> Option<DecodeResult> {
         let gate = self.gate.zip(hs).map(|(gate, hs)| GateCtx { gate, hs });
         let view = View {
@@ -344,11 +372,17 @@ impl<'a> CellsWorker<'a> {
             |cs, _, mask| view.fill_mask(cs, g, p, mask),
             depth,
             DEFAULT_Q_THRESH,
-            DEFAULT_BP_MAX_ITER,
+            // `Only` runs the OSD of an attempt whose BP already failed: the staircase gets one pass, which cannot decode what it did not
+            if mode == OsdMode::Only {
+                0
+            } else {
+                DEFAULT_BP_MAX_ITER
+            },
             &[],
             PassCtx::FIRST
                 .skip_d(cand.score < self.d_min_score)
                 .with_osd_seeds(self.osd_seeds)
+                .with_osd_mode(mode, hs.unwrap_or(0))
                 .with_gate(gate),
         )
     }
@@ -378,6 +412,74 @@ impl<'a> CellsWorker<'a> {
         self.decode_candidate_at(cells, cand, Some(hs), depth, min_shift)
     }
 
+    /// After an attempt in [`OsdMode::Defer`]: queue it if it reached the OSD fallback.
+    fn queue_if_deferred(
+        &mut self,
+        cand: &SyncCandidate,
+        hs: Option<u8>,
+        g: Grid,
+        p: Option<Place>,
+    ) {
+        if !self.osd_deferred {
+            return;
+        }
+        #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
+        if let Some(logit) = self.bp.osd_work().deferred.take() {
+            self.pending.push(PendingOsd {
+                cand: cand.clone(),
+                hs: hs.unwrap_or(0),
+                g,
+                p,
+                logit,
+            });
+        }
+        #[cfg(not(any(feature = "fft-rustfft", feature = "osd")))]
+        let _ = (cand, hs, g, p);
+    }
+
+    /// The OSD fallback of the best `k` of the queued attempts ([`with_osd_deferred`](Self::with_osd_deferred)), by [`OsdRank`](super::OsdRank) score, each run again at
+    /// its place for the OSD alone; the queue is emptied. A decode already in `known` (same 77 bits) is not added again. Returns how many were added. `depth` is the one the
+    /// attempts ran with (it must have `osd`).
+    pub fn osd_pass(
+        &mut self,
+        cells: &HalfDbCells,
+        k: usize,
+        depth: DecodeDepth,
+        known: &mut Vec<Found>,
+    ) -> usize {
+        let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
+        let tstep = cells.rate().nstep() as f32 / cells.rate().hz() as f32;
+        let mut pend = core::mem::take(&mut self.pending);
+        pend.sort_by(|a, b| {
+            b.logit
+                .partial_cmp(&a.logit)
+                .unwrap_or(core::cmp::Ordering::Equal)
+        });
+        let before = known.len();
+        for pd in pend.iter().take(k) {
+            let place = pd.p.unwrap_or(ON_GRID);
+            if let Some(mut d) = self.attempt(
+                cells,
+                &pd.cand,
+                pd.g,
+                place,
+                Some(pd.hs),
+                depth,
+                OsdMode::Only,
+            ) {
+                if pd.p.is_some() {
+                    (d.freq_hz, d.dt_sec) = place.moved(d.freq_hz, d.dt_sec, df, tstep);
+                }
+                if !known.iter().any(|o| o.res.message77() == d.message77()) {
+                    known.push(Found { res: d, grid: pd.g });
+                }
+            }
+        }
+        pend.clear();
+        self.pending = pend;
+        known.len() - before
+    }
+
     fn decode_candidate_at(
         &mut self,
         cells: &HalfDbCells,
@@ -392,18 +494,26 @@ impl<'a> CellsWorker<'a> {
             j0: ((cand.dt_sec + 0.5) / tstep).round() as i32,
             k: (cand.freq_hz / df).round() as i64,
         };
-        let mut found = self.attempt(cells, cand, g, ON_GRID, hs, depth);
+        let mode = if self.osd_deferred {
+            OsdMode::Defer
+        } else {
+            OsdMode::Inline
+        };
+        let mut found = self.attempt(cells, cand, g, ON_GRID, hs, depth, mode);
+        self.queue_if_deferred(cand, hs, g, None);
         if found.is_none() {
             let p = View {
                 cells,
                 t: self.tables,
             }
             .place(g);
-            if p.worth_a_retry(min_shift)
-                && let Some(mut d) = self.attempt(cells, cand, g, p, hs, depth)
-            {
-                (d.freq_hz, d.dt_sec) = p.moved(d.freq_hz, d.dt_sec, df, tstep);
-                found = Some(d);
+            if p.worth_a_retry(min_shift) {
+                let d = self.attempt(cells, cand, g, p, hs, depth, mode);
+                self.queue_if_deferred(cand, hs, g, Some(p));
+                if let Some(mut d) = d {
+                    (d.freq_hz, d.dt_sec) = p.moved(d.freq_hz, d.dt_sec, df, tstep);
+                    found = Some(d);
+                }
             }
         }
         found.map(|res| Found { res, grid: g })

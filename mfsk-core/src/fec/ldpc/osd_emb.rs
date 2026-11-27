@@ -171,6 +171,9 @@ impl Default for Osd174Scratch {
 pub struct OsdWork {
     pub(crate) osd: Osd174Scratch,
     pub(crate) zsum: BpScratch<Ldpc174_91Params, f32>,
+    /// The score of the attempt that was queued for the OSD instead of run (`OsdMode::Defer`), taken by the worker after the attempt.
+    #[cfg(feature = "fixed-point")]
+    pub(crate) deferred: Option<f32>,
 }
 
 #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
@@ -179,6 +182,8 @@ impl OsdWork {
         Self {
             osd: Osd174Scratch::new(),
             zsum: BpScratch::new(),
+            #[cfg(feature = "fixed-point")]
+            deferred: None,
         }
     }
 }

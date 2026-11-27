@@ -2337,7 +2337,13 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // couldn't see.
     #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
     let prefetched_llr: Option<super::super::llr::LlrSet<f32>> =
-        if accepted.is_none() && depth.osd && q > 6 && pass.osd_seeds == super::types::OsdSeeds::AD
+        if pass.osd_mode == super::types::OsdMode::Defer {
+            // queued, not run: the OSD's inputs are made when the attempt is run again (`OsdMode::Only`)
+            None
+        } else if accepted.is_none()
+            && depth.osd
+            && q > 6
+            && pass.osd_seeds == super::types::OsdSeeds::AD
         {
             // Only variants a and d are tried: the one-symbol LLRs Step 1 made (`llr_a_fast`), which are `compute_llr_metric`'s `llra` and `llrd`
             // (test `the_ad_llrs_are_the_full_ones`), so nothing is recomputed. `llrb` / `llrc` of this set are zero and not read.
@@ -2402,7 +2408,21 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // is gated the same way here rather than relying on `depth.osd`
     // alone to keep it unreachable.
     #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
-    if accepted.is_none() {
+    if accepted.is_none() && pass.osd_mode == super::types::OsdMode::Defer {
+        if depth.osd && q > 6 {
+            // (`OsdMode::Defer` exists in the fixed-point build only: the cells flow)
+            #[cfg(feature = "fixed-point")]
+            {
+                let logit = super::pre_bp_gate::CELLS_OSD_RANK.logit::<LlrT>(
+                    &llr_a_fast.llra,
+                    q,
+                    cand.score,
+                    pass.hs,
+                );
+                bp_scratch.osd_work().deferred = Some(logit);
+            }
+        }
+    } else if accepted.is_none() {
         #[cfg(feature = "std")]
         if depth.osd && q > 6 {
             TRACE_OSD_ATTEMPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);

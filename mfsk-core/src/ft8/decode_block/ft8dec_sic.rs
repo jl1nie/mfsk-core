@@ -466,7 +466,7 @@ impl<'a, A: PcmSource> ResidualSource<'a, A> {
     /// that many samples behind, subtracted.
     fn step(&mut self) {
         let sub = self.sub;
-        self.inner.read(self.n, &mut self.raw);
+        self.inner.read(self.n, self.raw);
         for (j, (&r, d)) in self.raw.iter().zip(self.rd.iter_mut()).enumerate() {
             *d = r as f32;
             self.ring[(self.n as usize + j) & self.mask] = r as f32;

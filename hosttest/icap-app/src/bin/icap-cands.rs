@@ -40,10 +40,13 @@ fn main() {
         osd,
         ..DecodeDepth::EMBEDDED
     };
+    // OSD_CAP=K: the OSD fallback deferred: after a slot's candidates the best K queued attempts run (`osd_pass`); their decodes are `P` rows
+    let cap: Option<usize> = std::env::var("OSD_CAP").ok().and_then(|v| v.parse().ok());
     let gate_model = if osd { &CELLS_GATE_OSD } else { &CELLS_GATE };
     let mut w = CellsWorker::new(&mut cs, &mut bp, &tables)
         .with_d_min_score(d_min)
         .with_osd_seeds(seeds)
+        .with_osd_deferred(cap.is_some())
         .with_gate(gate.then_some(gate_model));
     for path in std::env::args().skip(1) {
         let slot12 = wav::load_i16(&path);
@@ -66,6 +69,7 @@ fn main() {
             .unwrap()
             .to_string_lossy()
             .to_string();
+        let mut known: Vec<mfsk_core::ft8::decode_block::Found> = Vec::new();
         for (i, (c, hs)) in cands.iter().take(max_cand).enumerate() {
             let _ = w.take_bp_stats();
             let f = w.decode_candidate_hs(&cells, c, *hs, depth, 0.25);
@@ -83,6 +87,23 @@ fn main() {
                 "{slot}\t{i}\t{:.2}\t{:.3}\t{}\t{hs}\t{dec}\t{truth}\t{msg}\t{}\t{}",
                 c.freq_hz, c.dt_sec, c.score, bp.calls, bp.passes
             );
+            if let Some(f) = f {
+                known.push(f);
+            }
+        }
+        if let Some(k) = cap {
+            let (queued, before) = (w.osd_pending(), known.len());
+            let _ = w.take_bp_stats();
+            w.osd_pass(&cells, k, depth, &mut known);
+            let bp = w.take_bp_stats();
+            // `P` rows: the decodes the pass added (message, in the reference), then one summary row: attempts queued, run, BP passes of the pass
+            for f in &known[before..] {
+                let m = unpack77(f.res.message77())
+                    .map(|m| m.split_whitespace().collect::<Vec<_>>().join(" "))
+                    .unwrap_or_default();
+                println!("P\t{slot}\t{}\t{m}", refs.contains(&m) as u8);
+            }
+            println!("Q\t{slot}\t{queued}\t{}\t{}", queued.min(k), bp.passes);
         }
     }
     let _ = fft_shim::factory_calls();
