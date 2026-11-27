@@ -568,9 +568,244 @@ fn probe4(list: &str, dir: &str) {
     }
 }
 
+/// `probe5 <slot.wav> <freq> <dt> <message> [df] [ddt]`: where, round the printed place, a signal's tones are best seen in the 12 kHz audio (the least hard-decision tone errors of 79): the search is
+/// +-`df` Hz (0.25 steps) x +-`ddt` s (0.01 s steps). Prints the best few places.
+#[cfg(feature = "fixed-point")]
+fn probe5(wav: &str, f: f32, dt: f32, msg: &str, df: f32, ddt: f32) {
+    use mfsk_core::msg::wsjt77::pack77;
+    let audio = load(wav);
+    let t: Vec<&str> = msg.split(' ').collect();
+    let bits = match t.len() {
+        3 => pack77(t[0], t[1], t[2]),
+        2 => pack77(t[0], t[1], ""),
+        _ => None,
+    }
+    .expect("pack77");
+    let tones = mfsk_core::engine::tx::message_to_tones::<Ft8>(&bits);
+    let tone_powers = |ff: f32, dd: f32, k: usize| -> [f64; 8] {
+        let start = ((dd + 0.5) * 12_000.0).round() as i64 + 1920 * k as i64;
+        let mut p = [0f64; 8];
+        for (tt, pt) in p.iter_mut().enumerate() {
+            let w = 2.0 * std::f64::consts::PI * (ff as f64 + 6.25 * tt as f64) / 12_000.0;
+            let (mut re, mut im) = (0f64, 0f64);
+            for n in 0..1920usize {
+                let i = start + n as i64;
+                if i >= 0 && (i as usize) < audio.len() {
+                    let x = audio[i as usize] as f64;
+                    re += x * (w * n as f64).cos();
+                    im -= x * (w * n as f64).sin();
+                }
+            }
+            *pt = re * re + im * im;
+        }
+        p
+    };
+    let mut res: Vec<(usize, f32, f32)> = Vec::new();
+    let (nf, nd) = ((df / 0.25) as i32, (ddt / 0.01) as i32);
+    for i in -nf..=nf {
+        for j in -nd..=nd {
+            let (ff, dd) = (f + 0.25 * i as f32, dt + 0.01 * j as f32);
+            let mut err = 0usize;
+            for (k, &tr) in tones.iter().enumerate() {
+                let p = tone_powers(ff, dd, k);
+                let b = (0..8)
+                    .max_by(|&x, &y| p[x].partial_cmp(&p[y]).unwrap())
+                    .unwrap();
+                err += (b != tr as usize) as usize;
+            }
+            res.push((err, ff, dd));
+        }
+    }
+    res.sort_by_key(|r| r.0);
+    let at = res
+        .iter()
+        .find(|r| (r.1 - f).abs() < 0.01 && (r.2 - dt).abs() < 0.001)
+        .map(|r| r.0);
+    println!("printed place f {f} dt {dt}: errors {:?}", at);
+    for r in res.iter().take(6) {
+        println!(
+            "  best: {} errors at f {:.2} (df {:+.2}) dt {:+.2} (ddt {:+.2})",
+            r.0,
+            r.1,
+            r.1 - f,
+            r.2,
+            r.2 - dt
+        );
+    }
+}
+
+/// `probe6 <slot.wav> <freq> <dt> <message>`: the same tone errors as `probe5`, but on **`ft8_downsample.f90`'s baseband** (a 192 000-point FFT of the slot, the band `f0 - 1.5 baud .. f0 + 8.5 baud`
+/// with 101-bin cosine tapers, shifted to 0 and brought back at 200 Hz: 32 samples a symbol), the symbols then read with a 32-point DFT, over the starts within +-8 samples (5 ms) of the printed place.
+#[cfg(feature = "fixed-point")]
+fn probe6(wav: &str, f0: f32, dt: f32, msg: &str, resid: Option<&str>) {
+    use mfsk_core::msg::wsjt77::pack77;
+    use rustfft::FftPlanner;
+    use rustfft::num_complex::Complex32;
+    let audio: Vec<f32> = match resid {
+        Some(r) => std::fs::read(r)
+            .unwrap()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .take(180_000)
+            .collect(),
+        None => load(wav).iter().map(|&x| x as f32).collect(),
+    };
+    let t: Vec<&str> = msg.split(' ').collect();
+    let bits = match t.len() {
+        3 => pack77(t[0], t[1], t[2]),
+        2 => pack77(t[0], t[1], ""),
+        _ => None,
+    }
+    .expect("pack77");
+    let tones = mfsk_core::engine::tx::message_to_tones::<Ft8>(&bits);
+    const NFFT1: usize = 192_000;
+    const NFFT2: usize = 3200;
+    let mut planner = FftPlanner::<f32>::new();
+    let mut x: Vec<Complex32> = vec![Complex32::new(0.0, 0.0); NFFT1];
+    for (i, &a) in audio.iter().take(180_000).enumerate() {
+        x[i] = Complex32::new(a, 0.0);
+    }
+    planner.plan_fft_forward(NFFT1).process(&mut x);
+    let df = 12_000.0 / NFFT1 as f32;
+    let baud = 12_000.0 / 1920.0;
+    let i0 = (f0 / df).round() as i64;
+    let it = (((f0 + 8.5 * baud) / df).round() as usize).min(NFFT1 / 2);
+    let ib = (((f0 - 1.5 * baud) / df).round() as i64).max(1) as usize;
+    let mut c1 = vec![Complex32::new(0.0, 0.0); NFFT2];
+    let mut k = 0usize;
+    for (dst, src) in c1.iter_mut().zip(&x[ib..=it]) {
+        *dst = *src;
+        k += 1;
+    }
+    let taper: Vec<f32> = (0..=100)
+        .map(|i| 0.5 * (1.0 + (i as f32 * std::f32::consts::PI / 100.0).cos()))
+        .collect();
+    for i in 0..=100 {
+        c1[i] *= taper[100 - i];
+        c1[k - 1 - 100 + i] *= taper[i];
+    }
+    // cshift(c1, i0 - ib): element j of the result is c1[(j + shift) mod n]
+    let shift = (i0 - ib as i64).rem_euclid(NFFT2 as i64) as usize;
+    let rot: Vec<Complex32> = (0..NFFT2).map(|j| c1[(j + shift) % NFFT2]).collect();
+    let mut c = rot;
+    planner.plan_fft_inverse(NFFT2).process(&mut c);
+    let fac = 1.0 / ((NFFT1 * NFFT2) as f32).sqrt();
+    for v in c.iter_mut() {
+        *v *= fac;
+    }
+    let mut sym_fft = planner.plan_fft_forward(32);
+    let _ = &mut sym_fft;
+    let center = ((dt + 0.5) * 200.0).round() as i64;
+    let mut best = (usize::MAX, 0i64);
+    let mut at_printed = 0usize;
+    for off in -8i64..=8 {
+        let mut err = 0usize;
+        for (kk, &tr) in tones.iter().enumerate() {
+            let start = center + off + 32 * kk as i64;
+            let mut buf = vec![Complex32::new(0.0, 0.0); 32];
+            for (n, b) in buf.iter_mut().enumerate() {
+                let i = start + n as i64;
+                if i >= 0 && (i as usize) < NFFT2 {
+                    *b = c[i as usize];
+                }
+            }
+            sym_fft.process(&mut buf);
+            let b = (0..8)
+                .max_by(|&x, &y| buf[x].norm_sqr().partial_cmp(&buf[y].norm_sqr()).unwrap())
+                .unwrap();
+            err += (b != tr as usize) as usize;
+        }
+        if off == 0 {
+            at_printed = err;
+        }
+        if std::env::var("PROBE_SYMS").is_ok() && (off == 0 || off == 1) {
+            let mut line = String::new();
+            for kk in 0..79usize {
+                let start = center + off + 32 * kk as i64;
+                let mut buf = vec![Complex32::new(0.0, 0.0); 32];
+                for (n, b) in buf.iter_mut().enumerate() {
+                    let i = start + n as i64;
+                    if i >= 0 && (i as usize) < NFFT2 {
+                        *b = c[i as usize];
+                    }
+                }
+                sym_fft.process(&mut buf);
+                let b = (0..8)
+                    .max_by(|&x, &y| buf[x].norm_sqr().partial_cmp(&buf[y].norm_sqr()).unwrap())
+                    .unwrap();
+                line.push_str(&format!("{b}"));
+            }
+            println!("off {off:+}: argmax {line}");
+        }
+        if err < best.0 {
+            best = (err, off);
+        }
+    }
+    println!(
+        "jt9-style baseband: errors at the printed place {at_printed}, best {} at offset {:+} samples ({:+.0} ms)",
+        best.0,
+        best.1,
+        best.1 as f32 * 5.0
+    );
+}
+
+/// `tones <message>`: the 79 transmitted tones of a message (the encoder's), one line.
+fn tones_of(msg: &str) {
+    use mfsk_core::msg::wsjt77::pack77;
+    let t: Vec<&str> = msg.split(' ').collect();
+    let bits = match t.len() {
+        3 => pack77(t[0], t[1], t[2]),
+        2 => pack77(t[0], t[1], ""),
+        _ => None,
+    }
+    .expect("pack77");
+    let tones = mfsk_core::engine::tx::message_to_tones::<Ft8>(&bits);
+    println!(
+        "{}",
+        tones
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let config = args.next().expect("config");
+    if config == "tones" {
+        tones_of(&args.next().expect("message"));
+        return;
+    }
+    #[cfg(feature = "fixed-point")]
+    if config == "probe6" {
+        let wav = args.next().expect("wav");
+        let (f, dt): (f32, f32) = (
+            args.next().unwrap().parse().unwrap(),
+            args.next().unwrap().parse().unwrap(),
+        );
+        let msg = args.next().unwrap();
+        let resid = args.next();
+        probe6(&wav, f, dt, &msg, resid.as_deref());
+        return;
+    }
+    #[cfg(feature = "fixed-point")]
+    if config == "probe5" {
+        let wav = args.next().expect("wav");
+        let (f, dt): (f32, f32) = (
+            args.next().unwrap().parse().unwrap(),
+            args.next().unwrap().parse().unwrap(),
+        );
+        let msg = args.next().unwrap();
+        let (df, ddt): (f32, f32) = (
+            args.next().map_or(6.0, |x| x.parse().unwrap()),
+            args.next().map_or(0.7, |x| x.parse().unwrap()),
+        );
+        probe5(&wav, f, dt, &msg, df, ddt);
+        return;
+    }
     #[cfg(feature = "fixed-point")]
     if config == "probe4" {
         let list = args.next().expect("list.tsv");

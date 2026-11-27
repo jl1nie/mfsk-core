@@ -36,3 +36,16 @@
 
 ## 4. What a real Pi 3 must measure first
 The ns a host instruction on an A53 (and the NEON FFT), whether rayon helps at all (the host says it does not), the working set against the 512 KB L2.
+
+## 5. What the LLR dump of `jt9` showed (2026-11-28, later the same day)
+
+The trace build of `jt9` (`target/upstream/wsjtx-v3.2.0-rc1-trace`, a local copy, not committed) was given one more dump at each successful decode: `llra`..`llre`, `llrz`, `s8` (the 8 x 79 tone magnitudes) and a checksum of `dd0`. The cells flow's LLR at the same place (`fill` of the grid place, `compute_llr_fast_metric`, the 3 x 3 places round it; the patch of that measurement is `llr_against_jt9.patch`, kept out of the tree: it cannot fail) against `jt9`'s `llra`, bit errors of the signs against the transmitted codeword (of 174):
+
+| | n | `jt9` `llra` | cells at `jt9`'s place | cells, best of 3 x 3 | correlation |
+|---|---|---|---|---|---|
+| found by the cells flow | 326 | 15.8 | 18.1 | 17.1 | 0.81 |
+| **missed** | 57 | **30.3** | **56.6** | 53.5 | 0.44 |
+
+* For the ones the flow finds the two LLR agree (0.81). For the misses `jt9`'s LLR is far cleaner than the cells' (many at 7-14 bit errors where the cells have 35-70); a search of +-8 rows and +-6 bins finds no offset that fixes it (best error 50.8 on average, 20 of 57 under 40): **the place is not the cause**.
+* **One case traced to the end, `CU2DX SP6DXH -19`** (`websdr_test7`, 527 Hz, decoded by `jt9` at stage 50, pass 1, BP, 8 hard errors): `jt9`'s own `s8` reads the 79 tones correctly from **symbol 14 on** (the argmax sequence equals the transmitted one from there) and has the first 14 symbols destroyed by a constant tone 7, which is `RA6FSD SP2EWQ -07` at 570.4 Hz (+43.75 Hz = its tone 7), +17 dB, decoded by `jt9` at stage 41 (and by the cells flow). The same audio read the same way here (a 12 kHz DFT, or `ft8_downsample`'s baseband reimplemented, validated on strong signals: 0-3 errors) shows that tone 7 over **many symbols of the whole message** (32 of 79 symbols wrong): **`jt9` reads the weak signal from audio from which the strong neighbour has been subtracted, this recording's neighbour is not removed in what I measure.** `jt9` decodes in up to 3 stages (nzhsym 41, 47, 50) of 3 passes, each stage re-reading the audio and subtracting what the earlier stages found; the trace's `resid_*.bin` are the audio after a pass, and the **audio at the first pass of stage 50 is not the raw audio** (the `probe4` figure for those signals, which used the raw audio, was too pessimistic).
+* So the open question is narrower: after the cells SIC subtracts `RA6FSD` (found, +17 dB), why is `CU2DX` not decoded in a later pass, when `jt9` reads it cleanly from symbol 14? The oracle (every other reference signal subtracted with this crate's `refine_freq` + `subtract_tones_lpf_refine_dt`) gave 3 of 60; `jt9` subtracts with the exact (sub-sample, sub-0.1 Hz) parameters of its own fine sync and amplitude tracking. Next measurements: the cells flow's own pass-2 candidate list and LLR at `CU2DX`'s place on **its** residual cells (needs a hook in `ft8dec_sic.rs`), and `jt9`'s residual (`resid_41_*`) fed to the cells flow.
