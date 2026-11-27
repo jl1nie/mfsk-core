@@ -957,3 +957,21 @@ The OSD adds 0.63 / 0.34 / 0.40 s at K = 6 (2 passes; 12 / 8 / 12 attempts run o
 
 **Not done**: K per slot rather than per round; the model's ranking on residual cells (fitted on first-pass attempts); the OSD in the SIC under WiFi / USB host, and the cell store and audio the SIC needs held (plan section 14).
 
+## 30. Stage 3 and the OSD pass on two cores of the CoreS3 (`ft8-two-core-bench`, 2026-11-27)
+
+**Method.** Two workers (core 0: the bench thread, core 1: `tc_w1`, each with its own internal-DRAM staging block and BP scratch), 30 candidates, OSD seeds `a`, `d`, `d` floor 16. The round's candidates are dealt out by an atomic index and merged by candidate index; the attempts that fail the BP staircase are queued by their worker, gathered, ranked and the best K dealt out in turn (`rank_osd_attempts`, `run_osd_attempt`; the host test `the_osd_pass_split_between_two_workers_equals_one_workers`); `band` is `search_cells` over two halves of the carriers and `merge_cells_parts`. No WiFi, no USB host. Predictions are in the module doc of `two_core_bench.rs`, written before the run.
+
+| | `qso3_busy` | `qso1` | `qso2` | predicted (2 cores) |
+|---|---|---|---|---|
+| `band`, 1 -> 2 cores | 0.458 -> 0.416 s | 0.460 -> 0.418 | 0.459 -> 0.406 | 0.25-0.30 s |
+| round (BP of 30), 1 -> 2 cores | 0.585 -> 0.383 s (x1.53) | 0.447 -> 0.297 (x1.50) | 0.469 -> 0.308 (x1.52) | 0.31-0.37 / 0.24-0.28 / 0.25-0.30 |
+| OSD pass K = 6 | 0.220 -> 0.148 s | 0.256 -> 0.168 | 0.273 -> 0.161 | 0.11-0.13 / 0.13-0.15 / 0.13-0.16 |
+| OSD pass K = 14 | 0.537 -> 0.363 s | 0.597 -> 0.388 | 0.572 -> 0.385 | 0.25-0.30 |
+| round + pass K = 6 | 0.805 -> 0.530 s | 0.703 -> 0.465 | 0.742 -> 0.469 | 0.42-0.50 / 0.37-0.43 / 0.38-0.46 |
+
+The decodes of the two cores are the one core's set at K = 6 and 14 (11 / 5 / 5 and 12 / 5 / 5), the band's candidate lists are equal.
+
+**Off the predictions, stop rule (25 %).** `band` on two halves only x1.10 (predicted x1.5-1.8) and the pass at K = 14 21-29 % over its range; the round and the pass at K = 6 are 3-14 % over theirs. The prediction used 1.6-1.9 times, from the SIC rounds' `2core` arm (the SIC arm's saving over the host's BP instructions); the measured scaling is x1.5 for the round and the pass. **Not explained**; the hypothesis is the two cores sharing the PSRAM: an attempt at K = 14 is 38 ms on one core (`osd pass`, 1 core: 0.537 s / 14) and 52 ms on two (0.363 s / 7); `band_best` was already suspected of waiting on memory (design note section 24 / the `band narrow` lines of `ft8-stage-bench`) and gains the least. Not tested: the OSD's scratch (the 4.5 KB `Osd174Scratch` and the f32 BP scratch are on the heap, in PSRAM at that size) in internal DRAM.
+
+**The window, with the measured figures (emit 0.81 s before the boundary, estimates from the table).** One core: `band` ends at -0.35 s, the round at +0.23 s, the pass at K = 6 at +0.45 s (K = 14: +0.76 s). Two cores: `band` ends at -0.39 s, the round at -0.01 s, **the pass at K = 6 at +0.14 s, at K = 14 at +0.35 s**: inside the 0.5 s after the boundary; `qso1` and `qso2` earlier still. Without WiFi, USB host and the app's own tasks; the second worker's staging block and BP scratch (about 22 KB of internal DRAM, `min free internal` 205 KB in this bench) are the app's to find.
+
