@@ -702,8 +702,8 @@ use crate::engine::scalar::LlrScalar;
 
 /// What the belief-propagation decoders ran on one [`BpScratch`]: the cost of BP in the unit it scales with.
 ///
-/// A **pass** is one round of message updates (the part of an iteration that costs; about 25 000 instructions for FT8's code in one x86 measurement, a
-/// single slot): a decode that converges at iteration `i` ran `i` passes, a stall exit at iteration `i` ran `i`, a call that never converges ran
+/// A **pass** is one round of message updates (the part of an iteration that costs; about 65 000 instructions for FT8's code through the NMS entry point in one x86 measurement,
+/// `qso3_busy`: 139 M in 2 145 passes; `ft8dec`'s `bp()` about 48 500 on the same slot): a decode that converges at iteration `i` ran `i` passes, a stall exit at iteration `i` ran `i`, a call that never converges ran
 /// `max_iter + 1`. Counted by [`bp_decode_generic_nms_with_scratch`] (so [`bp_decode_nms_with_scratch`]) and [`bp_decode_generic_kind_with_scratch`]
 /// when they run on **this scratch**. **Not counted:** the fresh-scratch entry points (`bp_decode`, `bp_decode_kind`, `bp_decode_generic*`: the scratch,
 /// and so the count, is dropped with the call), the `zsum` entry points ([`bp_llr_zsum_with_scratch`], [`bp_llr_zsum_ap_with_scratch`]: they run
