@@ -1000,3 +1000,20 @@ Internal DRAM cuts the two-core pass by **5-6 %** (about 20 ms at K = 14) and th
 
 The sets of decodes are equal (`qso3_busy` 7, `qso1` and `qso2` 2). **The old design's two cores did scale, x1.65-1.73** (the Goertzel of pass 2 and of stage 3's data symbols is the long-body, sequential-read kind of loop that pays least for the other core; the cells flow's BP round x1.5 and band x1.1 are the short-loop and PSRAM-bound kinds), so the "worked well" was true; what it lacked was the one-core measurement, now taken. Not equal: the re-ranked list of `pass2_split` (each half re-ranked, then merged) is **not** the one `refine_candidates_into` makes over all thirty (the bench logs `DIFFER` for every recording and `max_cand`), so the old two-core pass 2 hands stage 3 a different top `max_cand` than a single core would; the decodes were the same on these three recordings. The old flow is slower in absolute terms: pass 2 plus stage 3 is 0.85-1.24 s on two cores for 2-7 decodes, against the cells flow's 0.3-0.8 s (round, OSD pass) for 5-12.
 
+
+## 31. The early emit on a partly filled store (host, 60 slots, `CellsOptions::p0_window()`, 2026-11-27)
+
+Step 0d of the board plan (section 25): how much of the window path's work can be decoded **before the store is complete**. `icap-early <fill-rows> <slots>` (`hosttest/icap-app`): the cells of the first `fill` rows only are searched (`search_cells`), the candidates whose every row is written (`candidate_ready`: `j0 + 157 < fill`) are decoded from that partial store, then the store is completed, the full search runs, the candidates with no early counterpart (1 cell, 0.12 s) are decoded, then the OSD pass (K = 6) over everything queued. The corpus is the 22 recordings and 38 busy slots (60 slots, 1 800 candidates; reference = `jt9` for the recordings, the generator's truth for the busy ones). A slot is 184 rows of 80 ms.
+
+| fill (rows) | candidates ready of 1 800 | **decodes at the emit** (in the reference) | of the complete flow's 985 | decoded after the fill |
+|---|---|---|---|---|
+| 184 (complete) | 1 635 | 896 (874) | 88.7 % | 165 candidates |
+| **174 (row pair 87)** | 832 | **400 (391)** | **39.7 %** | 1 018 |
+| 170 (85) | 536 | 197 (192) | 19.5 % | 1 344 |
+| 166 (83) | 407 | 117 (113) | 11.5 % | 1 495 |
+| 160 (80) | 246 | 32 (31) | 3.1 % | 1 673 |
+
+* **Nothing is lost**: the union of the early decodes and the ones after the fill is the complete flow's, 1 019 decodes (985 in the reference), on every row of the table (the search of a partial store is the full search's top candidates plus others, and the full search is run after the fill; the early decodes are a head start, not a replacement).
+* **What the emit buys depends on the DT of the band, not on the decoder**: a candidate at DT `d` is ready at `fill > (d + 0.5) / 0.08 + 157`, so at row pair 87 only signals with DT under about 0.9 s are ready, and **40 % of the decodes are in hand 0.65 s before the slot's end**; 60 % arrive after it, in the late path. A signal that starts at DT 0 ends 12.64 s later, that is 13.1 s from the slot start: it is only in the store at row 164.
+* **Consequence for section 10 of `PROFILES.md`**: the window path's work is half before the emit and half after it. The reply deadline is the audio start of the own transmission (`reference_wsjtx_tx_period_timing`), not the slot boundary, so the work after the fill is in the window as long as it fits the 0.65 s (row pair 87) to the deadline; whether it does is the board's number (a round of 30 candidates is 0.6 s one core), not this table's.
+* Not measured here: the time of the search on a partial store on the board (one band's `band_best` is 0.46 s on one core, section 30), which the emit would run twice (partial and full).
