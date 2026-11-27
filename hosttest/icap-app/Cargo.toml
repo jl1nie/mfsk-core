@@ -23,3 +23,9 @@ fixed-point = ["mfsk-core/fixed-point"]
 # The OSD fallback of the ICAP profile (`decode_block_low_mem` only; `decode_block` is the ESP32 driver and keeps
 # `DecodeDepth::EMBEDDED`).
 osd = ["mfsk-core/osd"]
+
+# the cells flow exists only in the fixed-point build
+[[bin]]
+name = "icap-cands"
+path = "src/bin/icap-cands.rs"
+required-features = ["fixed-point"]
