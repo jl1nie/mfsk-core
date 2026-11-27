@@ -535,3 +535,61 @@ fn the_gate_skips_hopeless_candidates_and_nothing_that_decodes() {
         "the gate saves BP calls: {calls_gated} against {calls_base}, {skipped} candidates"
     );
 }
+
+/// The same with OSD on and `CELLS_GATE_OSD`: **the same decodes** as a worker without a gate on the three recordings, and fewer OSD runs and BP calls over all of them (`BpStats::osd_runs`). A gate fitted
+/// without OSD is not the one to use here (it loses decodes OSD makes). **Fails if** the OSD-on gate skips a candidate that decodes, never skips one, or the OSD runs are not counted.
+#[test]
+fn the_osd_gate_skips_hopeless_candidates_and_saves_osd_runs() {
+    use mfsk_core::ft8::decode_block::CELLS_GATE_OSD;
+    let depth = DecodeDepth {
+        osd: true,
+        ..DecodeDepth::EMBEDDED
+    };
+    let tables = CellTables::new();
+    let mk = || -> (Box<[[Cmplx<f32>; 8]; 79]>, Box<Ft8BpScratch>) {
+        (
+            vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap(),
+            Box::new(Ft8BpScratch::new()),
+        )
+    };
+    let ((mut cs0, mut bp0), (mut cs1, mut bp1)) = (mk(), mk());
+    let mut base = CellsWorker::new(&mut cs0, &mut bp0, &tables);
+    let mut gated = CellsWorker::new(&mut cs1, &mut bp1, &tables).with_gate(Some(&CELLS_GATE_OSD));
+    let (mut osd_base, mut osd_gated) = (0u32, 0u32);
+    for name in ["qso3_busy", "qso1", "qso2"] {
+        let a = audio(name);
+        let (cands, cells) = coarse_sync_gated_cells(
+            &mut SliceSource(&a),
+            Ft8Rate::Hz8000,
+            &GatedSearch::new(200.0, 3000.0, 1.3, 30),
+            1,
+        )
+        .unwrap();
+        for (c, hs) in cands.iter().take(30) {
+            let key = |f: &Option<mfsk_core::ft8::decode_block::Found>| {
+                f.as_ref().map(|f| {
+                    (
+                        f.res.message77().to_vec(),
+                        f.res.freq_hz.to_bits(),
+                        f.res.dt_sec.to_bits(),
+                    )
+                })
+            };
+            let b = base.decode_candidate_hs(&cells, c, *hs, depth, 0.25);
+            osd_base += base.take_bp_stats().osd_runs;
+            let g = gated.decode_candidate_hs(&cells, c, *hs, depth, 0.25);
+            osd_gated += gated.take_bp_stats().osd_runs;
+            assert_eq!(
+                key(&g),
+                key(&b),
+                "{name}: score {} hs {hs}: the OSD gate must not change a decode",
+                c.score
+            );
+        }
+    }
+    assert!(osd_base >= 60, "the recordings make OSD runs: {osd_base}");
+    assert!(
+        osd_gated < osd_base,
+        "the gate saves OSD runs: {osd_gated} against {osd_base}"
+    );
+}

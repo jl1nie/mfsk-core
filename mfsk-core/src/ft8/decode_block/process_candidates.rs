@@ -2199,10 +2199,10 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // NMS implementation, bit-identical AWGN behaviour by design.
     let llr_a_fast: super::super::llr::LlrSet<LlrT> =
         super::super::llr::compute_llr_fast_metric(cs_scratch, pass.squared());
-    // The cells flow's gate before BP (`BpGate`): a candidate the model gives no chance is not decoded. Only for flows without OSD (OSD rescues what BP fails on, which the fit never saw).
+    // The cells flow's gate before BP (`BpGate`): a candidate the model gives no chance is not decoded, nor tried by OSD. The caller sets the gate that was fitted for its depth
+    // (`CELLS_GATE` without OSD: OSD rescues candidates BP fails on, which that fit never saw).
     #[cfg(feature = "fixed-point")]
     if let Some(g) = pass.gate
-        && !depth.osd
         && !g.gate.passes(&llr_a_fast.llra, cand.score, g.hs)
     {
         return None;
@@ -2386,6 +2386,9 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
         #[cfg(feature = "std")]
         if depth.osd && q > 6 {
             TRACE_OSD_ATTEMPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
+        if depth.osd && q > 6 {
+            bp_scratch.note_osd_run();
         }
         accepted = super::osd_strategy::try_fallback(
             cs_scratch,

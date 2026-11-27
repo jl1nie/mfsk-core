@@ -4,8 +4,8 @@
 //! candidate it keeps), like the cells flow itself, **and a learned one**: the coefficients and the threshold are fitted to data (see [`CELLS_GATE`]).
 //!
 //! It only skips candidates: it cannot create a decode (or a phantom), and a skipped candidate costs one LLR and the statistics instead of up to four BP calls
-//! (about 40 000 host instructions a pass, 20-30 passes a failing call). It is meant for flows **without OSD** (the board's): OSD rescues candidates BP fails on, which the
-//! fit never saw, so [`BpGate::passes`] is not consulted when the depth has OSD on.
+//! (about 40 000 host instructions a pass, 20-30 passes a failing call), and no OSD run. **The model is fitted for a depth**: [`CELLS_GATE`] without OSD; with OSD on, a candidate BP
+//! fails on may still decode, which that fit never saw, so a flow with OSD sets a gate fitted with OSD on (the gate is not consulted by depth: the caller chooses it).
 
 use crate::engine::scalar::LlrScalar;
 
@@ -22,8 +22,9 @@ pub struct BpGate {
 }
 
 impl BpGate {
-    /// The model's logit for a candidate: `llra` is its first LLR vector (any length: 174 for FT8), `score` the search score, `hs` the hard-sync count (of 21).
-    pub fn logit<T: LlrScalar>(&self, llra: &[T], score: f32, hs: u8) -> f32 {
+    /// The six inputs of the model for a candidate: `[mean, std, max, mean / std, score, hs]` of the magnitudes of `llra` (its first LLR vector, any length: 174 for FT8), the search
+    /// `score` and the hard-sync count `hs` (of 21). `std` is the population standard deviation, floored at 0.001 in the ratio.
+    pub fn features<T: LlrScalar>(llra: &[T], score: f32, hs: u8) -> [f32; 6] {
         let n = llra.len() as f32;
         let (mut sum, mut max) = (0.0f32, 0.0f32);
         for &v in llra {
@@ -40,9 +41,13 @@ impl BpGate {
             var += d * d;
         }
         let std = (var / n).sqrt();
-        let x = [mean, std, max, mean / std.max(1e-3), score, hs as f32];
+        [mean, std, max, mean / std.max(1e-3), score, hs as f32]
+    }
+
+    /// The model's logit for a candidate (see [`features`](Self::features)).
+    pub fn logit<T: LlrScalar>(&self, llra: &[T], score: f32, hs: u8) -> f32 {
         let mut z = self.bias;
-        for (c, v) in self.coef.iter().zip(x) {
+        for (c, v) in self.coef.iter().zip(Self::features(llra, score, hs)) {
             z += c * v;
         }
         z
@@ -64,6 +69,17 @@ pub const CELLS_GATE: BpGate = BpGate {
     bias: 6.18511,
     coef: [-3.08844, -4.3783, -0.467705, -0.143884, 0.0699579, 0.670358],
     min_logit: -5.6599 - 0.5,
+};
+
+/// The gate for a flow **with OSD**, fitted by `scripts/cands-gate-fit.py` the same way as [`CELLS_GATE`] but with the labels of the OSD-on decodes (BP or OSD, in the reference) over the same
+/// 4 720 generated slots (7 397 decodes with the 60 real slots, 1 024 of them real; the real slots held out), the threshold being the lowest logit of a decode in the generated sets **minus 1.0**.
+/// Real slots: **0 of 1 024 decodes lost, 10.4 % of the cost saved** (BP passes 7.8 %, OSD runs 10.8 %; an OSD run is about 245 BP passes, 9.2 M host instructions); at margin 0 it loses 1 and saves
+/// 20.2 %. Much less than without OSD (24.4 % of the passes): OSD decodes candidates BP fails on, so fewer of the skipped candidates are hopeless. The OSD-off gate on OSD-on data loses 11 decodes of the
+/// generated sets, which is why a flow with OSD takes this one.
+pub const CELLS_GATE_OSD: BpGate = BpGate {
+    bias: 9.5898,
+    coef: [-4.21714, -4.68558, -0.50358, -0.305095, 0.0758828, 0.736145],
+    min_logit: -6.6924 - 1.0,
 };
 
 #[cfg(test)]

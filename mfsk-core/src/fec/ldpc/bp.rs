@@ -720,6 +720,9 @@ pub struct BpStats {
     pub decoded: u32,
     /// Message-update passes over all the calls.
     pub passes: u64,
+    /// OSD fallbacks the caller ran with this scratch (counted by the FT8 staircase when it starts one, **not** by the BP decoders: OSD makes a scratch of its own and its
+    /// cost is not in `passes`).
+    pub osd_runs: u32,
 }
 
 impl BpStats {
@@ -803,6 +806,12 @@ impl<P: LdpcParams, T: LlrScalar> core::fmt::Debug for BpScratch<P, T> {
 }
 
 impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
+    /// Note that the caller started an OSD fallback on a candidate decoded with this scratch ([`BpStats::osd_runs`]).
+    #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
+    pub(crate) fn note_osd_run(&mut self) {
+        self.stats.osd_runs = self.stats.osd_runs.saturating_add(1);
+    }
+
     /// Allocate the seven scratch buffers at the right capacities for
     /// `P`. Single instance can be reused across many BP calls.
     /// `tanhtoc`/`zsum` start empty — grown lazily on first use by the

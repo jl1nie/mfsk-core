@@ -287,7 +287,7 @@ impl<'a> CellsWorker<'a> {
 
     /// This worker with the gate before BP ([`BpGate`], [`CELLS_GATE`](super::CELLS_GATE) is the fitted one): a candidate the model gives no chance is not decoded, at the grid
     /// or at the retry. Needs the candidate's hard-sync count, so it acts through [`decode_round`](Self::decode_round) and
-    /// [`decode_candidate_hs`](Self::decode_candidate_hs), not [`decode_candidate`](Self::decode_candidate). **Only for flows without OSD** (it is not consulted when the depth has OSD on).
+    /// [`decode_candidate_hs`](Self::decode_candidate_hs), not [`decode_candidate`](Self::decode_candidate). **The gate must be the one fitted for the flow's depth** ([`CELLS_GATE`](super::CELLS_GATE) is for OSD off); the depth does not switch it off.
     pub fn with_gate(mut self, gate: Option<&'static BpGate>) -> Self {
         self.gate = gate;
         self
