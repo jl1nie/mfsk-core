@@ -24,6 +24,12 @@
 //! | BP passes, floor 0 / 16 (host: exact) | 2 145 / 1 360 | 1 781 / 899 | 2 021 / 1 012 |
 //! | decodes, both floors | 9 | 4 | 5 |
 //!
+//! **Why `band` is 33-40 % over (it was 0.56-0.68 s, it is 0.90-0.94 s), a second run (`band narrow` lines):** two hypotheses the host cannot tell apart (host: `band_best` 64 M instructions, 14.0 M
+//! conditional branches, 0.49 M mispredicts, about 1 200 instructions and 260 branches a position; the board spends about 4 000 cycles a position). **(CPU)** the scoring loop is branch- and
+//! integer-bound: a narrow range of carriers, whose cells fit the data cache, costs the same per position as the whole band (within 15 %). **(MEM)** it waits for PSRAM (the 172 KB store does not fit
+//! the cache: 21 symbols x up to 4 reads a position, rows a stride apart): a narrow range costs **at most 55 %** of a position's time in the whole band. `band narrow W` times `search_cells` over
+//! four ranges of W carriers (64 and 256; each range once to warm, once timed) and gives nanoseconds a position, beside the whole band's.
+//!
 //! One BP pass (`b`): **0.57-0.70 ms**; a candidate apart from BP (`a`): about 1.5 ms. The stage-3 figures are +-10 %. **Stop rule:** if any stage is more than 25 % off its prediction,
 //! stop and explain it on the host before the next flash. The prediction rests on one ns-per-instruction ratio for every stage; the point of the run is to see where it breaks.
 
@@ -128,6 +134,25 @@ fn body(wavs: &'static [(&'static str, &'static [u8])]) {
             made = Some((cands, cells));
         }
         let (cands, cells) = made.unwrap();
+        // band narrow: the same scoring over a few carriers, a position being one (carrier, lag) of the 60 lags of `search_cells`
+        {
+            let bins = cells.carrier_bins();
+            let full = bins.len();
+            log::info!("stage-bench: {label} band full {} ns a position ({full} carriers x 60 lags)", t_band * 1000 / (full as i64 * 60));
+            for width in [64usize, 256] {
+                let (mut tot, mut npos) = (0i64, 0i64);
+                for q in 0..4usize {
+                    let lo = bins.start + q * (full - width) / 3;
+                    let r = lo..lo + width;
+                    let _ = search_cells(&cells, &search, r.clone());
+                    let t0 = now_us();
+                    let _ = search_cells(&cells, &search, r);
+                    tot += now_us() - t0;
+                    npos += width as i64 * 60;
+                }
+                log::info!("stage-bench: {label} band narrow {width} {} ns a position", tot * 1000 / npos);
+            }
+        }
         log::info!(
             "stage-bench: {label} search {t_search} us, band {t_band} us (demux {} us), {} candidates; min free internal {} B, PSRAM {} B",
             t_search - t_band,
