@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### FT8 OSD for a 32-bit core: `osd174_91_into`, `osd174_91`'s answer bit for bit (host tests, board `ft8-osd-bench`)
+
+- **New** `fec::ldpc::osd_emb::{osd174_91_into, Osd174Scratch, OsdHit}`: `ndeep = 2` over `u32` rows, the generator's columns from a compile-time table, the caller's memory (about 4.5 KB, kept in the `BpScratch`) and a distance that stops once it cannot win. `try_fallback` uses it, with the f32 BP scratch of its `zsave` inputs kept too: the fallback allocates nothing after its first run.
+- **Equal to `osd174_91` on every input** (`tests/osd_embedded.rs`: the upstream fixture's inputs and 22 000 synthetic ones, with ties and a-priori masks; seen to fail with an early stop, a stable sort, a short window, `ntheta` 11). The host's instructions are 7 % *more* (x86-64 runs two `u32` ops for one `u64`); the board is 28 % faster.
+- CoreS3 (44 real OSD inputs, `ft8-osd-bench`): **10.09 -> 7.26 ms a call, 44 of 44 equal, stack 9.65 KB -> under the baseline**. A failing candidate still runs 10 of them (5 LLR variants x 2 `zsave`): about 70 ms of OSD a candidate, so OSD does not fit the window as the staircase calls it (design: a single call, plan 2026-11-27).
+
 ### Cells flow on the CoreS3: a faster search and a faster BP, bit for bit (host and board, `ft8-stage-bench`)
 
 - `band_best` scores a carrier at a time (`carrier_scores`): the neighbour terms of a Costas symbol are made once for every row of the carrier and each of the 60 positions adds up 21 entries; the scores are the old ones at every position (test over every position, 184 rows and nine shorter fills). Host 63.8 -> 42.4 M instructions, 14.0 -> 5.6 M conditional branches; **CoreS3 `band` 0.90-0.94 s -> 0.46 s** (one core; CPU-bound: the same per position over a narrow and the whole range).

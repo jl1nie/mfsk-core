@@ -90,6 +90,13 @@ path = "src/bin/ft8_stage_bench.rs"
 harness = false
 required-features = ["ft8-stage-bench"]
 
+# FT8's OSD, the host's port against the embedded one, on the same LLRs. Build: `cargo build --release --features ft8-osd-bench --bin ft8-osd-bench`.
+[[bin]]
+name = "ft8-osd-bench"
+path = "src/bin/ft8_osd_bench.rs"
+harness = false
+required-features = ["ft8-osd-bench"]
+
 # The FT4 receiver's desk demo: replays the vendored golden at 12 kHz
 # and runs the shipping slot pipeline over it. No USB host, so the
 # serial console survives and the board stays flashable.
@@ -260,6 +267,7 @@ ft8-gate-bench = ["embedded-shared/gate-bench"]
 ft8-cells-bench = ["embedded-shared/cells-bench"]
 ft8-sic-bench = ["embedded-shared/sic-bench"]
 ft8-stage-bench = ["embedded-shared/stage-bench"]
+ft8-osd-bench = ["embedded-shared/osd-bench"]
 
 [dependencies]
 log = "0.4"

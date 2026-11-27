@@ -23,6 +23,7 @@
 
 pub mod bp;
 pub mod osd;
+pub mod osd_emb;
 pub mod osd_npre;
 pub mod params;
 pub mod tables;

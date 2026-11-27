@@ -2398,6 +2398,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
             strictness,
             pass,
             llre_f32.as_ref(),
+            bp_scratch.osd_work(),
         );
     }
 

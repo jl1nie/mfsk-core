@@ -49,9 +49,8 @@
 use super::super::decode::{DecodeDepth, DecodeStrictness};
 use crate::engine::scalar::Cmplx;
 use crate::fec::ldpc::LDPC_N;
-use crate::fec::ldpc::bp::{BpResult, BpScratch, bp_llr_zsum_with_scratch};
-use crate::fec::ldpc::osd::OsdResult;
-use crate::fec::ldpc::osd_npre::{NDEEP2_174_91, osd174_91};
+use crate::fec::ldpc::bp::{BpResult, bp_llr_zsum_with_scratch};
+use crate::fec::ldpc::osd_emb::{OsdWork, osd174_91_into};
 use crate::fec::ldpc::params::Ldpc174_91Params;
 
 // OSD `nharderrors` ceiling — now [`DecodeStrictness::ft8_nharderrors_max`]
@@ -138,6 +137,8 @@ pub(super) fn try_fallback(
     pass: super::PassCtx,
     // `llre` (see `compute_llre_metric`) if the caller already has it in f32.
     precomputed_llre: Option<&[f32; LDPC_N]>,
+    // The OSD's memory and the f32 BP scratch of its inputs: the caller's, so nothing is allocated here (`BpScratch::osd_work`).
+    work: &mut OsdWork,
 ) -> Option<(BpResult, u8)> {
     let _stage = crate::ft8::stage_timing::scope(crate::ft8::stage_timing::Stage::Osd);
     if !depth.osd || q <= 6 {
@@ -170,21 +171,15 @@ pub(super) fn try_fallback(
     //
     // The entry checks `check_crc14` on its winner, as `osd174_91`'s
     // `nbadcrc` does, so no `Some(check_crc14)` argument.
-    let dispatch = |llr: &[f32; LDPC_N]| -> Option<OsdResult> {
-        let osd = osd174_91(llr, NDEEP2_174_91, None);
-        // WSJT-X-faithful ceiling (Normal) — see
-        // `DecodeStrictness::ft8_nharderrors_max`'s docstring.
-        osd.filter(|o| o.hard_errors <= strictness.ft8_nharderrors_max())
-    };
-    // Reuse `osd.codeword` instead of allocating a fresh zero vec —
-    // `OsdResult` already carries the actual decoded codeword bits,
-    // which the previous `vec![0; N]` dropped on the floor (Gemini PR
-    // #86 review).
-    let to_bp = |osd: OsdResult| BpResult {
-        message77: osd.message77,
-        info: osd.info,
-        codeword: osd.codeword,
-        hard_errors: osd.hard_errors,
+    // `osd174_91_into` is `osd174_91` bit for bit on every input (`tests/osd_embedded.rs`), over the caller's memory. The ceiling on the
+    // hard errors is WSJT-X's (Normal), see `DecodeStrictness::ft8_nharderrors_max`'s docstring.
+    let nharderrors_max = strictness.ft8_nharderrors_max();
+    // The winner's codeword is in `work.osd`; the `Vec`s of a `BpResult` are made only for a decode, which is rare.
+    let to_bp = |hit: crate::fec::ldpc::osd_emb::OsdHit, cw: &[u8; LDPC_N]| BpResult {
+        message77: hit.message77,
+        info: cw[..91].to_vec(),
+        codeword: cw.to_vec(),
+        hard_errors: hit.hard_errors,
         iterations: 0,
     };
 
@@ -234,7 +229,10 @@ pub(super) fn try_fallback(
     // difference for FT8's BP stage, so the extra plumbing through
     // `process_one_candidate_inner` and its five callers isn't
     // justified by anything measured.
-    let mut zsum_scratch = BpScratch::<Ldpc174_91Params, f32>::new();
+    let OsdWork {
+        osd,
+        zsum: zsum_scratch,
+    } = work;
     // The fifth variant (`llre`, ft8b.f90 pass 5) is tried last, as upstream's
     // `do ipass=1,5` reaches it last. Computed only if a-d all fail.
     let mut owned_llre: Option<[f32; LDPC_N]> = None;
@@ -260,11 +258,13 @@ pub(super) fn try_fallback(
         };
         for (n_iter, base) in [(1u32, PASS_ID_OSD_ZSAVE1_A), (2u32, PASS_ID_OSD_ZSAVE2_A)] {
             let zsum_slice =
-                bp_llr_zsum_with_scratch::<Ldpc174_91Params>(&mut zsum_scratch, llr, n_iter);
+                bp_llr_zsum_with_scratch::<Ldpc174_91Params>(zsum_scratch, llr, n_iter);
             let mut zsum = [0f32; LDPC_N];
             zsum.copy_from_slice(zsum_slice);
-            if let Some(osd) = dispatch(&zsum) {
-                return Some((to_bp(osd), base + idx as u8));
+            if let Some(hit) =
+                osd174_91_into(osd, &zsum, None).filter(|h| h.hard_errors <= nharderrors_max)
+            {
+                return Some((to_bp(hit, osd.codeword()), base + idx as u8));
             }
         }
     }

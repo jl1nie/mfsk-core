@@ -15,6 +15,8 @@ pub mod sic_bench;
 /// The cells flow stage by stage on the board: the demux, `band_best`, and a candidate's BP against the passes it ran (the host-to-board time ratio of each stage).
 #[cfg(feature = "stage-bench")]
 pub mod stage_bench;
+#[cfg(feature = "osd-bench")]
+pub mod osd_bench;
 /// FT8 gate + `fine_sync_12k` + OSD against the shipped pipeline, on the board (the S3 plan's stage 1).
 #[cfg(feature = "gate-bench")]
 pub mod gate_bench;

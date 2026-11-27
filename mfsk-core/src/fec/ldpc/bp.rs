@@ -10,6 +10,8 @@
 //! [`bp_decode`] that pins `P = Ldpc174_91Params` — same behaviour as
 //! before, just routed through the generic body.
 
+#[cfg(any(feature = "fft-rustfft", feature = "osd"))]
+use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -796,6 +798,9 @@ pub struct BpScratch<P: LdpcParams, T: LlrScalar> {
     zsum: Vec<T::Wide>,
     /// What the NMS and kind decoders have run on this scratch: [`BpStats`].
     stats: BpStats,
+    /// The FT8 OSD fallback's memory, made on its first use ([`Self::osd_work`]).
+    #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
+    osd_work: Option<Box<super::osd_emb::OsdWork>>,
     _p: core::marker::PhantomData<P>,
 }
 
@@ -834,8 +839,17 @@ impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
             cw: vec![0u8; n],
             zsum: Vec::new(),
             stats: BpStats::default(),
+            #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
+            osd_work: None,
             _p: core::marker::PhantomData,
         }
+    }
+
+    /// The OSD fallback's memory (the OSD's own scratch and the f32 BP scratch for its `zsave` inputs), allocated on the first call and kept.
+    #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
+    pub(crate) fn osd_work(&mut self) -> &mut super::osd_emb::OsdWork {
+        self.osd_work
+            .get_or_insert_with(|| Box::new(super::osd_emb::OsdWork::new()))
     }
 
     /// What the decoders have run on this scratch since it was made or since [`take_stats`](Self::take_stats).
