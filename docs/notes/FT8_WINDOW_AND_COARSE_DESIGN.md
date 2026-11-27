@@ -975,3 +975,13 @@ The decodes of the two cores are the one core's set at K = 6 and 14 (11 / 5 / 5 
 
 **The window, with the measured figures (emit 0.81 s before the boundary, estimates from the table).** One core: `band` ends at -0.35 s, the round at +0.23 s, the pass at K = 6 at +0.45 s (K = 14: +0.76 s). Two cores: `band` ends at -0.39 s, the round at -0.01 s, **the pass at K = 6 at +0.14 s, at K = 14 at +0.35 s**: inside the 0.5 s after the boundary; `qso1` and `qso2` earlier still. Without WiFi, USB host and the app's own tasks; the second worker's staging block and BP scratch (about 22 KB of internal DRAM, `min free internal` 205 KB in this bench) are the app's to find.
 
+**The OSD memory in internal DRAM (same day; `ft8-two-core-bench`, the bench run twice in one boot, the OSD memory made by `CellsWorker::reserve_osd_work` under the 2 KB malloc limit (`[psram]`) and under 16 KB (`[internal]`); predictions in the module doc, written before the run).** The hypothesis was that the two cores contend for the PSRAM the OSD's memory is in. Against it:
+
+| OSD pass, K = 14 / 6 (`qso3_busy` / `qso1` / `qso2`) | `[psram]` | `[internal]` | predicted if the hypothesis holds |
+|---|---|---|---|
+| 2 cores, K = 14 | 0.362 / 0.390 / 0.384 s | 0.343 / 0.366 / 0.363 s | 0.27-0.34 s |
+| 2 cores, K = 6 | 0.148 / 0.168 / 0.160 s | 0.140 / 0.158 / 0.152 s | 0.11-0.13 s |
+| 1 core, K = 14 | 0.529 / 0.586 / 0.561 s | 0.523 / 0.583 / 0.557 s | unchanged or faster |
+
+Internal DRAM cuts the two-core pass by **5-6 %** (about 20 ms at K = 14) and the one-core pass by under 1 %: an attempt is 38 ms on one core, 52 ms on two with the memory in PSRAM and 49 ms with it in internal DRAM, so the 30 % that two running cores cost an attempt is not the memory's place. The round, `band` and the sets of decodes do not move. The OSD memory of the two workers is **45 220 B** (22.6 KB a worker, more than the 17 KB estimated: 9 812 B internal and 35 608 B PSRAM when made under the 2 KB limit), which the app's 15.8 KB floor of internal DRAM does not have: it stays in PSRAM. **Not explained**; not tested: the two cores' shares of the pass timed separately (7 attempts each; a spread in an attempt's time would put the whole pass on the slower core), the shared caches.
+
