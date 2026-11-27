@@ -1,0 +1,47 @@
+--- /tmp/claude-1000/-home-minoru-src-mfsk-core/e27bf878-e039-4b3a-bc5f-f1e9bca3c1cc/scratchpad/ft8dec/ft8dec_orig.c	2026-11-27 11:04:53.371036858 +0900
++++ /tmp/claude-1000/-home-minoru-src-mfsk-core/e27bf878-e039-4b3a-bc5f-f1e9bca3c1cc/scratchpad/ft8dec/icap-sdk/apps/ft8/ft8dec.c	2026-11-27 11:04:53.415034549 +0900
+@@ -437,6 +437,7 @@
+ #else
+ #define FT8_SCRATCH
+ #endif
++long g_bp_calls, g_bp_passes, g_bp_ok;
+ static int bp(const ctx_t *c, const float *llr, int max_iters, uint8_t *plain)
+ {
+ #ifdef FT8_ARENA_SCRATCH
+@@ -445,6 +446,7 @@
+     FT8_SCRATCH float tov[FTX_LDPC_N][3], toc[FTX_LDPC_M][7], sum[FTX_LDPC_N];
+ #endif
+     int nclast = FTX_LDPC_M, ncnt = 0;
++    g_bp_calls++;
+     for (int n = 0; n < FTX_LDPC_N; n++) tov[n][0] = tov[n][1] = tov[n][2] = 0;
+     for (int iter = 0; iter < max_iters; iter++) {
+         int any = 0;
+@@ -452,17 +454,17 @@
+             sum[n] = llr[n] + tov[n][0] + tov[n][1] + tov[n][2];
+             plain[n] = sum[n] > 0; any |= plain[n];
+         }
+-        if (!any) return FTX_LDPC_M;             /* all-zero: not a valid message */
++        if (!any) { g_bp_passes += iter; return FTX_LDPC_M; }
+         int ncheck = 0;
+         for (int m = 0; m < FTX_LDPC_M; m++) {
+             int x = 0;
+             for (int i = 0; i < kFTX_LDPC_Num_rows[m]; i++) x ^= plain[kFTX_LDPC_Nm[m][i] - 1];
+             ncheck += x;
+         }
+-        if (ncheck == 0) return 0;
++        if (ncheck == 0) { g_bp_passes += iter; g_bp_ok++; return 0; }
+         if (iter > 0) {
+             if (ncheck < nclast) ncnt = 0; else ncnt++;
+-            if (ncnt >= 5 && iter >= 10 && ncheck > 15) return ncheck;
++            if (ncnt >= 5 && iter >= 10 && ncheck > 15) { g_bp_passes += iter; return ncheck; }
+         }
+         nclast = ncheck;
+         for (int m = 0; m < FTX_LDPC_M; m++)
+@@ -483,6 +485,7 @@
+             }
+         }
+     }
++    g_bp_passes += max_iters;
+     return nclast;
+ }
+ 
