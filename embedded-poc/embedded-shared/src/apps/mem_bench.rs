@@ -36,6 +36,12 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 const INTERNAL: u32 = (1 << 11) | (1 << 2);
 
+/// The core's cycle counter (`CCOUNT`, through the HAL: inline assembly is not stable on Xtensa).
+#[inline(always)]
+fn cc() -> u32 {
+    unsafe { esp_idf_svc::sys::xthal_get_ccount() }
+}
+
 fn now_us() -> i64 {
     unsafe { esp_idf_svc::sys::esp_timer_get_time() }
 }
@@ -196,15 +202,16 @@ pub fn run() -> ! {
 fn body() {
     // core 1: waits for a kernel, spins on START (a common start), runs it, replies its microseconds
     let (tx, rx): (Sender<(Kernel, u32, u32)>, Receiver<(Kernel, u32, u32)>) = channel();
-    let (done_tx, done_rx): (Sender<(i64, u32)>, Receiver<(i64, u32)>) = channel();
+    let (done_tx, done_rx): (Sender<(i64, u32, u32)>, Receiver<(i64, u32, u32)>) = channel();
     let _c1 = spawn_pinned(c"mem_c1", esp_idf_svc::hal::cpu::Core::Core1, 16 * 1024, move || {
         while let Ok((k, seed, gen)) = rx.recv() {
             while START.load(Ordering::Acquire) != gen {
                 core::hint::spin_loop();
             }
-            let t0 = now_us();
+            let (t0, c0) = (now_us(), cc());
             let r = run_kernel(k, seed);
-            done_tx.send((now_us() - t0, r)).unwrap();
+            let (cyc, us) = (cc().wrapping_sub(c0), now_us() - t0);
+            done_tx.send((us, cyc, r)).unwrap();
         }
     });
 
@@ -263,7 +270,7 @@ fn body() {
         ("psram-512k", Kernel::Walk(p512a, 600_000, 0), Kernel::Walk(p512b, 600_000, 0)),
         ("psram-shr ", Kernel::Walk(p32a, 3_000_000, 0), Kernel::Walk(p32a, 3_000_000, half(p32a))),
     ];
-    log::info!("mem-bench: CPU {} MHz (esp_clk_cpu_freq); the data cache is 32 KB, 8 ways, 32 B lines, shared by the two cores (sdkconfig)", unsafe { esp_idf_svc::sys::esp_clk_cpu_freq() } / 1_000_000);
+    log::info!("mem-bench: the data cache is 32 KB, 8 ways, 32 B lines, shared by the two cores (sdkconfig); CPU {} MHz (`esp_rom_get_cpu_ticks_per_us`); the cycle counter is read around every run", unsafe { esp_idf_svc::sys::esp_rom_get_cpu_ticks_per_us() });
     let mut gen = 0u32;
     let mut sink = 0u32;
     for (name, k0, k1) in arms {
@@ -274,38 +281,45 @@ fn body() {
         } as f64;
         // core 0 alone, core 1 alone (the other idle), then both; the second run of each is kept
         let (mut a0, mut a1, mut b0, mut b1) = (0i64, 0i64, 0i64, 0i64);
+        let (mut ca0, mut ca1, mut cb0, mut cb1) = (0u32, 0u32, 0u32, 0u32);
         for _ in 0..2 {
-            let t0 = now_us();
+            let (t0, c0) = (now_us(), cc());
             sink ^= run_kernel(k0, 11);
+            ca0 = cc().wrapping_sub(c0);
             a0 = now_us() - t0;
             gen += 1;
             tx.send((k1, 22, gen)).unwrap();
             START.store(gen, Ordering::Release);
-            let (t, r) = done_rx.recv().unwrap();
-            a1 = t;
+            let (t, c, r) = done_rx.recv().unwrap();
+            (a1, ca1) = (t, c);
             sink ^= r;
             gen += 1;
             tx.send((k1, 22, gen)).unwrap();
             // let core 1 reach its spin, then start both
             unsafe { esp_idf_svc::sys::vTaskDelay(2) };
             START.store(gen, Ordering::Release);
-            let t0 = now_us();
+            let (t0, c0) = (now_us(), cc());
             sink ^= run_kernel(k0, 11);
+            cb0 = cc().wrapping_sub(c0);
             b0 = now_us() - t0;
-            let (t, r) = done_rx.recv().unwrap();
-            b1 = t;
+            let (t, c, r) = done_rx.recv().unwrap();
+            (b1, cb1) = (t, c);
             sink ^= r;
         }
-        log::info!("mem-bench: {name} raw: ops {ops} core0 alone {a0} us, with {b0} us; core1 alone {a1} us, with {b1} us");
         log::info!(
-            "mem-bench: {name} core 0: {:.2} ns alone, {:.2} ns with core 1 (x{:.2}); core 1: {:.2} ns alone, {:.2} ns with core 0 (x{:.2})",
+            "mem-bench: {name} core 0: {:.2} ns alone, {:.2} ns with core 1 (x{:.2}); core 1: {:.2} ns alone, {:.2} ns with core 0 (x{:.2}); core 0 cycles a step {:.2} alone, {:.2} with ({:.0} / {:.0} MHz)",
             a0 as f64 * 1000.0 / ops,
             b0 as f64 * 1000.0 / ops,
             b0 as f64 / a0 as f64,
             a1 as f64 * 1000.0 / ops,
             b1 as f64 * 1000.0 / ops,
-            b1 as f64 / a1 as f64
+            b1 as f64 / a1 as f64,
+            ca0 as f64 / ops,
+            cb0 as f64 / ops,
+            ca0 as f64 / a0 as f64,
+            cb0 as f64 / b0 as f64
         );
+        let _ = (ca1, cb1);
     }
     log::info!("mem-bench: sink {sink}");
 }
