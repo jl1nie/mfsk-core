@@ -1,0 +1,96 @@
+diff --git a/hosttest/icap-app/src/bin/icap-cands.rs b/hosttest/icap-app/src/bin/icap-cands.rs
+index 113b6faa..a85c22f7 100644
+--- a/hosttest/icap-app/src/bin/icap-cands.rs
++++ b/hosttest/icap-app/src/bin/icap-cands.rs
+@@ -3,6 +3,9 @@
+ //! Each slot has `<slot>.ref` beside it (one reference message per line). TSV on stdout: slot, rank, freq, dt, score, hard sync, decoded,
+ //! in the reference, message, BP calls the candidate cost, BP message-update passes ([`BpStats`](mfsk_core::fec::ldpc::bp::BpStats)). `scripts/cands-yield.py`
+ //! reads it (design note section 27).
++use std::sync::Mutex;
++static TR: Mutex<Vec<(Vec<u16>, bool)>> = Mutex::new(Vec::new());
++fn hook(t: &[u16], ok: bool) { TR.lock().unwrap().push((t.to_vec(), ok)); }
+ use icap_app_hosttest::{fft_shim, resample::resample, wav};
+ use mfsk_core::engine::scalar::Cmplx;
+ use mfsk_core::engine::source::SliceSource;
+@@ -13,6 +16,7 @@ use mfsk_core::ft8::decode_block::{
+ use mfsk_core::msg::wsjt77::unpack77;
+ use std::collections::HashSet;
+ fn main() {
++    mfsk_core::fec::ldpc::bp::PROBE_HOOK.store(hook as fn(&[u16], bool) as usize, std::sync::atomic::Ordering::Relaxed);
+     let tables = CellTables::new();
+     let mut cs: Box<[[Cmplx<f32>; 8]; 79]> =
+         vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
+@@ -41,8 +45,12 @@ fn main() {
+             .to_string();
+         for (i, (c, hs)) in cands.iter().take(30).enumerate() {
+             let _ = w.take_bp_stats();
++            TR.lock().unwrap().clear();
+             let f = w.decode_candidate(&cells, c, DecodeDepth::EMBEDDED, 0.25);
+             let bp = w.take_bp_stats();
++            for (t, ok) in TR.lock().unwrap().drain(..) {
++                println!("TRACE\t{slot}\t{i}\t{}\t{}", ok as u8, t.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
++            }
+             let (dec, truth, msg) = match &f {
+                 Some(f) => {
+                     let m = unpack77(f.res.message77())
+diff --git a/mfsk-core/src/fec/ldpc/bp.rs b/mfsk-core/src/fec/ldpc/bp.rs
+index 81ecf964..7ccac9b4 100644
+--- a/mfsk-core/src/fec/ldpc/bp.rs
++++ b/mfsk-core/src/fec/ldpc/bp.rs
+@@ -957,6 +957,16 @@ pub fn bp_decode_generic_nms<P: LdpcParams, T: LlrScalar>(
+ 
+ /// [`bp_decode_generic_nms`] with caller-provided scratch — eliminates
+ /// the per-call ~12 KB allocation churn on the BP staircase hot path.
++
++pub static PROBE_HOOK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
++#[inline]
++fn probe_hook(t: &[u16], ok: bool) {
++    let h = PROBE_HOOK.load(core::sync::atomic::Ordering::Relaxed);
++    if h != 0 {
++        let f: fn(&[u16], bool) = unsafe { core::mem::transmute(h) };
++        f(t, ok);
++    }
++}
+ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
+     scratch: &mut BpScratch<P, T>,
+     llr: &[T],
+@@ -1000,6 +1010,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
+ 
+     let mut ncnt = 0u32;
+     let mut nclast = 0u32;
++    let mut ptrace = [0u16; 40];
+ 
+     for iter in 0..=max_iter {
+         // Variable-node belief sum. The wide accumulator avoids
+@@ -1035,6 +1046,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
+             }
+         }
+ 
++        if (iter as usize) < 40 { ptrace[iter as usize] = ncheck as u16; }
+         if ncheck == 0 {
+             let mut decoded = vec![0u8; k];
+             decoded.copy_from_slice(&cw[..k]);
+@@ -1059,6 +1071,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
+                 // of moving so the scratch's `cw` Vec stays in the pool
+                 // for the next call.
+                 stats.add(iter, true);
++                probe_hook(&ptrace[..(iter as usize + 1).min(40)], true);
+                 return Some(BpResult {
+                     message77,
+                     info: decoded,
+@@ -1078,6 +1091,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
+             }
+             if ncnt >= 5 && iter >= 10 && ncheck > 15 {
+                 stats.add(iter, false);
++                probe_hook(&ptrace[..(iter as usize + 1).min(40)], false);
+                 return None;
+             }
+         }
+@@ -1165,6 +1179,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
+     }
+ 
+     stats.add(max_iter + 1, false);
++    probe_hook(&ptrace[..(max_iter as usize + 1).min(40)], false);
+     None
+ }
+ 
