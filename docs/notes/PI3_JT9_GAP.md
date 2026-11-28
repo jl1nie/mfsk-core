@@ -160,3 +160,20 @@ The same measurement with a fourth row (`probe11`, (d)): the cells flow's pass-0
 * **B. The symbol energies**: about **16** (30 -> 14), among them the 10 signals whose `s8` is far cleaner than a DFT at the same place. **Not explained**: `jt9`'s front end (`ft8_downsample`: a 192 000-point FFT of the slot, the band cut with cosine tapers, `twkfreq` and the 0.5 Hz / 5 ms fine search of `ft8b`) gives the cleaner energies; `probe6` reproduces its `s8` (12-13 wrong of 79 on `CU2DX`'s `dd0`), so the difference can be taken apart step by step.
 * **C. The subtraction** (section 10): 14 of the 60 from refining the places of what is decoded.
 * The rest (9): `RR73` and hashed-call messages, whose transmitted bits this study builds with `pack77` and may not equal.
+
+## 12. Correction of section 11: the dump was taken at the wrong decode; the front end taken apart (2026-11-28)
+
+**A flaw in the dump of section 11.** `jt9` decodes a message again in the same pass when two candidates land on one signal (10 of the 59 messages twice, one three times), and `subtractft8` removes the signal from `dd0` after the first decode; the dump (an environment variable of the trace build) was overwritten at each decode, so for those 11 it held the audio **after the signal had been subtracted** (noise at that place: 70-79 of 79 tones wrong, while `jt9`'s own `s8`, made from the FFT it cached at the start of the pass, had 22). The "10 signals whose `s8` is 20 or more errors cleaner than any reading" were this artefact. Redone with the dump at the **first** decode (59 of 60), `jt9`'s precise places:
+
+| from `jt9`'s audio at the first decode, of the 59 misses | decoded |
+|---|---|
+| the cells flow, 1 pass / OSD, 3 passes | 10 / **18** |
+| the cells flow decoding at `jt9`'s precise place (OSD) / any of 9 places | 20 / 27 |
+| the faithful `deep:off` | **52** |
+
+Hard-decision tone errors of 79 at `jt9`'s place (mean / median, 57 signals): `jt9`'s own `s8` **25.9 / 25**; a 12 kHz rectangular DFT 27.5 / 27 (the symbols 5 ms later: 27.4); **the audio first cut to `ft8_downsample`'s band (kept at 12 kHz) 25.8 / 25**; **the whole of `ft8_downsample` (shift, 200 Hz, 32-point DFT) 25.8 / 25**; the cells (best of 3 x 3) **29.8 / 29**. Two signals only are 10 or more errors cleaner in `jt9`'s `s8` than in the DFT.
+* **The front end of `jt9` is reproduced** (`pi3_sweep probe12`: 25.8 against 25.9). Of the 3.9 errors the cells lose against it, **1.7 are the band cut** (the filter of `ft8_downsample`: out-of-band energy removed before the symbols are read) and **2.3 the cells' representation** (8 kHz, Hann over two symbols, half-dB bytes, the grid). Small in errors, large in decodes: the decode is a steep function of the error count near its threshold.
+
+**The causes, on `jt9`'s audio, of the misses** (this crate's BP + OSD on `jt9`'s LLR variants: `a` + `d` 30 of 53, all five 44; the cells flow decodes 18 of 59 and the faithful pipeline 52 of 59): **A** the coherent variants (`b`, `c`, `e`: they need phase, which the cells do not keep): 30 -> 44, about **14**; **B** the cells' symbol energies 3.9 errors worse than `jt9`'s: 30 -> 18, about **12**; **C** the subtraction (section 10): 14 of the 60 from the places refined on the 12 kHz audio. A and B are what the faithful per-candidate decode has (a complex baseband at 200 Hz cut to the signal's band, the 0.5 Hz / 5 ms fine search, the five LLR variants), and the cells do not.
+
+**What it means for a Pi 3B class**: the cost is not the constraint (the faithful pipeline is 0.4 s a slot on this host). The measured design that reaches `jt9`: the cells flow as a **fast candidate generator** (its search is not what fails: 50 of 60 misses have a candidate in the list) and the **faithful per-candidate decode and subtraction** for the candidates, which is the hybrid of section 1 (99.2 % of the 1 338, 475 ms a slot on this host).

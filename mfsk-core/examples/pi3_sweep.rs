@@ -1271,6 +1271,133 @@ fn probe11(truth: &str, dir: &str) {
     );
 }
 
+/// `probe12 <truth3.tsv> <dir>`: `jt9`'s front end taken apart, on `jt9`'s own audio at its precise place, hard-decision tone errors of 79:
+/// V0 a 12 kHz rectangular DFT at the printed place; V1 the same with the symbols starting 5 ms later (`ft8b.f90` reads `cd0(ibest ..)` where `xdt = (ibest - 1) dt2`: one sample of the 200 Hz baseband
+/// after the printed place); V2 the audio first cut to the band `f0 - 1.5 baud .. f0 + 8.5 baud` with `ft8_downsample`'s cosine tapers (kept at 12 kHz), then V1's DFT; V3 the whole of `ft8_downsample`
+/// (shift to baseband, 200 Hz) and the 32-point DFT at start `ibest`. `F <slot> <V0> <V1> <V2> <V3> <message>`.
+fn probe12(truth: &str, dir: &str) {
+    use mfsk_core::msg::wsjt77::pack77;
+    use rustfft::FftPlanner;
+    use rustfft::num_complex::Complex32;
+    const NFFT1: usize = 192_000;
+    let mut planner = FftPlanner::<f32>::new();
+    let fwd = planner.plan_fft_forward(NFFT1);
+    let inv = planner.plan_fft_inverse(NFFT1);
+    let taper: Vec<f32> = (0..=100)
+        .map(|i| 0.5 * (1.0 + (i as f32 * std::f32::consts::PI / 100.0).cos()))
+        .collect();
+    for l in std::fs::read_to_string(truth).unwrap().lines() {
+        let c: Vec<&str> = l.splitn(6, '\t').collect();
+        let (slot, f0, dt, msg) = (
+            c[0],
+            c[1].parse::<f32>().unwrap(),
+            c[2].parse::<f32>().unwrap(),
+            norm(c[4]),
+        );
+        let t: Vec<&str> = msg.split(' ').collect();
+        let bits = match t.len() {
+            3 => pack77(t[0], t[1], t[2]),
+            2 => pack77(t[0], t[1], ""),
+            _ => None,
+        };
+        let Some(bits) = bits else { continue };
+        let tones = mfsk_core::engine::tx::message_to_tones::<Ft8>(&bits);
+        let audio = load(&format!("{dir}/{slot}.wav"));
+        let dft_errors = |x: &[f32], shift_s: f32| -> usize {
+            let mut err = 0;
+            for (k, &tr) in tones.iter().enumerate() {
+                let start = ((dt + 0.5 + shift_s) * 12_000.0).round() as i64 + 1920 * k as i64;
+                let p: Vec<f64> = (0..8)
+                    .map(|tt| {
+                        let w =
+                            2.0 * std::f64::consts::PI * (f0 as f64 + 6.25 * tt as f64) / 12_000.0;
+                        let (mut re, mut im) = (0f64, 0f64);
+                        for n in 0..1920usize {
+                            let i = start + n as i64;
+                            if i >= 0 && (i as usize) < x.len() {
+                                re += x[i as usize] as f64 * (w * n as f64).cos();
+                                im -= x[i as usize] as f64 * (w * n as f64).sin();
+                            }
+                        }
+                        re * re + im * im
+                    })
+                    .collect();
+                err += ((0..8)
+                    .max_by(|&x, &y| p[x].partial_cmp(&p[y]).unwrap())
+                    .unwrap()
+                    != tr as usize) as usize;
+            }
+            err
+        };
+        let xf: Vec<f32> = audio.iter().map(|&a| a as f32).collect();
+        let v0 = dft_errors(&xf, 0.0);
+        let v1 = dft_errors(&xf, 0.005);
+        // the spectrum of the slot, zero padded to 192 000
+        let mut spec: Vec<Complex32> = vec![Complex32::new(0.0, 0.0); NFFT1];
+        for (i, &a) in audio.iter().take(180_000).enumerate() {
+            spec[i] = Complex32::new(a as f32, 0.0);
+        }
+        fwd.process(&mut spec);
+        let df = 12_000.0 / NFFT1 as f32;
+        let baud = 12_000.0 / 1920.0;
+        let i0 = (f0 / df).round() as i64;
+        let it = (((f0 + 8.5 * baud) / df).round() as usize).min(NFFT1 / 2);
+        let ib = (((f0 - 1.5 * baud) / df).round() as i64).max(1) as usize;
+        let band: Vec<Complex32> = (ib..=it)
+            .enumerate()
+            .map(|(j, i)| {
+                let m = it - ib + 1;
+                let mut v = spec[i];
+                if j <= 100 {
+                    v *= taper[100 - j];
+                }
+                if j + 101 > m {
+                    v *= taper[j + 101 - m];
+                }
+                v
+            })
+            .collect();
+        // V2: the band alone at its own frequencies, back to the time domain at 12 kHz (a real signal: the conjugate half mirrors it)
+        let mut y = vec![Complex32::new(0.0, 0.0); NFFT1];
+        for (j, i) in (ib..=it).enumerate() {
+            y[i] = band[j];
+            y[NFFT1 - i] = band[j].conj();
+        }
+        inv.process(&mut y);
+        let yr: Vec<f32> = y
+            .iter()
+            .take(180_000)
+            .map(|v| v.re / NFFT1 as f32)
+            .collect();
+        let v2 = dft_errors(&yr, 0.005);
+        // V3: `ft8_downsample` to 200 Hz and the 32-point DFT at start `ibest`
+        const NFFT2: usize = 3200;
+        let mut c1 = vec![Complex32::new(0.0, 0.0); NFFT2];
+        c1[..band.len()].copy_from_slice(&band);
+        let shift = (i0 - ib as i64).rem_euclid(NFFT2 as i64) as usize;
+        let mut cd: Vec<Complex32> = (0..NFFT2).map(|j| c1[(j + shift) % NFFT2]).collect();
+        planner.plan_fft_inverse(NFFT2).process(&mut cd);
+        let sym = planner.plan_fft_forward(32);
+        let ibest = ((dt + 0.5) * 200.0).round() as i64 + 1;
+        let mut v3 = 0usize;
+        for (k, &tr) in tones.iter().enumerate() {
+            let mut buf = vec![Complex32::new(0.0, 0.0); 32];
+            for (n, b) in buf.iter_mut().enumerate() {
+                let i = ibest + 32 * k as i64 + n as i64;
+                if i >= 0 && (i as usize) < NFFT2 {
+                    *b = cd[i as usize];
+                }
+            }
+            sym.process(&mut buf);
+            v3 += ((0..8)
+                .max_by(|&x, &y| buf[x].norm_sqr().partial_cmp(&buf[y].norm_sqr()).unwrap())
+                .unwrap()
+                != tr as usize) as usize;
+        }
+        println!("F {slot} {v0} {v1} {v2} {v3} {msg}");
+    }
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let config = args.next().expect("config");
@@ -1279,6 +1406,12 @@ fn main() {
         let truth = args.next().unwrap();
         let dir = args.next().unwrap();
         probe11(&truth, &dir);
+        return;
+    }
+    if config == "probe12" {
+        let truth = args.next().unwrap();
+        let dir = args.next().unwrap();
+        probe12(&truth, &dir);
         return;
     }
     if config == "probe10" {
