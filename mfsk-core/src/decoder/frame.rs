@@ -147,6 +147,121 @@ impl Default for Sniper {
     }
 }
 
+/// A candidate for [`Decoder::<Ft8>::decode_candidates`](super::Decoder::decode_candidates): where a signal may be, from a search of the caller's own.
+///
+/// The decode refines it (`fine_refine_3stage`: +-2.5 Hz in 0.5 Hz steps, +-10 samples of 200 Hz in time) and keeps what decodes, so `freq_hz` is the frequency of tone 0 to within about
+/// 2.5 Hz and `dt_sec` the DT (WSJT-X's `xdt`, relative to the nominal 0.5 s start) to within about 50 ms: a candidate farther off decodes nothing. `score` orders a decode under a time
+/// budget and is otherwise unused (the decode computes its own).
+#[cfg(feature = "ft8")]
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct Ft8Candidate {
+    /// Frequency of tone 0, Hz.
+    pub freq_hz: f32,
+    /// DT, s (positive = late).
+    pub dt_sec: f32,
+    /// Larger = more likely a signal; 0 when the caller has none.
+    pub score: f32,
+}
+
+#[cfg(feature = "ft8")]
+impl Ft8Candidate {
+    pub const fn new(freq_hz: f32, dt_sec: f32) -> Self {
+        Self {
+            freq_hz,
+            dt_sec,
+            score: 0.0,
+        }
+    }
+
+    /// This candidate with `score`.
+    pub const fn score(mut self, score: f32) -> Self {
+        self.score = score;
+        self
+    }
+}
+
+/// Why [`Decoder::<Ft8>::decode_candidates`](super::Decoder::decode_candidates) did not decode.
+#[cfg(feature = "ft8")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CandidatesError {
+    /// The decoder's strategy has its own search at each checkpoint (`Ft8Strategy::SicEarly`, the default at `Depth::Normal` and `Deep`) or the call is a sniper's: set
+    /// `Ft8Extras::tuning.strategy` to `SinglePass` or `SicRounds(n)`.
+    UnsupportedStrategy,
+}
+
+#[cfg(feature = "ft8")]
+impl core::fmt::Display for CandidatesError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnsupportedStrategy => f.write_str(
+                "decode_candidates needs Ft8Strategy::SinglePass or SicRounds (and no sniper)",
+            ),
+        }
+    }
+}
+
+#[cfg(all(feature = "ft8", feature = "std"))]
+impl std::error::Error for CandidatesError {}
+
+#[cfg(feature = "ft8")]
+impl super::Decoder<crate::Ft8> {
+    /// Decode one period at the **candidates the caller gives** instead of the ones the decoder's own coarse search finds.
+    ///
+    /// Only the search is replaced: every candidate goes through the same triage (fine sync, the 200 Hz baseband, the hard-sync gate), the same ladder (the LLR variants, BP, OSD, AP), the
+    /// same sequential subtraction, the same dedupe and SNR as [`Decoder::decode`](super::Decoder::decode), and with the same candidates as the search found the rows are the same. A `SicRounds(n)` strategy
+    /// decodes the list in round 0 and in each later round the candidates no decode already sits on (4 Hz, 40 ms), on the residual; `SinglePass` decodes it once.
+    ///
+    /// The caller de-duplicates: a list is not put through the search's 4 Hz / 40 ms suppression (a duplicate costs time, its rows are removed as repeats). A candidate outside the band
+    /// or the period is dropped; at most `Tuning::max_cand` are tried, in the order given (the ones nearest `rx_freq_hz` first). The period's a7 list is not replaced.
+    ///
+    /// # Errors
+    /// [`CandidatesError::UnsupportedStrategy`] for `SicEarly` and for a sniper.
+    pub fn decode_candidates(
+        &mut self,
+        slot: &SlotInput<'_>,
+        candidates: &[Ft8Candidate],
+    ) -> Result<SlotResult<DecodeResult>, CandidatesError> {
+        let params = self.params.normalised();
+        let search = ft8_search(params.depth).tuned(&self.extras.tuning);
+        if matches!(search.0.strategy, Ft8Strategy::SicEarly)
+            || self.extras.sniper.zip(params.rx_freq_hz).is_some()
+        {
+            return Err(CandidatesError::UnsupportedStrategy);
+        }
+        let (lo, hi) = params.band_hz;
+        let list: Vec<crate::engine::sync::SyncCandidate> = candidates
+            .iter()
+            .filter(|c| {
+                c.freq_hz.is_finite()
+                    && c.dt_sec.is_finite()
+                    && c.freq_hz >= lo
+                    && c.freq_hz <= hi
+                    && (-2.5..=3.0).contains(&c.dt_sec)
+            })
+            .map(|c| crate::engine::sync::SyncCandidate {
+                freq_hz: c.freq_hz,
+                dt_sec: c.dt_sec,
+                score: c.score,
+            })
+            .collect();
+        let _call = crate::ft8::stage_timing::Call::begin();
+        Ok(ft8_decode(
+            &params,
+            &self.extras,
+            search,
+            None,
+            None,
+            &mut self.state,
+            slot,
+            None,
+            None,
+            Some(&list),
+        ))
+    }
+}
+
 /// FT8's library options.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
@@ -700,7 +815,7 @@ impl Decodable for crate::Ft8 {
         let search = ft8_search(params.depth).tuned(&extras.tuning);
         let sniper = extras.sniper.zip(params.rx_freq_hz);
         ft8_decode(
-            params, extras, search, sniper, None, state, slot, on_row, None,
+            params, extras, search, sniper, None, state, slot, on_row, None, None,
         )
     }
 
@@ -755,7 +870,7 @@ impl Decodable for crate::Ft8 {
         if !staged {
             // The whole period, under the pinned search.
             return ft8_decode(
-                params, extras, pre.search, pre.sniper, pre.gain, state, slot, on_row, None,
+                params, extras, pre.search, pre.sniper, pre.gain, state, slot, on_row, None, None,
             );
         }
         let early_before = pre.staged.early().to_vec();
@@ -769,6 +884,7 @@ impl Decodable for crate::Ft8 {
             slot,
             on_row,
             Some((&mut pre.staged, step)),
+            None,
         );
         if step == StagedStep::Final {
             // Checkpoint A's rows that an earlier call already returned keep
@@ -812,6 +928,8 @@ fn ft8_decode(
         &mut crate::ft8::decode::Staged,
         crate::ft8::decode::StagedStep,
     )>,
+    // The caller's candidates (`Decoder::<Ft8>::decode_candidates`) in place of the search's.
+    given: Option<&[crate::engine::sync::SyncCandidate]>,
 ) -> SlotResult<DecodeResult> {
     use crate::ft8::decode::StagedStep;
     let last = staged
@@ -864,6 +982,7 @@ fn ft8_decode(
             .contest(params.contest != super::Contest::None)
             .eme_delay(params.eme_delay);
             req.wsjtx_low_depth = s.low_depth;
+            req.given_candidates = given;
             req = match s.strategy {
                 Ft8Strategy::SinglePass => req.single_pass(),
                 Ft8Strategy::SicRounds(n) => req.sic_rounds(n),
@@ -881,8 +1000,8 @@ fn ft8_decode(
             }
         },
     );
-    // A period that never reaches its last call remembers nothing.
-    if extras.a7 && last {
+    // A period that never reaches its last call remembers nothing; a call on the caller's candidates does not replace what the period's own decode left (the a7 list).
+    if extras.a7 && last && given.is_none() {
         remember(state, slot.period, results);
     }
     out

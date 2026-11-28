@@ -916,6 +916,9 @@ pub struct DecodeRequest<'a, P: FrameDecodable, Pol: MessagePolicy = DefaultPoli
     /// comment (issue #519).
     #[cfg_attr(not(feature = "ft8"), allow(dead_code))]
     pub(crate) eme_delay: bool,
+    /// FT8 only: the caller's candidates (`Decoder::<Ft8>::decode_candidates`) in place of the coarse search's, in the single pass and in every round of a flat SIC. `None`: the search.
+    #[cfg_attr(not(feature = "ft8"), allow(dead_code))]
+    pub(crate) given_candidates: Option<&'a [crate::engine::sync::SyncCandidate]>,
     /// Set via [`DecodeRequest::on_result`] — see that method's doc
     /// comment for the delivery-order/dedup contract.
     pub(crate) on_result: Option<OnResultCallback<'a, P>>,
@@ -968,6 +971,7 @@ impl<'a, P: FrameDecodable> DecodeRequest<'a, P, DefaultPolicy> {
             wsjtx_low_depth: false,
             wsjtx_contest: false,
             eme_delay: false,
+            given_candidates: None,
             on_result: None,
             budget: None,
             policy: DefaultPolicy,
@@ -1287,6 +1291,7 @@ impl<'a, P: SupportsMessageFilter, Pol: MessagePolicy> DecodeRequest<'a, P, Pol>
             wsjtx_low_depth: self.wsjtx_low_depth,
             wsjtx_contest: self.wsjtx_contest,
             eme_delay: self.eme_delay,
+            given_candidates: self.given_candidates,
             on_result: self.on_result,
             budget: self.budget,
             policy,

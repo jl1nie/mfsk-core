@@ -654,6 +654,7 @@ fn decode_frame_inner<Pol: MessagePolicy>(
     policy: &Pol,
     pass: PassCtx,
     eme_delay: bool,
+    given: Option<&[SyncCandidate]>,
 ) -> (
     Vec<DecodeResult>,
     Vec<num_complex::Complex<f32>>,
@@ -672,8 +673,13 @@ fn decode_frame_inner<Pol: MessagePolicy>(
     #[cfg(feature = "std")]
     let __trace_t0 = trace_stage.then(std::time::Instant::now);
     let spec = crate::ft8::decode_block::compute_spectrogram(audio, freq_max);
-    let mut candidates =
-        crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand);
+    // the caller's candidates, if any, in place of the search's (`Decoder::<Ft8>::decode_candidates`); everything after is the same path
+    let mut candidates = match given {
+        Some(g) => g.iter().take(max_cand).cloned().collect(),
+        None => {
+            crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand)
+        }
+    };
     promote_near_rx(&mut candidates, qso_freqs.rx);
     budget_report.note_candidates(candidates.len());
     #[cfg(feature = "std")]
@@ -844,6 +850,7 @@ fn flat_sic_inner<Pol: MessagePolicy>(
     base_pass: PassCtx,
     qso_freqs: crate::engine::pipeline::QsoFreqs,
     eme_delay: bool,
+    given: Option<&[SyncCandidate]>,
 ) -> (Vec<DecodeResult>, FftCache) {
     let mut residual = audio.to_vec();
     sic_inner_passes_with_cache(
@@ -865,6 +872,7 @@ fn flat_sic_inner<Pol: MessagePolicy>(
         base_pass,
         qso_freqs,
         eme_delay,
+        given,
     )
 }
 
@@ -905,7 +913,7 @@ fn sic_inner_passes<Pol: MessagePolicy>(
 ) -> Vec<DecodeResult> {
     sic_inner_passes_with_cache(
         residual, freq_min, freq_max, sync_min, depth, max_cand, strictness, known, eq_mode,
-        ap_hint, None, n_rounds, on_result, budget, policy, base_pass, qso_freqs, eme_delay,
+        ap_hint, None, n_rounds, on_result, budget, policy, base_pass, qso_freqs, eme_delay, None,
     )
     .0
 }
@@ -946,6 +954,8 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
     base_pass: PassCtx,
     qso_freqs: crate::engine::pipeline::QsoFreqs,
     eme_delay: bool,
+    // The caller's candidates (`Decoder::<Ft8>::decode_candidates`): round 0 decodes them, a later round those of them that no decode of an earlier round already sits on.
+    given: Option<&[SyncCandidate]>,
 ) -> (Vec<DecodeResult>, FftCache) {
     let mut all_results: Vec<DecodeResult> = Vec::new();
     let mut pass0_cache: Option<FftCache> = None;
@@ -974,8 +984,22 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
         }
 
         let spec = crate::ft8::decode_block::compute_spectrogram(residual, freq_max);
-        let mut candidates =
-            crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand);
+        let mut candidates: Vec<SyncCandidate> = match given {
+            // a decode sits on a candidate within the search's own dedupe window (4 Hz, 40 ms): it is subtracted, nothing is left there to try
+            Some(g) => g
+                .iter()
+                .filter(|c| {
+                    !all_results.iter().any(|r| {
+                        (r.freq_hz - c.freq_hz).abs() < 4.0 && (r.dt_sec - c.dt_sec).abs() < 0.04
+                    })
+                })
+                .take(max_cand)
+                .cloned()
+                .collect(),
+            None => {
+                crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand)
+            }
+        };
         promote_near_rx(&mut candidates, qso_freqs.rx);
         budget.report.note_candidates(candidates.len());
         if candidates.is_empty() {
@@ -1427,6 +1451,7 @@ fn staged_steps<Pol: MessagePolicy>(
             base_pass,
             qso_freqs,
             eme_delay,
+            None,
         );
         return Some((r, audio_clean));
     }
@@ -1515,6 +1540,7 @@ fn staged_steps<Pol: MessagePolicy>(
             base_pass,
             qso_freqs,
             eme_delay,
+            None,
         );
         return Some((r, audio_clean));
     }
@@ -1866,6 +1892,7 @@ impl FrameDecodable for Ft8 {
             &req.policy,
             base_pass_of(req),
             req.eme_delay,
+            req.given_candidates,
         );
         let mut results = results;
         if list_decode_wanted(req) {
@@ -1910,6 +1937,7 @@ impl SupportsSicRounds for Ft8 {
                     tx: req.tx_freq,
                 },
                 req.eme_delay,
+                req.given_candidates,
             );
             let mut results = results;
             if list_decode_wanted(req) {
@@ -1944,6 +1972,7 @@ impl SupportsSicRounds for Ft8 {
                     tx: req.tx_freq,
                 },
                 req.eme_delay,
+                req.given_candidates,
             );
             let mut results = results;
             if list_decode_wanted(req) {

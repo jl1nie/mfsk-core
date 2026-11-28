@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### `Decoder::<Ft8>::decode_candidates`: the faithful decode at candidates you give (Issue #766 follow-up; host)
+
+- **What**: `Ft8Candidate`, `CandidatesError`, `Decoder::<Ft8>::decode_candidates(&slot, &[Ft8Candidate])`: the coarse search replaced by the caller's list, everything after it unchanged (`SinglePass` / `SicRounds(n)`, the latter retrying the list on the residual; `SicEarly` and a sniper are refused). Given `coarse_sync`'s own candidates the rows are bit for bit `decode()`'s (`tests/ft8_decode_candidates.rs`: also 600 noise candidates decode nothing, out-of-range ones are ignored; mutation-checked).
+- **Measured** (60 slots, host, one thread, `pi3_sweep hybrid:N`): cells `p0_late` 1 169 of 1 338 + faithful on 10 candidates 1 226 (+26 ms a slot), 100 candidates 1 235; Normal 1 245 (199 ms), Deep 1 299 (358 ms). A given-only list saturates at 92.3 %: it has no search on the residual. `PI3_JT9_GAP.md` section 15 also takes the cells subtractor's ideal-condition floor apart (not a recall limit; not changed) and corrects section 14's "fits the 15 s slot" to the late path (the window is about 2 s).
+
 ### The cells flow completed as a decoder: `SnrBaseline`, `CellsOptions` + P0 presets, guards (host; Issue #766)
 
 - **SNR**: the cells flow's `snr_db` was the staircase's adjacent-tone figure (-11.5 dB off `jt9`, SD 9.0). `SnrBaseline` (`baseline.f90`'s fit over the cells' own average spectrum, once a slot from the complete first-pass cells) reports it in WSJT-X's reference: 264 matched decodes, **mean 0, SD 2.14 dB, 91 % within 4 dB, max 7.8** (`K` and the scale are *fitted* on those 22 recordings, so the figure is the fit's; DT 35 ms / freq 0.9 Hz is `jt9`'s rounding). `tests/cells_flow_accuracy.rs`.

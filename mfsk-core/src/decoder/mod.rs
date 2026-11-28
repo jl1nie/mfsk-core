@@ -65,6 +65,8 @@ pub use slow::{WsprExtras, WsprOsd, WsprState};
 pub use crate::fst4w::decode::{Fst4wResult, Fst4wState, TooManyCalls};
 #[cfg(feature = "fst4")]
 pub use crate::msg::decode_request::NoiseBlanker;
+#[cfg(feature = "ft8")]
+pub use frame::{CandidatesError, Ft8Candidate};
 #[cfg(any(feature = "ft8", feature = "ft4", feature = "fst4"))]
 pub use frame::{
     FrameState, Fst4Extras, Fst4Strategy, Ft4Extras, Ft4Strategy, Ft8Extras, Ft8Strategy,
