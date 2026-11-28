@@ -466,3 +466,23 @@ The faster form ranks the places on the 21 Costas symbols (they do not depend on
 * **On the board**: with the window jobs' ratio (about 122, section 21) the full form is about 30 ms, the Costas-ranked forms **about 1-4 ms**; this counts the `ln` of the second statistic, which the LX7 does slowly (S1, the plain share, needs none and hits as often): an estimate, **not measured on the board**.
 * Still open as in section 26: the false-accept budget, the place the app really knows, the busy band and fading.
 
+### 26.2 The false-accept budget (2026-11-29; `A8_FAST=3,3,5 A8_DUMP=<seed0> ap_qso a8cells 40 2500 0`, 16 processes)
+
+The fast form with the place **not** narrowed (+-3 bins, +-5 rows, top 3 after the Costas rank), 40 000 noise slots for each list and 640 reply slots a cell (16 x 40 seeds). The scores were dumped and the thresholds studied offline.
+
+* **The noise tail** (S2, the log-likelihood statistic): Rogers max 74.66, 10th 72.12, 100th 69.39, 1 000th 66.38, median 60.38; reports (126 hypotheses) max 78.17, 10th 75.84, 100th 73.37, 1 000th 70.58, median 65.40. S1 (the plain share) has the same shape and a steeper loss of hits when a margin is added, so S2 is the statistic to keep.
+* **Out of sample** (the threshold from 20 000 slots, the false accepts counted in the other 20 000, and the other way round): at the largest of 20 000, S2 gave Rogers 0 and 3, reports 2 and 0; with a **margin of 1.0 (S2 units) on the largest: Rogers 0 and 1, reports 0 and 0**. In the 40 000 slots of the full run no score exceeds the full maximum, by construction (**in sample**: not a measure of the rate). The measured bound: with margin 1.0 and 20 000 slots, 0-1 false accepts: **about 5e-5 a slot at worst, a false `RR73` or report about every 55 h of slots** (a guess from a count of 0-1, **AWGN only**: no interferer, no band edge). The gate asked for 0 in 12 000: **met out of sample with the margin, not without it**.
+* **Detection at the threshold = the largest of 40 000 noise slots + 1.5 (S2)** (640 slots a cell; the hits are the right hypothesis above the threshold):
+
+| SNR | Rogers `RR73` | report `-15` |
+|---|---|---|
+| -22 dB | 631 / 640 | 625 / 640 |
+| -23 dB | 578 | 538 |
+| -24 dB | 393 (61 %) | 274 (43 %) |
+| -25 dB | 175 (27 %) | 92 (14 %) |
+| -26 dB | 42 | 21 |
+
+  The 50 % point is about **-24.4 dB (Rogers) and -23.8 dB (report)** against about -22 and -20.5 dB for the AP passes: **+2.4 and +3.3 dB**, with a margin that holds the false accepts at 0-1 in 20 000 (the +3.5-4 dB of section 26 was at the 2 000-slot threshold, which let 0-6 in 4 000 through).
+* **The gate of the plan** (+1 dB over the AP passes, 0 false accepts in 12 000 noise slots, about 1 ms on the board): the first two met (on AWGN, the place known to +-3 bins and +-5 rows), the third an estimate (section 26.1).
+* **Still not measured**: the busy band and fading (the noise tail there is not white), the place the app knows, the board. A real band has interferers the AWGN tail does not have: **the threshold of a product must be set on recorded noise** (`qso3_busy`, the slots of the recordings), not on this tail.
+

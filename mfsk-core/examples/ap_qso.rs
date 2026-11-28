@@ -710,6 +710,41 @@ fn a8cells(trials: u64, cal: u64, fa: u64) {
         ("Rogers RR73", "RR73", ApStage::Rogers, &rogers),
         ("Report -15 ", "-15", ApStage::Replying, &reports),
     ] {
+        if let Ok(v) = std::env::var("A8_DUMP") {
+            // raw scores for an offline threshold study: `A8_DUMP=<seed0>` (noise seeds seed0+1..=seed0+cal, detection seeds seed0+1..=seed0+trials)
+            let seed0: u64 = v.parse().unwrap();
+            let truth = list
+                .iter()
+                .position(|h| h.0 == field)
+                .expect("truth in list");
+            let clean = synthesize_i16::<Ft8>(
+                &message_to_tones::<Ft8>(&pack77(MYCALL, PARTNER, field).expect("pack")),
+                12_000,
+                F0,
+                amp as i16,
+            );
+            for seed in 1..=cal {
+                let b = best(
+                    &cells_of(&slot(None, amp, -20.0, 5_000_000 + seed0 + seed)),
+                    list,
+                );
+                println!("N {label} {:.3} {:.3}", b[0].0, b[1].0);
+            }
+            for snr in [-22.0f32, -23.0, -24.0, -25.0, -26.0, -27.0] {
+                for seed in 1..=trials {
+                    let pcm = slot(Some(&clean), amp, snr, seed0 + seed);
+                    let b = best(&cells_of(&pcm), list);
+                    println!(
+                        "D {label} {snr} {:.3} {:.3} {} {}",
+                        b[0].0,
+                        b[1].0,
+                        u8::from(b[0].1 == truth),
+                        u8::from(b[1].1 == truth)
+                    );
+                }
+            }
+            continue;
+        }
         let mut thr = [f32::MIN; 2];
         for seed in 1..=cal {
             let b = best(&cells_of(&slot(None, amp, -20.0, 500_000 + seed)), list);
