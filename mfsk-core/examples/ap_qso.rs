@@ -722,6 +722,138 @@ fn a8cells(trials: u64, cal: u64, fa: u64) {
     };
     let best =
         |cells: &HalfDbCells, list: &[(String, [u8; 79])]| best_at(cells, list, F0 + 1.0, 0.02);
+    if let Ok(v) = std::env::var("A8_INQSO") {
+        // the in-QSO case: every signal the cells window decodes on the recordings, taken as a partner (`C1 C2 X`: me = C1, the partner = C2), the list built from the pair and the
+        // decision made at the signal's own place. The third field X decides what the list is for it: not in the list (the partner sent something else) = every acceptance is false;
+        // in the list = the right hypothesis must win.
+        use mfsk_core::engine::dsp::resample::resample_to_8k as rs8;
+        use mfsk_core::engine::scalar::Cmplx;
+        use mfsk_core::ft8::decode_block::{CellTables, CellsOptions, CellsWorker, Ft8BpScratch};
+        use mfsk_core::msg::wsjt77::unpack77;
+        let mut sigs: Vec<(String, String, String, f32, f32, usize)> = Vec::new(); // (c1, c2, x, f, dt, recording)
+        let mut cells_all: Vec<HalfDbCells> = Vec::new();
+        for (ri, path) in v.split(',').enumerate() {
+            let pcm = load_wav(path);
+            let a = rs8(&pcm, 12_000);
+            let opts = CellsOptions::p0_window();
+            let (cands, cells) =
+                coarse_sync_gated_cells(&mut SliceSource(&a), Ft8Rate::Hz8000, &search, 1)
+                    .expect("8 kHz");
+            let tables = CellTables::new();
+            let mut cs: Box<[[Cmplx<f32>; 8]; 79]> = vec![[Cmplx::<f32>::default(); 8]; 79]
+                .try_into()
+                .expect("79 x 8");
+            let mut bp = Box::new(Ft8BpScratch::new());
+            let mut w = CellsWorker::new(&mut cs, &mut bp, &tables).with_options(&opts);
+            let mut known = Vec::new();
+            w.decode_round_osd(
+                &cells,
+                &cands,
+                opts.max_cand,
+                opts.depth(),
+                0.25,
+                &mut known,
+                6,
+            );
+            for f in &known {
+                if let Some(t) = unpack77(f.res.message77()) {
+                    let w: Vec<&str> = t.split_whitespace().collect();
+                    if w.len() == 3
+                        && pack77(w[0], w[1], w[2]).is_some()
+                        && !w[0].starts_with("CQ")
+                        && !w[0].starts_with('<')
+                        && !w[1].starts_with('<')
+                    {
+                        sigs.push((
+                            w[0].into(),
+                            w[1].into(),
+                            w[2].into(),
+                            f.res.freq_hz,
+                            f.res.dt_sec,
+                            ri,
+                        ));
+                    }
+                }
+            }
+            cells_all.push(cells);
+        }
+        println!(
+            "{} signals decoded on {} recordings that a list can be built for",
+            sigs.len(),
+            cells_all.len()
+        );
+        let is_rogers = |x: &str| matches!(x, "RRR" | "RR73" | "73");
+        let is_report = |x: &str| {
+            let y = x.strip_prefix('R').unwrap_or(x);
+            y.len() >= 2
+                && (y.starts_with('+') || y.starts_with('-'))
+                && y[1..].chars().all(|c| c.is_ascii_digit())
+        };
+        let kinds: [(&str, f32, &dyn Fn(&str) -> bool); 2] = [
+            ("Rogers", 74.66 + 1.0, &is_rogers),
+            ("Report", 78.17 + 1.0, &is_report),
+        ];
+        for (name, thr, listed) in kinds {
+            let (mut n_un, mut acc, mut acc_v3, mut acc_v1) = (0u32, 0u32, 0u32, 0u32);
+            let (mut n_li, mut right, mut right_v3, mut wrong) = (0u32, 0u32, 0u32, 0u32);
+            for (c1, c2, x, f, dt, ri) in &sigs {
+                let mut list: Vec<(String, [u8; 79])> = Vec::new();
+                let mk = |field: &str| -> Option<(String, [u8; 79])> {
+                    let bits = pack77(c1, c2, field)?;
+                    let t = message_to_tones::<Ft8>(&bits);
+                    let mut a = [0u8; 79];
+                    a.copy_from_slice(&t[..79]);
+                    Some((field.to_string(), a))
+                };
+                if name == "Rogers" {
+                    list.extend(["RRR", "RR73", "73"].iter().filter_map(|f| mk(f)));
+                } else {
+                    for r in -30..=32i32 {
+                        for pre in ["", "R"] {
+                            list.extend(mk(&format!("{pre}{r:+03}")));
+                        }
+                    }
+                }
+                if list.is_empty() {
+                    continue;
+                }
+                let b = best_at(&cells_all[*ri], &list, *f, *dt)[1];
+                let veto = last_veto.get();
+                if listed(x) {
+                    n_li += 1;
+                    if b.0 > thr {
+                        if list[b.1].0 == *x {
+                            right += 1;
+                            right_v3 += u32::from(veto < 3);
+                        } else {
+                            wrong += 1;
+                            println!(
+                                "  WRONG hypothesis {name}: {c1} {c2} {x} -> {} score {:.1} veto {veto}",
+                                list[b.1].0, b.0
+                            );
+                        }
+                    }
+                } else {
+                    n_un += 1;
+                    if b.0 > thr {
+                        acc += 1;
+                        acc_v3 += u32::from(veto < 3);
+                        acc_v1 += u32::from(veto < 2);
+                        if veto < 3 {
+                            println!(
+                                "  FALSE accept {name}: {c1} {c2} {x} -> {} score {:.1} veto {veto}",
+                                list[b.1].0, b.0
+                            );
+                        }
+                    }
+                }
+            }
+            println!(
+                "{name} list: signals whose message is NOT in the list {n_un}: over the AWGN threshold {acc}, and veto<3 {acc_v3}, veto<2 {acc_v1}; signals whose message IS in the list {n_li}: right hypothesis over the threshold {right} (veto<3: {right_v3}), wrong hypothesis {wrong}"
+            );
+        }
+        return;
+    }
     if let Ok(v) = std::env::var("A8_REC") {
         // recorded slots: the partner's place slid over the band (every 12.5 Hz, three DTs) on each recording; the hypotheses carry calls that are not on the air, so any score
         // over the AWGN threshold is a false accept of a real band

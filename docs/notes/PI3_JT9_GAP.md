@@ -497,3 +497,16 @@ The partner's place slid over each of the 26 recordings of `embedded-poc/assets`
 
 **State of B1**: the gain on AWGN (+2.4-3.3 dB) stands; the false-accept gate **fails on real bands** (0.2-0.5 % of the places after the veto), and the veto's constant (0.7, count 3-4) is fitted on 26 recordings that are also the test. **B2 is not ready**; what it needs first is the measurement of the in-QSO case above and a threshold set on recorded bands.
 
+### 26.4 The in-QSO case: the partner sends something that is not on the list (2026-11-29; `A8_INQSO=<wavs> ap_qso a8cells`)
+
+The case 26.3 left open. Every signal the cells window decodes on the 26 recordings (178 with a standard `C1 C2 X` message that `pack77` rebuilds), taken as a partner (me = `C1`, partner = `C2`), the stage's list built from that pair (Rogers: `RRR` `RR73` `73`; report: -30..+32 with and without `R`), the decision made **at the signal's own decoded place** (the fast form, ±3 bins / ±5 rows around it) at the AWGN threshold (S2: the 40 000-slot maximum + 1.0). When `X` is not in the list every acceptance is false; when it is, the right hypothesis must win.
+
+| list | signals whose message is **not** in the list | over the AWGN threshold | and veto < 3 | veto < 2 | signals whose message **is** in the list | right hypothesis over the threshold (veto < 3) | wrong hypothesis |
+|---|---|---|---|---|---|---|---|
+| Rogers | 142 | **142** (all) | **3** (2.1 %) | 1 | 36 | 34 (**19**) | 2 |
+| report | 91 | **91** (all) | **3** (3.3 %) | 2 | 87 | 87 (81) | 0 |
+
+* **The threshold means nothing on a real signal**: every signal of the band clears the AWGN threshold, as 26.3 showed. What stands between a partner's real message and a false acceptance is the veto alone, and **2-3 % of the unlisted messages pass it** (`K1JT EA3AGB -15` read as `73`, `CT7AIX WG5D EM62` as `RRR`, `TK4LS YC1MRF 73` as a report): a false `RR73` or report in a QSO, a contact logged or a report sent that nobody made. The veto also rejects 15 of the 34 **correct** Rogers hypotheses on real signals (veto >= 3: strong signals leak into the neighbouring tones of the 3.125 Hz cells), where on the AWGN reply it never exceeded 2: it was fitted on AWGN and on the same recordings, and does not carry over to a clean strong signal.
+* **Two wrong hypotheses won over the right one** (`OE4RWD NU2Q RR73` as `RRR`, score 159, veto 15; `K4VBM HA8EK RR73` as `RRR`): the list decision has no check that the message is a message. The AP passes decode through the LDPC code and the CRC and then a hard-error ceiling, so what they accept **is a codeword**: that is what the list decision gives up for its +2.4-3.3 dB.
+* **Decision**: the list decision is **not taken to the product** (B2 stopped). It would need a check of the kind the code gives (the decoded bits through the LDPC, or a2 blind decode of the symbols that disagree with the hypothesis) and then it is the AP pass again. Its gain on AWGN stands as a measurement; the QSO window gets the AP passes only (section 25: core 1, from the rows' arrival).
+

@@ -4,7 +4,7 @@
 
 ### Research: a noncoherent list decision on the cells (`ap_qso a8cells`; host, no library change)
 
-- **Measured**: on AWGN with the partner's place known, scoring the stage's hypotheses (Rogers 3, reports 126) on the cells reaches **-25.5 / -24.5 dB** against -22 / -20.5 dB for the AP passes (+3.5-4 dB). **Not met**: false accepts 0-6 in 4 000 noise slots at the largest-of-2 000 threshold (gate: 0 in 12 000). Not measured: fading, off-grid place, the board. **On 26 recorded bands the AWGN threshold fails** (1 331 / 3 076 of 15 600 places accepted: a real signal matches the Costas symbols); a data-symbol veto leaves 0.2-0.5 % of the places. Fast form 0.01-0.03 ms a call on the host. `PI3_JT9_GAP.md` sections 26-26.3; B2 (product) is not ready.
+- **Measured**: on AWGN with the partner's place known, scoring the stage's hypotheses (Rogers 3, reports 126) on the cells reaches **-25.5 / -24.5 dB** against -22 / -20.5 dB for the AP passes (+3.5-4 dB). **Not met**: false accepts 0-6 in 4 000 noise slots at the largest-of-2 000 threshold (gate: 0 in 12 000). Not measured: fading, off-grid place, the board. **On 26 recorded bands the AWGN threshold fails** (1 331 / 3 076 of 15 600 places accepted: a real signal matches the Costas symbols); a data-symbol veto leaves 0.2-0.5 % of the places. Fast form 0.01-0.03 ms a call on the host. `PI3_JT9_GAP.md` sections 26-26.3; **In the QSO case (178 real signals taken as partners, the list built from the pair) 2-3 % of the messages that are not on the list are still accepted after the veto, and two wrong hypotheses beat the right one: not taken to the product.** `PI3_JT9_GAP.md` section 26.4.
 
 ### `ft8-ap-bench`: the cells flow's AP rung on the CoreS3 (embedded; measured)
 
