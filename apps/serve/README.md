@@ -5,7 +5,7 @@ requests, so the callsign hash table, the latest periods and a period's checkpoi
 
 ```sh
 cargo install --git https://github.com/jl1nie/mfsk-core --rev <commit> --profile dist mfsk-serve
-echo '{"op":"decode","id":1,"mode":"FT8","wav":"slot.wav","depth":"normal"}' | mfsk-serve
+echo '{"op":"decode","id":1,"mode":"FT8","wav":"slot.wav","depth":"normal"}' | mfsk-serve   # or "profile":"p1" | "p2": a hardware class's depth, AP and budget (extrapolated, not measured there)
 mfsk-serve bench slot.wav        # time the decoder per depth, cold and warm, and at the checkpoints
 ```
 

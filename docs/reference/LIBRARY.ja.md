@@ -1529,6 +1529,8 @@ JT9 の多段 AGC/IFFT/コヒーレント加算パイプラインは単純な帯
 他プロトコルの `snr_db` と比べないこと）。WSPR のそれは `wsprd` 較正の
 候補 SNR で、`wsprd` 自身がスポットの隣に表示するのと同じ数値である。
 
+**プロファイル: `Profile::{P1, P2}`。** ハードウェアの級の値をデータとして持つ(`PROFILES.md` §5-1): `Profile::spec()` が表す `ProfileSpec { depth, ap, lanes, slot_budget }`(P1、Cortex-A9: `Depth::Normal`、AP 有効、レーン 2、周期の 0.8 を予算。P2、Pi 3B: `Depth::Deep`、AP 有効、レーン 4、0.9)、`Profile::apply(params)` はその `depth` と AP を `DecodeParams` に載せる(AP は off から上げるだけで下げない。帯域、局、QSO 文脈は触らない)、`Profile::from_name("p1")` は大文字小文字を問わず名前を読む。faithful パイプラインだけ。`lanes` と `slot_budget` は複数の周期を同時に復号するアプリケーション向け(`skimmer` の `--lanes`、`--slot-budget`、`PeriodBudget::share`)で、ライブラリの復号は読まない。**値はホストの 1 スロットの時間(Pi 3B の 1 コアは 25〜40 倍)からの外挿で、そのハードウェアでは測っていない。**
+
 ### 2.6 メッセージの受理
 
 この層より下は全て誤り*検出*である — LDPC のパリティ検査、そして CRC。

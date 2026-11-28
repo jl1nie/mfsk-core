@@ -152,7 +152,8 @@ pub fn parse_contest(s: &str) -> Option<Contest> {
 /// A channel written `MODE@DIAL_HZ` followed by any of `:band=LO-HI` (audio
 /// Hz), `:dx=CALL`, `:depth=fast|normal|deep`, `:rx=HZ`, `:tol=HZ`, `:tx=HZ`,
 /// `:ap=off|cq|full`, `:hiscall=`, `:hisgrid=`, `:progress=0..5`, `:contest=NAME`,
-/// `:avg=1`, `:deepsearch=1` and `:eme=1` (WSJT-X's parameter block).
+/// `:avg=1`, `:deepsearch=1` and `:eme=1` (WSJT-X's parameter block), and `:profile=p1|p2` (a hardware class's depth and AP; an explicit
+/// `:depth=` or `:ap=` wins).
 pub fn parse_channel(spec: &str) -> Result<crate::ChannelSpec, String> {
     let mut parts = spec.split(':');
     let head = parts.next().unwrap_or("");
@@ -199,6 +200,12 @@ pub fn parse_channel(spec: &str) -> Result<crate::ChannelSpec, String> {
             "contest" => {
                 ch.options.contest =
                     parse_contest(v).ok_or_else(|| format!("bad contest {v:?}"))?;
+            }
+            "profile" => {
+                ch.options.profile = Some(
+                    mfsk_core::decoder::Profile::from_name(v)
+                        .ok_or_else(|| format!("bad profile {v:?}, expected p1|p2"))?,
+                );
             }
             "avg" => ch.options.averaging = flag(k, v)?,
             "deepsearch" => ch.options.deep_search = flag(k, v)?,
@@ -258,6 +265,35 @@ mod tests {
             "FT8@1:depth=max",
             "FT8@1:foo=1",
             "FT8@1:dx",
+        ] {
+            assert!(parse_channel(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_channel_names_its_profile() {
+        use mfsk_core::decoder::Profile;
+        let c = parse_channel("ft8@7074000:profile=P1").unwrap();
+        assert_eq!(c.options.profile, Some(Profile::P1));
+        assert_eq!(
+            c.options.depth, None,
+            "the profile is a stand-in, not a copy"
+        );
+        assert_eq!(
+            parse_channel("ft8@7074000:profile=p2:depth=fast")
+                .unwrap()
+                .options,
+            crate::ChannelOptions {
+                profile: Some(Profile::P2),
+                depth: Some(mfsk_core::decoder::Depth::Fast),
+                ..Default::default()
+            }
+        );
+        for bad in [
+            "FT8@1:profile=p0",
+            "FT8@1:profile=",
+            "FT8@1:profile=deep",
+            "FT8@1:profile",
         ] {
             assert!(parse_channel(bad).is_err(), "{bad}");
         }

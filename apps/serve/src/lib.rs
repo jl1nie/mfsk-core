@@ -17,7 +17,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use mfsk_core::decoder::{AnyDecoder, AnySlotResult, Audio, Depth, SlotInput, default_params};
+use mfsk_core::decoder::{
+    AnyDecoder, AnySlotResult, Audio, Depth, Profile, SlotInput, default_params,
+};
 use mfsk_core::encoder::{TxAudio, encode};
 use mfsk_core::registry::Mode;
 use serde::Deserialize;
@@ -47,8 +49,11 @@ struct DecodeReq {
     mode: String,
     /// A `.wav` (mono, 12 kHz, s16 or f32) or a `.raw` (s16le, mono, 12 kHz).
     wav: String,
-    /// `fast`, `normal` or `deep`; the library's default (`deep`) when absent.
+    /// `fast`, `normal` or `deep`; the profile's, else the library's default (`deep`), when absent.
     depth: Option<String>,
+    /// `p1` or `p2`: a hardware class's depth and AP, and, unless `budget_ms` is given, its share of the period as the budget
+    /// (`mfsk_core::decoder::Profile`; the values are extrapolated, not measured on the hardware).
+    profile: Option<String>,
     /// `[lo, hi]` in Hz; the mode's default band when absent.
     band: Option<[f32; 2]>,
     /// The period's index on the UTC grid; required with `prefix`.
@@ -166,9 +171,20 @@ impl Server {
         if r.prefix && r.period.is_none() {
             return Err("`prefix` needs `period`".into());
         }
+        let profile = match r.profile.as_deref() {
+            None => None,
+            Some(name) => Some(
+                Profile::from_name(name)
+                    .ok_or_else(|| format!("unknown profile {name:?} (p1, p2)"))?,
+            ),
+        };
+        // the mode's defaults, then the profile's, then what the request names
         let mut params = default_params(mode);
+        if let Some(p) = profile {
+            params = p.apply(params);
+        }
         let depth = match r.depth.as_deref().map(str::to_ascii_lowercase).as_deref() {
-            None => Depth::default(),
+            None => params.depth,
             Some("fast") => Depth::Fast,
             Some("normal") => Depth::Normal,
             Some("deep") => Depth::Deep,
@@ -196,7 +212,11 @@ impl Server {
         }
 
         let started = Instant::now();
-        let deadline = r.budget_ms.map(|ms| started + Duration::from_millis(ms));
+        // an explicit `budget_ms` wins; else the profile's share of this mode's period
+        let budget_ms = r.budget_ms.or_else(|| {
+            profile.map(|p| (p.spec().slot_budget * mode.meta().t_slot_s * 1e3) as u64)
+        });
+        let deadline = budget_ms.map(|ms| started + Duration::from_millis(ms));
         let within = move || deadline.is_none_or(|d| Instant::now() < d);
         let mut slot = SlotInput::new(samples.audio());
         slot.period = r.period;

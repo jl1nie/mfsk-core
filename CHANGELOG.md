@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### `Profile` P1 / P2 (faithful pipeline) and `--profile` in `skimmer` and `mfsk-serve` (Issue #766 follow-up; host)
+
+- **What**: `mfsk_core::decoder::{Profile, ProfileSpec}`: P1 (Cortex-A9) = `Depth::Normal`, P2 (Pi 3B) = `Depth::Deep`, AP raised to `CqOnly` where it is off, 2 / 4 lanes, a slot budget of 0.8 / 0.9 of the period (`Normal` and `Deep` keep FT8's early decode; `Fast` has none). `skimmer --profile p1|p2` and `:profile=` per channel (`--lanes`, `--slot-budget`, `:depth=`, `:ap=` win); `mfsk-serve --profile` and a request's `"profile"` (`depth`, `budget_ms` win). Without one nothing changes.
+- **Measured** (host, 60 slots): AP `cq` = `full` here; it adds 13 / 9 decodes and 12 / 17 extras at Normal / Deep (12 of 13 and 15 of 17 carry a callsign `jt9` decodes in another slot). Tier B: P2 finds 402 of 402 of `jt9`'s and no unattested extra, P1 (floor 385) 387 of 402. **The values are an extrapolation (host x 25-40 for a Pi 3B core), not measured on an A9 or a Pi**; the budget shares are guesses. `PI3_JT9_GAP.md` section 20.
+
 ### `Decoder::<Ft8>::decode_candidates`: the faithful decode at candidates you give (Issue #766 follow-up; host)
 
 - **What**: `Ft8Candidate`, `CandidatesError`, `Decoder::<Ft8>::decode_candidates(&slot, &[Ft8Candidate])`: the coarse search replaced by the caller's list, everything after it unchanged (`SinglePass` / `SicRounds(n)`, the latter retrying the list on the residual; `SicEarly` and a sniper are refused). Given `coarse_sync`'s own candidates the rows are bit for bit `decode()`'s (`tests/ft8_decode_candidates.rs`: also 600 noise candidates decode nothing, out-of-range ones are ignored; mutation-checked).

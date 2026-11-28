@@ -30,7 +30,7 @@ cargo install --git https://github.com/jl1nie/mfsk-core --rev <commit> --profile
 
 ```text
 mfsk-serve                                    stdin が閉じるまでリクエストを処理する
-mfsk-serve decode FILE [--mode M] [--depth D] [--band LO-HI]    1 リクエストを処理し、stdout に答える
+mfsk-serve decode FILE [--mode M] [--depth D] [--profile P] [--band LO-HI]    1 リクエストを処理し、stdout に答える
 mfsk-serve bench FILE [--mode M] [--iters N]                    FILE でデコーダの時間を測る
 ```
 
@@ -50,7 +50,8 @@ mfsk-serve bench FILE [--mode M] [--iters N]                    FILE でデコ�
 |---|---|---|
 | `mode` | 必須 | モード名 |
 | `wav` | 必須 | パス。`.raw` は s16le として、それ以外は WAV として読む |
-| `depth` | | `fast`、`normal`、`deep`(無ければライブラリの既定の `deep`) |
+| `depth` | | `fast`、`normal`、`deep`(無ければプロファイルの、それも無ければライブラリの既定の `deep`) |
+| `profile` | | `p1`(Cortex-A9 級: `normal`、AP 有効、周期の 0.8 を予算)か `p2`(Pi 3B 級: `deep`、AP 有効、予算 0.9)。明示した `depth` と `budget_ms` が勝つ。**値はホストの時間からの外挿で、そのハードウェアでは測っていない**(`PROFILES.md`、`PI3_JT9_GAP.md` §13) |
 | `band` | | `[lo, hi]`(Hz)(無ければそのモードの既定の帯域) |
 | `period` | | UTC グリッド上の周期の番号。`prefix` に必要で、周期をまたぐ状態は、これが与えられたときだけ使われる |
 | `budget_ms` | | この時間(ミリ秒)が過ぎたら、候補を取るのをやめる |

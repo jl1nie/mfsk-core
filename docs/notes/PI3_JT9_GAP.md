@@ -309,3 +309,20 @@ The reply that can still be sent has about 1.2-2 s after the signal's audio is i
 * **What the board says about section 18**: the window path of the app is `p0_window` (P = 1), and it is out 383-386 ms after the end with 2 s of the slot's work done before it. Section 18's P = 2 in the window (a second pass, +24 ms on the host) is, on the board, **a 3.8 s job on core 1: not a window job**; with 20 candidates it would be about 2.5 s. P = 2 in the window is a fact of a faster core than the ESP32-S3's (the Pi 3B's A53 at 25-40x of the host: 1.0-1.6 s from section 18, from the instruction ratio, not measured), not of this board.
 * **Not measured:** the Pi; the faithful pass (it is not in the app); a radio, WiFi and the USB host running.
 
+## 20. The faithful profiles P1 / P2: what AP does, and the floors (2026-11-28; host, one thread, the 60 slots and the 22 recordings)
+
+`mfsk_core::decoder::Profile` (P1 = `Depth::Normal`, P2 = `Depth::Deep`, AP on, lanes 2 / 4, slot budget 0.8 / 0.9 of the period) for `skimmer --profile` and `mfsk-serve --profile`. The choice of Normal and Deep follows from the code's own comments: FT8's early decode (rows at ~11.8 s, `skimmer`'s `early_decode`) needs the `SicEarly` checkpoints that only Normal and Deep have, and `--slot-budget` (`PeriodBudget::share`) stops a decode that does not fit its period and reports what it has, which is how a heavy depth runs on a slow core. The Pi 3B figures are the host's times x 25-40 (section 13): Normal 5-8 s, Deep 9-14 s a slot on one core, an A9 Normal 7-12 s (`PROFILES.md` section 8); **no decode was run on either**, and the shares 0.8 / 0.9 are guesses.
+
+AP, on the 60 slots (1 338 of `jt9`'s; ms a slot, host):
+
+| | decodes | extras | ms |
+|---|---|---|---|
+| Normal, AP off | 1 245 (93.0 %) | 86 | 200 |
+| Normal, AP `cq` = `full` | 1 258 (94.0 %) | 98 | 208 |
+| Deep, AP off | 1 299 (97.1 %) | 115 | 353 |
+| Deep, AP `cq` = `full` | 1 308 (97.8 %) | 132 | 391 |
+
+`cq` and `full` are the same here: with no station and no QSO context the full AP has only the CQ hypothesis. The profiles use `CqOnly` (no QSO assumed). AP adds 13 (Normal) and 9 (Deep) decodes and 12 and 17 extras; 12 of the 13 and 15 of the 17 carry a callsign `jt9` decodes in another slot; the others are `CQ SP3OWE JO81` (a callsign seen nowhere else in the corpus: the blind-CQ AP is the phantom-prone path) and `CQ YC2FCE OI42` (the callsign is in the neighbouring slot's attested extra).
+
+Tier B (`tests/profile_conformance.rs`, the 22 recordings, `jt9`'s 402): **P2 finds 402 of 402** with no unattested extra (the same as `ft8_real_recordings_vs_jt9.rs`); **P1 finds 387 of 402** (96.3 %), no unattested extra, floor 385. With P1 at `Depth::Fast` it finds 326 (the mutation that shows the floor can fail).
+

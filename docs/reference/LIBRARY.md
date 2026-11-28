@@ -1633,6 +1633,8 @@ JT9 decodes against each other, not against other protocols.
 `Wspr`'s is a `wsprd`-calibrated candidate SNR, the same figure
 `wsprd` itself prints next to a spot.
 
+**Profiles: `Profile::{P1, P2}`.** A hardware class's values as data (`PROFILES.md` section 5-1): `Profile::spec()` is the `ProfileSpec { depth, ap, lanes, slot_budget }` it stands for (P1, Cortex-A9: `Depth::Normal`, AP on, 2 lanes, a budget of 0.8 of the period; P2, Pi 3B: `Depth::Deep`, AP on, 4 lanes, 0.9), `Profile::apply(params)` puts its `depth` and AP on a `DecodeParams` (AP is raised from off, never lowered; the band, the station and the QSO context are untouched), `Profile::from_name("p1")` reads a name in any case. The faithful pipeline only. `lanes` and `slot_budget` are for an application that decodes several periods at once (`skimmer`'s `--lanes`, `--slot-budget`; `PeriodBudget::share`); the library's decode does not read them. **The values are extrapolated from the host's time per slot (x 25-40 for a Pi 3B core), not measured on the hardware.**
+
 ### 2.6 Message acceptance
 
 Everything below this point in the stack is error *detection*: the

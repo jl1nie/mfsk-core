@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use mfsk_core::decoder::{AnyDecoder, Depth, default_params};
+use mfsk_core::decoder::{AnyDecoder, Depth, Profile, default_params};
 use mfsk_core::registry::Mode;
 use mfsk_serve::Server;
 use serde_json::{Value, json};
@@ -141,6 +141,71 @@ fn a_decode_request_returns_what_the_library_returns() {
         want.len()
     );
     assert_eq!(texts(&lines), want);
+}
+
+/// A profile is the values it stands for: the request's decode is the library's decode of `profile.apply(default_params)`.
+/// **Fails if** the profile is not applied (its depth or AP), is applied after the request's own `depth`, or a name the
+/// library knows is refused.
+#[test]
+fn a_profile_request_decodes_with_the_profile_s_params() {
+    let mut server = Server::new();
+    for (name, profile) in [("p1", Profile::P1), ("P2", Profile::P2)] {
+        let lines = ask(
+            &mut server,
+            json!({"op":"decode","id":1,"mode":"FT8","wav":fixture(),"profile":name}),
+        );
+        done(&lines);
+        let mut direct = AnyDecoder::new(Mode::Ft8, profile.apply(default_params(Mode::Ft8)));
+        let want: BTreeSet<String> = direct
+            .decode_i16(&qso3_samples(), None)
+            .rows
+            .iter()
+            .map(|r| r.decoded.text.clone())
+            .collect();
+        assert!(want.len() >= 15, "{name}: {} messages", want.len());
+        assert_eq!(texts(&lines), want, "{name}");
+    }
+    // the request's own depth wins over the profile's
+    let lines = ask(
+        &mut server,
+        json!({"op":"decode","mode":"FT8","wav":fixture(),"profile":"p2","depth":"fast"}),
+    );
+    let mut direct = AnyDecoder::new(
+        Mode::Ft8,
+        Profile::P2
+            .apply(default_params(Mode::Ft8))
+            .depth(Depth::Fast),
+    );
+    let want: BTreeSet<String> = direct
+        .decode_i16(&qso3_samples(), None)
+        .rows
+        .iter()
+        .map(|r| r.decoded.text.clone())
+        .collect();
+    assert_eq!(texts(&lines), want);
+}
+
+#[test]
+fn an_unknown_profile_is_one_error_line_and_the_next_request_is_served() {
+    let mut server = Server::new();
+    let bad = ask(
+        &mut server,
+        json!({"op":"decode","id":9,"mode":"FT8","wav":fixture(),"profile":"p0"}),
+    );
+    assert_eq!(bad.len(), 1, "{bad:?}");
+    assert_eq!(bad[0]["type"], "error");
+    assert!(
+        bad[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("unknown profile"),
+        "{bad:?}"
+    );
+    let ok = ask(
+        &mut server,
+        json!({"op":"decode","id":10,"mode":"FT8","wav":fixture(),"profile":"p1"}),
+    );
+    done(&ok);
 }
 
 #[test]
