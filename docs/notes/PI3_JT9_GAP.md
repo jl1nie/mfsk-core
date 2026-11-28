@@ -291,3 +291,21 @@ The reply that can still be sent has about 1.2-2 s after the signal's audio is i
 * **What is in the window**, the part after the streamed 12 ms (host, then a Pi 3B core at 25-40x, an upper bound: the streamed part is not all hidden): P = 1, M = 30: about 16 ms, **0.4-0.65 s**, 980 decodes (73 %); P = 2, M = 20: about 26 ms, **0.65-1.0 s**, 1 085 (81 %); P = 2, M = 30: about 40 ms, **1.0-1.6 s**, 1 169 (87 %): inside the 1.2-2 s at the lower ratio and at the edge of it at the upper one. The late path adds the faithful pass on top (section 16).
 * **Not measured:** the Pi, and the split of a pass between its streamed and its post-signal part on the board (the host's 12 ms is the search alone; the demux of the cells is in it, the second pass's read is not).
 
+## 19. The CoreS3 measured: the window path and the late path against the host, one slot (2026-11-28; `embedded-poc/m5stack-cores3-app`, `ft8-cells-flow`, wav_sim `qso3_busy`, 6 slots, `logs/cells_window_late_2026-11-28.log` not committed)
+
+`MFSK_CORES3_FORCE_MODE=decode cargo build --release --features ft8-cells-flow`, `scripts/capture.sh ... 150 "LATE slot"` (the library of this tree: `decode_candidates` and the rest of this study are not in the app). Board (ESP32-S3 at 240 MHz, PSRAM) against the host of sections 13-18 (one thread), the same slot:
+
+| | board | host | board / host |
+|---|---|---|---|
+| window path (`p0_window`, 30 candidates, P = 1): decodes | 11 (9 in hand at the emit) | 11 | |
+| the work of the slot's jobs: search + decode + OSD pass + SNR/publish | 450 + 617 + 209 + about 65 = **about 1 340 ms** | 36-38 ms (the whole call) | **about 36x** |
+| **after the slot's end** until the list is out | **383-386 ms** (6 of 6 slots) | | |
+| emit (row pair 87) | 2 016-2 023 ms before the end | | |
+| late path (`p0_late`, core 1): decodes | 13 (2 new) | 13 | |
+| the late path's SIC job | **3 781-3 804 ms** | 58-76 ms for the whole `p0_late`, about 50-60 ms without the first search | **about 63-80x** |
+
+* No reset, 0 samples dropped in the 6 slots (the `USB (11)` reset reason is the flash); waterfall FFT 2.5-3.3 ms a row while the SIC runs on core 1.
+* **The ratio is not one number.** The window path's work is 36x the host's: it streams (the search's 8 ranges and the demux are done while the slot comes in) and runs on one core. The SIC job is 63-80x: on core 1, its working set in PSRAM, the search's FFTs and the cells' copy; section `ESP32S3_TWO_CORE_BEHAVIOUR.md`'s serialized PSRAM misses are the measured reason such a job costs more than its instruction count. Section 13's 25-40x was an A53 / A9 core's instruction time; **for this board the SIC is 2x worse than that range, the window path within it**.
+* **What the board says about section 18**: the window path of the app is `p0_window` (P = 1), and it is out 383-386 ms after the end with 2 s of the slot's work done before it. Section 18's P = 2 in the window (a second pass, +24 ms on the host) is, on the board, **a 3.8 s job on core 1: not a window job**; with 20 candidates it would be about 2.5 s. P = 2 in the window is a fact of a faster core than the ESP32-S3's (the Pi 3B's A53 at 25-40x of the host: 1.0-1.6 s from section 18, from the instruction ratio, not measured), not of this board.
+* **Not measured:** the Pi; the faithful pass (it is not in the app); a radio, WiFi and the USB host running.
+
