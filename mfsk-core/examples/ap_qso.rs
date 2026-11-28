@@ -579,6 +579,143 @@ fn cellsap(trials: u64, phantom_slots: u64) {
 #[cfg(not(feature = "fixed-point"))]
 fn cellsap(_: u64, _: u64) {}
 
+/// `a8cells`: a noncoherent list decision on the cells (research, PI3_JT9_GAP.md 26): the hypotheses of the stage (the replies a8 would try), scored by the share of each
+/// symbol's energy on the expected tone, summed over the 79 symbols, the best over places around the partner (+-3 bins, +-5 rows). The threshold is the largest score of
+/// `cal` noise slots (it is measured, the cells are not a8's iid exponentials); then the false accepts in `fa` other noise slots, and the hits against the AP passes on the same slots.
+#[cfg(feature = "fixed-point")]
+fn a8cells(trials: u64, cal: u64, fa: u64) {
+    use mfsk_core::engine::dsp::resample::resample_to_8k;
+    use mfsk_core::engine::source::SliceSource;
+    use mfsk_core::ft8::decode_block::{
+        ApContext, ApStage, Ft8Rate, GatedSearch, HalfDbCells, coarse_sync_gated_cells,
+    };
+    let amp = 6_000.0f32;
+    let pow_of = |h: u8| 10f32.powf(f32::from(h) / 20.0);
+    let tones_of = |field: &str| -> [u8; 79] {
+        let bits = pack77(MYCALL, PARTNER, field).expect("pack");
+        let t = message_to_tones::<Ft8>(&bits);
+        let mut a = [0u8; 79];
+        a.copy_from_slice(&t[..79]);
+        a
+    };
+    let rogers: Vec<(String, [u8; 79])> = ["RRR", "RR73", "73"]
+        .iter()
+        .map(|f| (f.to_string(), tones_of(f)))
+        .collect();
+    let mut reports: Vec<(String, [u8; 79])> = Vec::new();
+    for r in -30..=32i32 {
+        for pre in ["", "R"] {
+            let f = format!("{pre}{r:+03}");
+            reports.push((f.clone(), tones_of(&f)));
+        }
+    }
+    let search = GatedSearch::new(200.0, 3000.0, 1.3, 30);
+    let cells_of = |pcm: &[i16]| -> HalfDbCells {
+        let a = resample_to_8k(pcm, 12_000);
+        coarse_sync_gated_cells(&mut SliceSource(&a), Ft8Rate::Hz8000, &search, 1)
+            .expect("8 kHz")
+            .1
+    };
+    // best (score, hypothesis index) of `list` over the places; two statistics
+    let best = |cells: &HalfDbCells, list: &[(String, [u8; 79])]| -> [(f32, usize); 2] {
+        let bin_hz = 3.125f32;
+        let tstep = 0.08f32;
+        let k0 = ((F0 + 1.0) / bin_hz).round() as i64;
+        let j00 = ((0.02 + 0.5) / tstep).round() as i32;
+        let mut out = [(f32::MIN, 0usize); 2];
+        for dk in -3..=3i64 {
+            for dj in -5..=5i32 {
+                let (k, j0) = (k0 + dk, j00 + dj);
+                let mut p = vec![[0f32; 8]; 79];
+                for (sym, row) in p.iter_mut().enumerate() {
+                    for (t, v) in row.iter_mut().enumerate() {
+                        let (r, b) = (j0 + 2 * sym as i32, k + 2 * t as i64);
+                        *v = if r < 0 || b < 0 {
+                            0.0
+                        } else {
+                            cells.cell(r as usize, b as usize).map_or(0.0, pow_of)
+                        };
+                    }
+                }
+                for (hi, (_, tones)) in list.iter().enumerate() {
+                    let (mut s1, mut s2) = (0f32, 0f32);
+                    for (sym, row) in p.iter().enumerate() {
+                        let tot: f32 = row.iter().sum::<f32>() + 1e-30;
+                        let e = row[tones[sym] as usize];
+                        s1 += e / tot;
+                        s2 += (1.0 + 7.0 * e / (tot - e + 1e-30)).ln();
+                    }
+                    if s1 > out[0].0 {
+                        out[0] = (s1, hi);
+                    }
+                    if s2 > out[1].0 {
+                        out[1] = (s2, hi);
+                    }
+                }
+            }
+        }
+        out
+    };
+    println!(
+        "noncoherent list decision on the cells ({} Rogers hypotheses, {} report hypotheses)",
+        rogers.len(),
+        reports.len()
+    );
+    for (label, field, stage, list) in [
+        ("Rogers RR73", "RR73", ApStage::Rogers, &rogers),
+        ("Report -15 ", "-15", ApStage::Replying, &reports),
+    ] {
+        let mut thr = [f32::MIN; 2];
+        for seed in 1..=cal {
+            let b = best(&cells_of(&slot(None, amp, -20.0, 500_000 + seed)), list);
+            for i in 0..2 {
+                thr[i] = thr[i].max(b[i].0);
+            }
+        }
+        let mut fas = [0u32; 2];
+        for seed in 1..=fa {
+            let b = best(&cells_of(&slot(None, amp, -20.0, 900_000 + seed)), list);
+            for i in 0..2 {
+                fas[i] += u32::from(b[i].0 > thr[i]);
+            }
+        }
+        println!(
+            "{label}: threshold (max of {cal} noise slots) S1 {:.2} S2 {:.2}; false accepts in {fa} other noise slots: S1 {} S2 {}",
+            thr[0], thr[1], fas[0], fas[1]
+        );
+        let msg = format!("{MYCALL} {PARTNER} {field}");
+        let truth = list
+            .iter()
+            .position(|h| h.0 == field)
+            .expect("truth in list");
+        let clean = synthesize_i16::<Ft8>(
+            &message_to_tones::<Ft8>(&pack77(MYCALL, PARTNER, field).expect("pack")),
+            12_000,
+            F0,
+            amp as i16,
+        );
+        let ctx = ApContext::new(MYCALL, PARTNER, stage, F0 + 1.0, 0.02);
+        for snr in [-18.0f32, -20.0, -22.0, -24.0, -26.0] {
+            let (mut hit_s, mut hit_ap, mut hit_blind) = ([0u32; 2], 0u32, 0u32);
+            for seed in 1..=trials {
+                let pcm = slot(Some(&clean), amp, snr, seed);
+                let b = best(&cells_of(&pcm), list);
+                for i in 0..2 {
+                    hit_s[i] += u32::from(b[i].0 > thr[i] && b[i].1 == truth);
+                }
+                hit_ap += u32::from(cells_ap(&pcm, ctx).iter().any(|m| m.0 == msg));
+                hit_blind += u32::from(cells_ap(&pcm, None).iter().any(|m| m.0 == msg));
+            }
+            println!(
+                "{label} {snr:6.1} dB: of {trials}: blind {hit_blind:3} | AP passes {hit_ap:3} | list S1 {:3} S2 {:3}",
+                hit_s[0], hit_s[1]
+            );
+        }
+    }
+}
+#[cfg(not(feature = "fixed-point"))]
+fn a8cells(_: u64, _: u64, _: u64) {}
+
 fn main() {
     let mut args = std::env::args().skip(1).peekable();
     match args.peek().map(String::as_str) {
@@ -589,6 +726,12 @@ fn main() {
         Some("fading") => {
             args.next();
             awgn(&mut args, true);
+        }
+        Some("a8cells") => {
+            args.next();
+            let t = args.next().map_or(20, |x| x.parse().unwrap());
+            let c = args.next().map_or(300, |x| x.parse().unwrap());
+            a8cells(t, c, args.next().map_or(300, |x| x.parse().unwrap()));
         }
         Some("cellsap") => {
             args.next();

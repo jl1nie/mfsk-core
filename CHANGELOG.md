@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Research: a noncoherent list decision on the cells (`ap_qso a8cells`; host, no library change)
+
+- **Measured**: on AWGN with the partner's place known, scoring the stage's hypotheses (Rogers 3, reports 126) on the cells reaches **-25.5 / -24.5 dB** against -22 / -20.5 dB for the AP passes (+3.5-4 dB). **Not met**: false accepts 0-6 in 4 000 noise slots at the largest-of-2 000 threshold (gate: 0 in 12 000). Not measured: busy band, fading, off-grid place, the board (as written ~1 s on the LX7). `PI3_JT9_GAP.md` section 26; B2 (product) waits for a decision.
+
 ### `ft8-ap-bench`: the cells flow's AP rung on the CoreS3 (embedded; measured)
 
 - **What**: `embedded-shared::apps::ap_bench` and the `ft8-ap-bench` bin of the CoreS3 crate: the window round without and with a QSO context, then `decode_partner`, on slots made on the board (AWGN + a reply), with the stack and heap. **Measured**: the context decodes the replies the window does not (hits at -20 dB 9 of 10 against 1), adds **49-182 ms** a slot where the reply decodes and up to 0.9 s where the partner's candidates fail; **the rung's stack is 1.9 KB**; no phantom in 8 noise slots. Does not fit the window path on core 0 (120 ms of slack): core 1 from the emit. `PI3_JT9_GAP.md` section 25. Not wired in the app.
