@@ -1189,12 +1189,49 @@ fn probe11(truth: &str, dir: &str) {
         subtract_tones_lpf_refine_dt(audio, &tones, f0, dt, &cfg, 2000, true);
         true
     };
-    let (mut n, mut a_ok, mut b_ok, mut c_ok) = (0, 0, 0, 0);
+    let (mut n, mut a_ok, mut b_ok, mut c_ok, mut d_ok) = (0, 0, 0, 0, 0);
     for (slot, mut sigs) in by_slot {
         sigs.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
         let orig = load(&format!("{dir}/{slot}.wav"));
         let pass0 = decode_set(&orig);
         let own = decode_places(&orig);
+        // (d): the same signals at the places the cells flow estimated, **refined on the 12 kHz audio first**: for each DT of a +-60 ms grid (5 ms) the frequency by `refine_freq`, the DT and frequency
+        // with the largest tone correlation; then subtracted. Once a slot: the set does not depend on the target.
+        let decoded_d: std::collections::HashSet<String> = {
+            let mut rd = orig.clone();
+            for (m2, f2, dt2) in &own {
+                let Some(tones) = tones_of(m2) else { continue };
+                let energy = |x: &[i16], ff: f32, dd: f32| -> f64 {
+                    let mut e = 0.0;
+                    for (k, &t) in tones.iter().enumerate() {
+                        let w =
+                            2.0 * std::f64::consts::PI * (ff as f64 + 6.25 * t as f64) / 12_000.0;
+                        let start = ((dd + 0.5) * 12_000.0).round() as i64 + 1920 * k as i64;
+                        let (mut re, mut im) = (0f64, 0f64);
+                        for i in 0..1920usize {
+                            let ix = start + i as i64;
+                            if ix >= 0 && (ix as usize) < x.len() {
+                                re += x[ix as usize] as f64 * (w * i as f64).cos();
+                                im -= x[ix as usize] as f64 * (w * i as f64).sin();
+                            }
+                        }
+                        e += re * re + im * im;
+                    }
+                    e
+                };
+                let mut best = (f64::MIN, *f2, *dt2);
+                for j in -12i32..=12 {
+                    let dd = *dt2 + 0.005 * j as f32;
+                    let ff = refine_freq(&rd, &tones, *f2, dd, &cfg, 2.5, 0.1);
+                    let e = energy(&rd, ff, dd);
+                    if e > best.0 {
+                        best = (e, ff, dd);
+                    }
+                }
+                subtract_tones_lpf_refine_dt(&mut rd, &tones, best.1, best.2, &cfg, 2000, true);
+            }
+            decode_set(&rd)
+        };
         for (f, dt, snr, msg, missed) in &sigs {
             if *missed == 0 {
                 continue;
@@ -1218,6 +1255,8 @@ fn probe11(truth: &str, dir: &str) {
             }
             let oc = decode_set(&rc).contains(msg);
             c_ok += oc as usize;
+            let od = decoded_d.contains(msg);
+            d_ok += od as usize;
             let (oa, ob) = (decode_set(&ra).contains(msg), decode_set(&rb).contains(msg));
             a_ok += oa as usize;
             b_ok += ob as usize;
@@ -1228,7 +1267,7 @@ fn probe11(truth: &str, dir: &str) {
         }
     }
     println!(
-        "T {n} missed: decoded after subtracting only what the cells flow decoded, at jt9's precise places (a): {a_ok}; at the places the cells flow estimated (c): {c_ok}; every other reference signal (b): {b_ok}"
+        "T {n} missed: decoded after subtracting only what the cells flow decoded, at jt9's precise places (a): {a_ok}; at the places the cells flow estimated (c): {c_ok}; at those places refined on the 12 kHz audio first (d): {d_ok}; every other reference signal (b): {b_ok}"
     );
 }
 

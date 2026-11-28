@@ -129,3 +129,14 @@ The 60 signals of `jt9`'s the cells flow misses (one pass, OSD, 100 candidates o
 
 * **The set** (subtracting the undecoded signals too) is worth 8 of the 24. **The subtractor and its places** are worth the rest: 16 with the faithful subtractor at precise places against 1 at the cells flow's estimates and 2 with the cells flow's own subtractor at precise places. **The cells flow's subtraction is where a third of the misses are** (16 of 60: the faithful subtractor, the decoded set, precise places).
 * The per-signal depth of section 6 / `depth_against_the_faithful_subtraction` (the signal's own tone energy left: -23 dB against -27 dB) does **not** predict this: what matters for the decode of a weak neighbour is not the energy left at the signal's own tones. Candidates, not measured: the faithful subtractor refines the frequency (0.1 Hz) and the DT on the audio itself before subtracting; the cells flow's `ResidualSource` takes its places from the cells (a parabola on 3.125 Hz / 80 ms) and corrects them while streaming; the faithful subtractor works on 12 kHz audio with the GFSK shape, the cells flow's on 8 kHz; the residual's spectral spread (what a weak signal 10-50 Hz away sees) is not what the own-tone energy measures. **Next measurements:** the residual's energy in the band 10-60 Hz round each subtracted signal (excluding the signal's own tones) for both subtractors on the same signals; and the cells flow's subtractor with a frequency refinement of the faithful kind (0.1 Hz, on the 8 kHz audio) in front of it.
+
+The same measurement with a fourth row (`probe11`, (d)): the cells flow's pass-0 decodes at the places it estimated, **refined on the 12 kHz audio before the faithful subtractor** (for each DT of +-60 ms in 5 ms steps the frequency by `refine_freq` at 0.1 Hz, the pair with the largest tone correlation kept):
+
+| what is subtracted, at which place | decoded of 60 |
+|---|---|
+| the cells flow's pass-0 decodes, **estimated places** | 1 |
+| the same, **refined on the 12 kHz audio first** | **14** |
+| the same, `jt9`'s precise places | 16 |
+| every other reference signal, `jt9`'s precise places (the oracle) | 24 |
+
+**The cells flow's estimate of a decoded signal's place (about 0.4 Hz and 28 ms) is too coarse to subtract it; refined on the 12 kHz audio it is almost as good as `jt9`'s (14 against 16).** 14 of the 60 misses (23 %) come back from one refinement of the places of what the flow already decodes. The 10 more of the oracle are the undecoded signals. Next: a cells SIC that holds the 12 kHz audio, refines and subtracts there and makes the cells again, measured on the 60 slots (not an estimate from the misses).
