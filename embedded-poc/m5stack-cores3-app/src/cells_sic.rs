@@ -20,8 +20,8 @@ use mfsk_app_shared::ui::state::{SlotDecode, UI};
 use mfsk_core::engine::source::SliceSource;
 use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::ft8::decode_block::{
-    sic_passes_osd, sic_signal_capacity, CellTables, CellsOptions, CellsWorker, Ft8BpScratch,
-    Ft8Rate, GatedSearch, HalfDbCells, SicStorage,
+    sic_passes_osd, sic_signal_capacity, ApContext, CellTables, CellsOptions, CellsWorker, Found,
+    Ft8BpScratch, Ft8Rate, GatedSearch, HalfDbCells, SicStorage,
 };
 use mfsk_core::msg::CallsignHashTable;
 
@@ -54,25 +54,48 @@ pub struct LateJob {
 /// The memory handed back.
 pub type LateDone = (Vec<i16>, HalfDbCells);
 
+/// What core 1 is given: a slot's late work, or the partner's AP decode of the slot being received.
+pub enum CoreOneJob {
+    Late(LateJob),
+    Ap(ApJob),
+}
+
+/// The partner's AP decode, started when the rows of the partner's place have arrived (before the slot ends): `cells` is a copy of the store so far, `audio` only travels with it (the pair is
+/// handed back together).
+pub struct ApJob {
+    pub audio: Vec<i16>,
+    pub cells: HalfDbCells,
+    pub ctx: ApContext,
+    /// The number the slot being received will have at its end.
+    pub slot_n: u32,
+}
+
+/// The partner decode's result: what the window path folds in at the end of the slot (it has the complete cells for the SNR).
+pub struct ApDone {
+    pub slot_n: u32,
+    pub found: Vec<Found>,
+    pub us: i64,
+}
+
 fn now_us() -> i64 {
     unsafe { esp_idf_svc::sys::esp_timer_get_time() }
 }
 
 /// Start the late task: jobs in on `rx`, the memory back on `back`.
-pub fn spawn(rx: Receiver<LateJob>, back: Sender<LateDone>) {
+pub fn spawn(rx: Receiver<CoreOneJob>, back: Sender<LateDone>, ap: Sender<ApDone>) {
     let spawned = crate::board::spawn_named_tuned(
         c"sic",
         48 * 1024,
         Some(4),
         Some(esp_idf_svc::hal::cpu::Core::Core1),
-        move || body(rx, back),
+        move || body(rx, back, ap),
     );
     if let Err(e) = spawned {
         log::error!("late path: the task did not start ({e})");
     }
 }
 
-fn body(rx: Receiver<LateJob>, back: Sender<LateDone>) {
+fn body(rx: Receiver<CoreOneJob>, back: Sender<LateDone>, ap: Sender<ApDone>) {
     let options = CellsOptions::p0_late();
     let passes = options.sic.map_or(1, |s| s.passes);
     let osd_k = match options.osd {
@@ -92,7 +115,33 @@ fn body(rx: Receiver<LateJob>, back: Sender<LateDone>) {
     log::info!("late path ready: {passes} passes, OSD capped at {osd_k} a round, core 1");
     crate::log_free_internal("late-path-ready");
 
-    while let Ok(mut job) = rx.recv() {
+    while let Ok(msg) = rx.recv() {
+        let mut job = match msg {
+            CoreOneJob::Late(j) => j,
+            CoreOneJob::Ap(j) => {
+                let t0 = now_us();
+                worker.set_ap_context(Some(j.ctx));
+                let mut found: Vec<Found> = Vec::new();
+                let _ = worker.take_bp_stats();
+                let n = worker.decode_partner(&j.cells, depth, 0.25, &mut found);
+                worker.set_ap_context(None);
+                let st = worker.take_bp_stats();
+                let us = now_us() - t0;
+                log::info!(
+                    "AP slot {}: partner {:4.0} Hz {:+.2} s, {n} decoded, {} ms on core 1 ({} BP calls, {} passes)",
+                    j.slot_n,
+                    j.ctx.freq_hz(),
+                    j.ctx.dt_sec(),
+                    us / 1000,
+                    st.calls,
+                    st.passes
+                );
+                let _ = ap.send(ApDone { slot_n: j.slot_n, found, us });
+                let _ = back.send((j.audio, j.cells));
+                LATE_BUSY.store(false, Ordering::Release);
+                continue;
+            }
+        };
         let t0 = now_us();
         let res = sic_passes_osd(
             &mut SliceSource(&job.audio[..]),

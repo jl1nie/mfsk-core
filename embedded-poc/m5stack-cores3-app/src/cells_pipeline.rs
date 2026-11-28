@@ -24,7 +24,7 @@ use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::ft8::decode_block::{
     candidate_ready, gain_shift_for_peak, merge_cells_parts, search_cells, CellTables,
     CellsOptions, CellsPart, CellsProducer, CellsWorker, Found, Ft8BpScratch, Ft8Rate, GatedSearch,
-    HalfDbCells, OsdOptions, SnrBaseline,
+    ApContext, HalfDbCells, OsdOptions, SnrBaseline,
 };
 
 /// Samples of a slot at 8 kHz.
@@ -46,6 +46,8 @@ struct Slot {
     have: usize,
     peak: i32,
     emitted: bool,
+    /// The partner's AP decode went to core 1 for this slot.
+    ap_started: bool,
     found: Vec<Found>,
     early_cands: Vec<SyncCandidate>,
     /// The candidates of the partial search that were not ready (their rows had not arrived).
@@ -73,6 +75,7 @@ impl Slot {
             have: 0,
             peak: 0,
             emitted: false,
+            ap_started: false,
             found: Vec::new(),
             early_cands: Vec::new(),
             late: Vec::new(),
@@ -95,6 +98,7 @@ impl Slot {
         self.have = 0;
         self.peak = 0;
         self.emitted = false;
+        self.ap_started = false;
         self.found.clear();
         self.early_cands.clear();
         self.late.clear();
@@ -160,14 +164,13 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
     let mut rs = LinearResamplerI16To8k::new(12_000);
     let mut scratch: Vec<i16> = Vec::new();
     // the late path (core 1): its jobs in, its memory back; two spares (audio and store) recycled between them and the slots
-    let (late_tx, late_rx) = std::sync::mpsc::channel::<crate::cells_sic::LateJob>();
+    let (late_tx, late_rx) = std::sync::mpsc::channel::<crate::cells_sic::CoreOneJob>();
     let (back_tx, back_rx) = std::sync::mpsc::channel::<crate::cells_sic::LateDone>();
-    crate::cells_sic::spawn(late_rx, back_tx);
+    let (ap_tx, ap_rx) = std::sync::mpsc::channel::<crate::cells_sic::ApDone>();
+    crate::cells_sic::spawn(late_rx, back_tx, ap_tx);
     let mut spares: Vec<crate::cells_sic::LateDone> = Vec::new();
     let mut slot_n = 0u32;
     let mut qso = crate::qso_activator::QsoStep::new();
-    let qso = crate::qso_activator::QsoStep::new();
-    let mut qso = qso;
     log::info!(
         "cells pipeline ready ({source}): {} candidates, d floor {}, OSD capped at {osd_k}, emit at {EMIT_ROWS} rows",
         options.max_cand,
@@ -295,6 +298,26 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                     slots[w].us_osd += now_us() - t0;
                 }
                 Job::Finalize => {
+                    // the partner's AP decode (core 1, started before the slot ended): what it found that the window did not, from the slot's complete cells for the SNR below
+                    let mut ap_note = String::from("no AP job");
+                    while let Ok(d) = ap_rx.try_recv() {
+                        if d.slot_n != slot_n {
+                            log::warn!("AP: a result for slot {} arrived at slot {slot_n}: dropped", d.slot_n);
+                            continue;
+                        }
+                        let mut added = 0;
+                        for f in d.found {
+                            if !slots[w].found.iter().any(|o| o.res.message77() == f.res.message77()) {
+                                slots[w].found.push(f);
+                                added += 1;
+                            }
+                        }
+                        ap_note = format!("AP {} ms on core 1, {added} new", d.us / 1000);
+                    }
+                    if slots[w].ap_started && ap_note == "no AP job" {
+                        ap_note = String::from("AP job not back at the end of the window (its result is lost)");
+                        log::warn!("CELLS slot {slot_n}: {ap_note}");
+                    }
                     let st = p.store();
                     let base = SnrBaseline::new(st, &tables);
                     for f in slots[w].found.iter_mut() {
@@ -313,7 +336,7 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                             );
                             // an own period is two slots; a decode belongs to the period of its slot
                             let bits = r.message77();
-                            qso.push(&text, &bits[..], r.snr_db, slot_n / 2);
+                            qso.push(&text, &bits[..], r.snr_db, slot_n / 2, r.freq_hz, r.dt_sec);
                             published.push((text, r.freq_hz, r.snr_db, r.dt_sec, r.hard_errors));
                         }
                     }
@@ -336,6 +359,7 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                         );
                     }
                     let done = now_us();
+                    log::info!("CELLS slot {slot_n}: {ap_note}");
                     let s = &slots[w];
                     // `after the end` is what the reply deadline cares about: how long after the slot's last audio its decodes were all out
                     log::info!(
@@ -393,7 +417,7 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                         };
                         crate::cells_sic::LATE_BUSY
                             .store(true, core::sync::atomic::Ordering::Release);
-                        let _ = late_tx.send(job);
+                        let _ = late_tx.send(crate::cells_sic::CoreOneJob::Late(job));
                     } else {
                         log::warn!("CELLS slot {slot_n}: the late path is still busy with the last slot: no SIC for this one");
                     }
@@ -422,6 +446,33 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
             if let Some(p) = producer.as_mut() {
                 let slot = &mut slots[cur];
                 let rows = p.advance(&slot.audio, slot.have);
+                // the partner's AP decode, on core 1, as soon as the rows of the partner's place are in: only in the slots that end on a reply deadline (an own period is two slots)
+                if !slot.ap_started && (slot_n + 1) % 2 == 0 {
+                    if let Some(ctx) = qso.ap_context() {
+                        if rows >= ap_rows_needed(&ctx) {
+                            slot.ap_started = true;
+                            while let Ok(s) = back_rx.try_recv() {
+                                spares.push(s);
+                            }
+                            if crate::cells_sic::LATE_BUSY.load(core::sync::atomic::Ordering::Acquire) {
+                                log::warn!("CELLS slot {}: AP wanted but core 1 is busy with the last slot's late path", slot_n + 1);
+                            } else {
+                                let st = p.store();
+                                let (audio, mut cells) = spares.pop().unwrap_or_else(|| {
+                                    (vec![0i16; 1], HalfDbCells::new(rate, st.first_bin(), st.n_freq(), st.n_time()))
+                                });
+                                cells.copy_from(st);
+                                crate::cells_sic::LATE_BUSY.store(true, core::sync::atomic::Ordering::Release);
+                                let _ = late_tx.send(crate::cells_sic::CoreOneJob::Ap(crate::cells_sic::ApJob {
+                                    audio,
+                                    cells,
+                                    ctx,
+                                    slot_n: slot_n + 1,
+                                }));
+                            }
+                        }
+                    }
+                }
                 if !slot.emitted && rows >= EMIT_ROWS {
                     slot.emitted = true;
                     slot.emit_at = now_us();
@@ -433,6 +484,13 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
             }
         }
     }
+}
+
+/// The rows the partner's AP decode needs: every symbol of a candidate at the latest DT the context admits (`row = (dt + 0.5 s) / 80 ms` for symbol 0, two rows a symbol, 79 symbols), the
+/// neighbour row the retry reads and one more.
+fn ap_rows_needed(ctx: &ApContext) -> usize {
+    let j0 = ((ctx.dt_sec() + ApContext::WINDOW_DT_S + 0.5) / 0.08).round().max(0.0) as usize;
+    j0 + 2 * 78 + 3
 }
 
 /// The store's carriers cut into [`SEARCH_PARTS`] ranges.

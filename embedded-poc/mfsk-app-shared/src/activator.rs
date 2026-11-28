@@ -174,6 +174,40 @@ impl Heard {
     }
 }
 
+/// Where the exchange stands from the partner's side: the message they are expected to send next, after what this station last sent them. Mirrors
+/// `mfsk_core::ft8::decode_block::ApStage` (the decoder's AP takes it from here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartnerStage {
+    /// This station called CQ: a reply can come from anywhere.
+    Calling,
+    /// This station answered the partner with a grid: they send a report (`MYCALL DX -15`).
+    Replying,
+    /// This station sent a report (`-15`) or a roger with a report (`R-15`): they send `R-15`, `RRR`, `RR73` or `73`.
+    Rogers,
+    /// This station sent `RRR`, `RR73` or `73`: they close with `73` or `RR73`.
+    Signoff,
+}
+
+impl PartnerStage {
+    /// The stage after this station sent `last_tx`.
+    pub fn after(last_tx: &TxMsg) -> Self {
+        let TxMsg::Std { exchange, .. } = last_tx else {
+            return Self::Calling;
+        };
+        let x = exchange.as_str();
+        let signed = |t: &str| {
+            let mut c = t.chars();
+            matches!(c.next(), Some('+' | '-')) && t.len() >= 2 && c.all(|d| d.is_ascii_digit())
+        };
+        match x {
+            "RRR" | "RR73" | "73" => Self::Signoff,
+            _ if signed(x) => Self::Rogers,
+            _ if x.strip_prefix('R').is_some_and(signed) => Self::Rogers,
+            _ => Self::Replying,
+        }
+    }
+}
+
 /// What to transmit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TxMsg {
@@ -349,6 +383,13 @@ impl Activator {
     /// The call being worked, if any.
     pub fn partner(&self) -> Option<&str> {
         self.partner.as_ref().map(|p| p.call.as_str())
+    }
+
+    /// The partner being worked and what they are expected to send next, from what this station last sent them: the decoder's AP aims at it
+    /// (`mfsk_core::ft8::decode_block::ApContext`). `None` without a partner.
+    pub fn partner_expectation(&self) -> Option<(&str, PartnerStage)> {
+        let p = self.partner.as_ref()?;
+        Some((p.call.as_str(), PartnerStage::after(&p.last_tx)))
     }
 
     /// Begin an activation: CQ from the next decision on. The logged
@@ -777,6 +818,22 @@ mod tests {
         let rec = d.logged.unwrap();
         assert_eq!((rec.rst_sent, rec.rst_rcvd), (-15, Some(-3)));
         assert!(rec.grid.is_empty());
+    }
+
+    #[test]
+    fn the_partner_stage_follows_what_was_sent() {
+        let std = |x: &str| TxMsg::Std {
+            to: Call::try_from("W1AW").unwrap(),
+            exchange: String::try_from(x).unwrap(),
+        };
+        assert_eq!(PartnerStage::after(&TxMsg::Cq), PartnerStage::Calling);
+        assert_eq!(PartnerStage::after(&std("PM95")), PartnerStage::Replying);
+        assert_eq!(PartnerStage::after(&std("-15")), PartnerStage::Rogers);
+        assert_eq!(PartnerStage::after(&std("+05")), PartnerStage::Rogers);
+        assert_eq!(PartnerStage::after(&std("R-15")), PartnerStage::Rogers);
+        assert_eq!(PartnerStage::after(&std("RRR")), PartnerStage::Signoff);
+        assert_eq!(PartnerStage::after(&std("RR73")), PartnerStage::Signoff);
+        assert_eq!(PartnerStage::after(&std("73")), PartnerStage::Signoff);
     }
 
     #[test]

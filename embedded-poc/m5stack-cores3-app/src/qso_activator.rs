@@ -8,9 +8,10 @@
 //! the slot's last audio), **every second slot** (an own period is two slots; which parity is ours is the transmit scheduler's choice, so here the even receive slots). The entry point is the
 //! only thing that moves when the scheduler arrives.
 
-use mfsk_app_shared::activator::{Activator, Config, Phase};
+use mfsk_app_shared::activator::{Activator, Config, PartnerStage, Phase};
 use mfsk_app_shared::heard_queue::{heard_item_from_text, HeardCollector, HeardQueue};
 use mfsk_app_shared::ui::state::UI;
+use mfsk_core::ft8::decode_block::{ApContext, ApStage};
 
 use crate::decode_pipeline::{MY_CALL as CFG_CALL, MY_GRID as CFG_GRID};
 
@@ -36,9 +37,14 @@ pub fn push_heard(text: &str, bits: &[u8], snr_db: f32, period: u32) {
     }
 }
 
+/// How many stations' last places (frequency, DT) are kept.
+const POSITIONS: usize = 8;
+
 pub struct QsoStep {
     activator: Activator,
     collector: HeardCollector,
+    /// Where each station that addressed this one was last decoded: (call, Hz, DT s). The AP aims at the partner's.
+    places: Vec<(String, f32, f32)>,
 }
 
 impl QsoStep {
@@ -49,12 +55,37 @@ impl QsoStep {
         Self {
             activator,
             collector: HeardCollector::new(),
+            places: Vec::new(),
         }
     }
 
+    /// The QSO context for the decoder's AP rung: the partner being worked, what they are expected to send next (from what this station last sent them) and where they were last
+    /// decoded. `None` without a partner, before they have been decoded once (no place to aim at), or when this station called CQ (a reply can come from anywhere).
+    pub fn ap_context(&self) -> Option<ApContext> {
+        let (call, stage) = self.activator.partner_expectation()?;
+        let stage = match stage {
+            PartnerStage::Calling => return None,
+            PartnerStage::Replying => ApStage::Replying,
+            PartnerStage::Rogers => ApStage::Rogers,
+            PartnerStage::Signoff => ApStage::Signoff,
+        };
+        let (_, f, d) = self.places.iter().find(|p| p.0 == call)?;
+        ApContext::new(MY_CALL, call, stage, *f, *d)
+    }
+
     /// Queue a decode (`text`: the rendered message, `bits`: its 77 bits) heard in own period `period`, if it is addressed to this station.
-    pub fn push(&self, text: &str, bits: &[u8], snr_db: f32, period: u32) {
+    pub fn push(&mut self, text: &str, bits: &[u8], snr_db: f32, period: u32, freq_hz: f32, dt_sec: f32) {
         if let Some(item) = heard_item_from_text(MY_CALL, text, bits, snr_db, period) {
+            let from = item.heard.from.as_str();
+            match self.places.iter_mut().find(|p| p.0 == from) {
+                Some(p) => (p.1, p.2) = (freq_hz, dt_sec),
+                None => {
+                    if self.places.len() == POSITIONS {
+                        self.places.remove(0);
+                    }
+                    self.places.push((from.to_string(), freq_hz, dt_sec));
+                }
+            }
             if !HEARD.push(item) {
                 log::warn!("[QSO] heard queue full: the oldest decode was dropped");
             }
