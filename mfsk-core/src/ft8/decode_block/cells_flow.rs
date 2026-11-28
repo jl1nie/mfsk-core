@@ -26,7 +26,8 @@ use num_traits::Float;
 
 use super::super::decode::{DecodeDepth, DecodeResult};
 use super::super::params::{COSTAS, DEFAULT_BP_MAX_ITER};
-use super::coarse_lib::{HalfDbCells, coarse_sync_gated_cells};
+use super::ap_context::ApContext;
+use super::coarse_lib::{HalfDbCells, coarse_sync_gated_cells, merge_cells_parts, search_cells};
 use super::coarse_sync::GatedSearch;
 use super::fill_symbol_spectra::{SymMask, sym_in_mask};
 use super::pre_bp_gate::BpGate;
@@ -380,7 +381,15 @@ pub struct CellsWorker<'a> {
     /// Attempts queued and attempts run by [`osd_pass`](CellsWorker::osd_pass) since [`take_osd_counts`](CellsWorker::take_osd_counts).
     osd_queued: u64,
     osd_ran: u64,
+    /// The operator's QSO: the AP rung runs on the candidates near the partner ([`with_ap_context`](CellsWorker::with_ap_context)).
+    ap_ctx: Option<ApContext>,
 }
+
+/// The half width of the band [`CellsWorker::decode_partner`] searches round the partner's frequency, Hz (8 bins of 3.125 Hz), and how many candidates it keeps.
+const PARTNER_HALF_BAND_HZ: f32 = 25.0;
+const PARTNER_CANDIDATES: usize = 4;
+/// The search keeps this many before the DT window is applied (the window drops the ones that sit far from where the partner was).
+const PARTNER_POOL: usize = 12;
 
 /// An attempt queued for the OSD fallback ([`CellsWorker::take_osd_attempts`]): the candidate, the place of the attempt and its `OsdRank` score. Opaque; it can be moved to
 /// another worker (another core) and run there by [`CellsWorker::run_osd_attempt`] over the same cells.
@@ -447,6 +456,7 @@ impl<'a> CellsWorker<'a> {
             pending: Vec::new(),
             osd_queued: 0,
             osd_ran: 0,
+            ap_ctx: None,
         }
     }
 
@@ -462,6 +472,61 @@ impl<'a> CellsWorker<'a> {
     pub fn with_osd_seeds(mut self, osd_seeds: OsdSeeds) -> Self {
         self.osd_seeds = osd_seeds;
         self
+    }
+
+    /// This worker with the operator's QSO ([`ApContext`]) set, or cleared with `None` (the default: no AP, every decode as before). With one, a candidate within
+    /// [`ApContext::WINDOW_HZ`] of the partner that the BP staircase and the OSD did not decode gets the context's AP passes (`ft8b.f90` `ipass` 5..11: the bits of the
+    /// message the partner is expected to send locked, then the masked BP and OSD). **A divergence from WSJT-X**, off unless set.
+    pub fn with_ap_context(mut self, ap_ctx: Option<ApContext>) -> Self {
+        self.ap_ctx = ap_ctx;
+        self
+    }
+
+    /// [`with_ap_context`](Self::with_ap_context) on a worker that is kept (the application refreshes the context between slots).
+    pub fn set_ap_context(&mut self, ap_ctx: Option<ApContext>) {
+        self.ap_ctx = ap_ctx;
+    }
+
+    /// The partner's own candidates: with a context set, a search of `+-25 Hz` round the partner's frequency over the store (`PARTNER_CANDIDATES` best, the search's own score, **no
+    /// minimum**: the partner may be below what the slot's search keeps, section 23 of `docs/notes/PI3_JT9_GAP.md`: in a busy band knowing where it is is worth about 1 dB and the AP
+    /// another 1.5-2), each decoded with the AP rung and **without the pre-BP gate** (fitted without AP). A decode already in `known` is not added again. Returns how many
+    /// were added; 0 without a context or in a stage with no pass ([`ApStage::Calling`](super::ApStage::Calling)).
+    pub fn decode_partner(
+        &mut self,
+        cells: &HalfDbCells,
+        depth: DecodeDepth,
+        min_shift: f32,
+        known: &mut Vec<Found>,
+    ) -> usize {
+        let Some(ctx) = self.ap_ctx else { return 0 };
+        if ctx.passes().is_empty() {
+            return 0;
+        }
+        let df = SAMPLE_RATE_HZ / super::types::NFFT_SPEC as f32;
+        let f = ctx.freq_hz();
+        let search = GatedSearch::new(
+            f - PARTNER_HALF_BAND_HZ,
+            f + PARTNER_HALF_BAND_HZ,
+            0.0,
+            PARTNER_POOL,
+        );
+        let lo = (search.freq_min / df).round().max(0.0) as usize;
+        let hi = (search.freq_max / df).round() as usize;
+        let part = search_cells(cells, &search, lo..hi + 1);
+        let mut cands = merge_cells_parts(&[part], &search, cells.rate());
+        cands.retain(|(c, _)| (c.dt_sec - ctx.dt_sec()).abs() <= ApContext::WINDOW_DT_S);
+        cands.truncate(PARTNER_CANDIDATES);
+        let gate = self.gate.take();
+        let before = known.len();
+        for (cand, hs) in &cands {
+            if let Some(f) = self.decode_candidate_hs(cells, cand, *hs, depth, min_shift)
+                && !known.iter().any(|o| o.res.message77() == f.res.message77())
+            {
+                known.push(f);
+            }
+        }
+        self.gate = gate;
+        known.len() - before
     }
 
     /// This worker with the OSD fallback **deferred** ([`OsdMode::Defer`]): an attempt that reaches it (the BP staircase failed, `depth.osd`) is queued with its
@@ -547,7 +612,8 @@ impl<'a> CellsWorker<'a> {
                 .skip_d(cand.score < self.d_min_score)
                 .with_osd_seeds(self.osd_seeds)
                 .with_osd_mode(mode, hs.unwrap_or(0))
-                .with_gate(gate),
+                .with_gate(gate)
+                .with_ap_context(self.ap_ctx),
         )
     }
 

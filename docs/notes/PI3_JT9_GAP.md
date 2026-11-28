@@ -391,3 +391,21 @@ In a busy band the cells flow and the faithful whole-slot decode fail together a
 
 **Phantoms outside the context** in the fading run: 5 rows in 1 800 decodes (blind decodes `H99JNS LP4ZVB PO38`, `SF4IKM RR73; 4P3UMO <...> -28`, a `CQ N5MAX AO31` of the AP decode): the faithful pipeline's own, as in section 22.
 
+## 24. The cells flow's own AP rung (2026-11-28; `ApContext`, `CellsWorker::with_ap_context` / `decode_partner`, `tests/cells_ap.rs`, `ap_qso cellsap`)
+
+The AP of section 22 for the board's flow (no `fft-rustfft`: step 4 of the faithful ladder is not there). **A QSO context** (`ApContext`: the operator's and the partner's call as `pack28` words, the stage, the partner's frequency and DT; `Copy`, 20 bytes, no `String`) sets on a `CellsWorker` the AP rung of `process_one_candidate_inner`: for the stage's passes (Replying: 8, 5; Rogers: 9, 10, 11, 8; Calling: none) the pass's bits locked to `+-1.1 max|llr|` in the one-symbol LLRs `a` and `d`, the masked NMS BP, and with the OSD the masked OSD of the BP sum after one and two iterations. The locks are the faithful hypotheses bit for bit (`ap_context::tests`); BP and OSD are the shared code with the mask they already took. `decode_partner` searches the store `+-25 Hz` round the partner (12 candidates, the DT window applied, 4 decoded, no minimum score, no pre-BP gate). A divergence from WSJT-X, off unless a context is set.
+
+**AWGN, the cells window** (`p0_window`'s staircase and the capped OSD; 100 seeds a cell; hits without the context -> with it; the partner at +1 Hz, 20 ms):
+
+| reply | -18 dB | -20 | -22 | -24 | 50 % crossing |
+|---|---|---|---|---|---|
+| `RR73` | 74 -> **100** | 2 -> **94** | 0 -> **41** | 0 -> 4 | -17.7 -> **-22.3 dB** (+4.6) |
+| `-15` | 83 -> **100** | 3 -> **79** | 0 -> 10 | 0 -> 0 | -18.3 -> **-20.9 dB** (+2.6) |
+| `KN07` (Calling: no pass) | 88 -> 88 | 2 -> 2 | 0 | 0 | unchanged |
+
+The rung costs **+2-5 ms a slot on the host** (the partner's candidates and, on a failure, the masked BP and OSD of 1-4 passes on the few candidates near the partner); the replies it decodes had at most **31 hard errors** (about 300 decodes at -18 to -24 dB), so the ceiling for a full lock (`AP_FULL_LOCK_MAX_ERRORS` = 32, 70 bits or more) loses none of them. It is about 1 dB under the faithful pipeline's AP (`c1`, section 22: -22.6 / -21.8), which tries four LLR variants and the full OSD depth.
+
+**The false accepts, and what the DT window does** (noise-only slots with the context set, 6 000 for each stage): without the window (frequency only, `ApContext::WINDOW_HZ` = 50) the rung let through **3 (Rogers) and 4 (Replying) messages with the locked calls** (`K1JT HA0DU R EC96`, `K1JT HA0DU MN51`, `K1JT AA8YRJ IO35` ...), with hard errors 24-32 that the replies' own errors (up to 31) cannot be told from. A lock does not care where a candidate sits, so what a false accept scales with is the window the rung may run in: **a DT window of +-0.4 s** (`ApContext::WINDOW_DT_S`; the partner's clock does not move between two periods, and the application knows its last DT) gives **0 and 0 in 6 000 slots each**. The faithful pipeline's AP on the same noise with a 9-candidate grid (no DT window, `decode_candidates`): Rogers 3 (`K1JT HA0DU RR73` with 24 errors among them), Replying 2, 0 of 390 in real recordings with other people's calls. The candidates an application gives it are its window; one (`c1`) is a tenth of the grid's.
+
+**Not done:** the application (the partner's frequency and DT have to reach `HeardItem` and the `Activator`, `ApContext::new` at the reply deadline), the board (cost and memory of the rung: estimated 25-100 ms a candidate), a larger noise test for the 61- and 77-bit locks (0 in 12 000 is a bound near 2.5e-4 a slot at 95 %), fading and a busy band for the cells rung (section 23 measured the faithful one), the narrow-band a8.
+

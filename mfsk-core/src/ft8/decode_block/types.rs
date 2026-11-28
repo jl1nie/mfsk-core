@@ -354,6 +354,9 @@ pub(in crate::ft8) struct PassCtx {
     /// The cells flow's gate before BP (`BpGate`) and the candidate's hard-sync count it reads; `None` everywhere else.
     #[cfg(feature = "fixed-point")]
     pub gate: Option<GateCtx>,
+    /// The operator's QSO ([`ApContext`](super::ap_context::ApContext)): the cells flow's AP rung runs its passes on the candidates near the partner's frequency. `None` everywhere else.
+    #[cfg(feature = "fixed-point")]
+    pub ap_ctx: Option<super::ap_context::ApContext>,
 }
 
 /// Which of the OSD fallback's ten runs a candidate gets: `ft8b.f90` seeds `osd174_91` from five LLR variants (`a` to `e`) at two BP snapshots each, in that order, and
@@ -413,12 +416,23 @@ impl PassCtx {
         hs: 0,
         #[cfg(feature = "fixed-point")]
         gate: None,
+        #[cfg(feature = "fixed-point")]
+        ap_ctx: None,
     };
 
     /// This context with the gate before BP (the cells flow).
     #[cfg(feature = "fixed-point")]
     pub(in crate::ft8) const fn with_gate(self, gate: Option<GateCtx>) -> PassCtx {
         PassCtx { gate, ..self }
+    }
+
+    /// This context with the QSO's AP rung (the cells flow).
+    #[cfg(feature = "fixed-point")]
+    pub(in crate::ft8) const fn with_ap_context(
+        self,
+        ap_ctx: Option<super::ap_context::ApContext>,
+    ) -> PassCtx {
+        PassCtx { ap_ctx, ..self }
     }
 
     /// This context with the OSD fallback's timing and the candidate's search hard-sync count set.

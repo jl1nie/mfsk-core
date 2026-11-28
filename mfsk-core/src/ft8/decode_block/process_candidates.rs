@@ -2644,6 +2644,27 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
         }
     }
 
+    // The cells flow's AP rung: the operator's QSO (`PassCtx::ap_ctx`, set by the application) locks the bits of the message the partner is expected to send, on the candidates near the
+    // partner's frequency. Not on the OSD-only re-run of a queued attempt (the first attempt has run it), not unless a context was set: the cells flow without one decodes exactly as before.
+    #[cfg(feature = "fixed-point")]
+    if accepted.is_none()
+        && pass.ap
+        && pass.osd_mode != super::types::OsdMode::Only
+        && let Some(ctx) = pass.ap_ctx
+        && ctx.is_near(cand.freq_hz, refined_dt)
+    {
+        accepted = ap_rung_cells(
+            &ctx,
+            [&llr_a_fast.llra, &llr_a_fast.llrd],
+            bp_scratch,
+            bp_max_iter,
+            depth.osd,
+            strictness,
+            policy,
+            pass,
+        );
+    }
+
     let (bp, pass_id) = accepted?;
     // One decode, then the acceptance policy. Rejecting a
     // CRC-passing-but-garbage message matters here beyond the decode
@@ -2680,6 +2701,136 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
         sync_cv,
         snr_db,
     })
+}
+
+/// The hard-error ceiling of the cells flow's AP rung for a lock of `locked` bits: [`DecodeStrictness::ap_max_errors`]'s, and for a lock of 70 bits or more (`RRR`, `RR73`, `73`:
+/// the whole message is fixed, only the 97 parity bits are free) [`AP_FULL_LOCK_MAX_ERRORS`]. The errors are counted against the *locked* LLRs, so the 77 locked bits agree by
+/// construction and the count is over the unlocked bits alone: on noise 97 bits give 48.5 +- 4.9 errors, and the generic ceiling of 36 is 2.5 sigma from that
+/// (`docs/notes/PI3_JT9_GAP.md` section 23: a false `RR73` about once in a thousand noise slots).
+#[cfg(feature = "fixed-point")]
+fn ap_cells_max_errors(locked: usize, strictness: DecodeStrictness) -> u32 {
+    let base = strictness.ap_max_errors(locked);
+    if locked >= 70 {
+        base.min(AP_FULL_LOCK_MAX_ERRORS)
+    } else {
+        base
+    }
+}
+
+/// See [`ap_cells_max_errors`]: measured on the cells flow's own rung (`tests/cells_ap.rs`).
+#[cfg(feature = "fixed-point")]
+pub(in crate::ft8) const AP_FULL_LOCK_MAX_ERRORS: u32 = 32;
+
+/// The cells flow's AP rung (`ft8b.f90` `ipass` 5..11, the passes that need a known partner): for each pass of the QSO's stage, the pass's bits locked to `+-apmag` in the one-symbol
+/// LLRs `a` and `d` (`apmag = 1.1 * max |llr|`), then the masked NMS BP, and with `osd` the masked OSD of the BP sum after one and two iterations (`decode174_91`'s order). An accept needs
+/// the hard errors under [`ap_cells_max_errors`], every locked bit to come out as locked, a message that unpacks and the acceptance policy. Memory: the locked LLRs on the stack, the
+/// scratch and the OSD's work are the candidate's own (`BpScratch::osd_work`): nothing is allocated per call but a decode's `Vec`s.
+#[cfg(feature = "fixed-point")]
+#[allow(clippy::too_many_arguments)]
+fn ap_rung_cells<Pol: MessagePolicy>(
+    ctx: &super::ap_context::ApContext,
+    llrs: [&[LlrT; LDPC_N]; 2],
+    bp_scratch: &mut crate::fec::ldpc::bp::BpScratch<
+        crate::fec::ldpc::params::Ldpc174_91Params,
+        LlrT,
+    >,
+    bp_max_iter: u32,
+    osd: bool,
+    strictness: DecodeStrictness,
+    policy: &Pol,
+    pass: PassCtx,
+) -> Option<(crate::fec::ldpc::bp::BpResult, u8)> {
+    use crate::engine::scalar::LlrScalar;
+    for &pass_id in ctx.passes() {
+        let Some(lock) = ctx.lock(pass_id) else {
+            continue;
+        };
+        let max_errors = ap_cells_max_errors(lock.locked, strictness);
+        let validate = |msg77: &[u8; 77], hard_errors: u32| -> bool {
+            if hard_errors >= max_errors {
+                return false;
+            }
+            // the hypothesis is the *form* of the message: every locked bit has to come out as locked
+            if !lock.mask[..77]
+                .iter()
+                .zip(lock.value[..77].iter())
+                .zip(msg77.iter())
+                .all(|((&m, &v), &b)| !m || (b == 1) == v)
+            {
+                return false;
+            }
+            let Some(message) = unpack77_fields(msg77, &CallsignHashTable::new()) else {
+                return false;
+            };
+            policy_accepts(policy, &message, pass)
+        };
+        for base in llrs {
+            let apmag = base
+                .iter()
+                .map(|v| LlrScalar::to_f32(*v).abs())
+                .fold(0.0f32, f32::max)
+                * <crate::ft8::Ft8 as crate::engine::Protocol>::AP_MAG_SCALE;
+            let mut llr_ap = *base;
+            for ((dst, &locked), &val) in llr_ap
+                .iter_mut()
+                .zip(lock.mask.iter())
+                .zip(lock.value.iter())
+            {
+                if locked {
+                    *dst = <LlrT as LlrScalar>::from_f32(if val { apmag } else { -apmag });
+                }
+            }
+            if let Some(bp) = crate::fec::ldpc::bp::bp_decode_nms_with_scratch::<LlrT>(
+                bp_scratch,
+                &llr_ap,
+                Some(&lock.mask),
+                bp_max_iter,
+                Some(check_crc14),
+                NMS_ALPHA,
+            ) && validate(&bp.message77, bp.hard_errors)
+            {
+                return Some((bp, pass_id));
+            }
+            #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
+            if osd {
+                let mut llr_f32 = [0f32; LDPC_N];
+                for (o, v) in llr_f32.iter_mut().zip(llr_ap.iter()) {
+                    *o = LlrScalar::to_f32(*v);
+                }
+                for n_iter in [1u32, 2] {
+                    let work = bp_scratch.osd_work();
+                    let zsum = crate::fec::ldpc::bp::bp_llr_zsum_ap_with_scratch::<
+                        crate::fec::ldpc::params::Ldpc174_91Params,
+                    >(
+                        &mut work.zsum, &llr_f32, Some(&lock.mask), n_iter
+                    );
+                    let mut z = [0f32; LDPC_N];
+                    z.copy_from_slice(zsum);
+                    if let Some(hit) = crate::fec::ldpc::osd_emb::osd174_91_into(
+                        &mut work.osd,
+                        &z,
+                        Some(&lock.mask),
+                    ) && validate(&hit.message77, hit.hard_errors)
+                    {
+                        let cw = work.osd.codeword();
+                        return Some((
+                            crate::fec::ldpc::bp::BpResult {
+                                message77: hit.message77,
+                                info: cw[..91].to_vec(),
+                                codeword: cw.to_vec(),
+                                hard_errors: hit.hard_errors,
+                                iterations: 0,
+                            },
+                            pass_id,
+                        ));
+                    }
+                }
+            }
+            #[cfg(not(any(feature = "fft-rustfft", feature = "osd")))]
+            let _ = osd;
+        }
+    }
+    None
 }
 
 /// How an FT8 ladder row with this pass id was decoded: the ids the ladder above assigns, which

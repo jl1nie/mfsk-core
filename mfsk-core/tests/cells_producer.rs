@@ -18,9 +18,11 @@ fn audio(name: &str) -> Vec<i16> {
     );
     let w = std::fs::read(&p).unwrap_or_else(|e| panic!("vendored wav {p}: {e}"));
     let s: Vec<i16> = w[44..]
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .take(180_000)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .map(|b| i16::from_le_bytes(*b))
         .collect();
     resample_to_8k(&s, 12_000)
 }

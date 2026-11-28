@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### The cells flow's QSO-context AP rung: `ApContext`, `CellsWorker::with_ap_context` / `decode_partner` (fixed-point build; host)
+
+- **What**: a QSO context (`ApContext`: both calls as `pack28` words, the stage, the partner's frequency and DT; `Copy`, no allocation) locks the bits of the message the partner is expected to send (`ft8b.f90` passes 5, 8-11) on the candidates within 50 Hz and 0.4 s of the partner: masked NMS BP and masked OSD, the shared code with the mask they already took; `decode_partner` searches the partner's band and decodes its candidates ungated. A divergence from WSJT-X, off unless a context is set (`None`: every decode as before, `tests/cells_ap.rs`).
+- **Measured** (AWGN, the cells window, 100 seeds): the 50 % crossing of a reply to the operator **-17.7 -> -22.3 dB** (`RR73`), **-18.3 -> -20.9 dB** (report), for +2-5 ms a slot; noise-only slots with the context set: with a DT window of 0.4 s **0 false accepts in 2 x 6 000 slots** (3 and 4 without it: a false `RR73` is the kind of decode a QSO machine acts on). The faithful AP at the partner's frequency, a busy band and fading: `PI3_JT9_GAP.md` sections 22-24. Not on the board yet.
+
 ### `Profile` P1 / P2 (faithful pipeline) and `--profile` in `skimmer` and `mfsk-serve` (Issue #766 follow-up; host)
 
 - **What**: `mfsk_core::decoder::{Profile, ProfileSpec}`: P1 (Cortex-A9) = `Depth::Normal`, P2 (Pi 3B) = `Depth::Deep`, AP raised to `CqOnly` where it is off, 2 / 4 lanes, a slot budget of 0.8 / 0.9 of the period (`Normal` and `Deep` keep FT8's early decode; `Fast` has none). `skimmer --profile p1|p2` and `:profile=` per channel (`--lanes`, `--slot-budget`, `:depth=`, `:ap=` win); `mfsk-serve --profile` and a request's `"profile"` (`depth`, `budget_ms` win). Without one nothing changes.

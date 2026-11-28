@@ -367,7 +367,10 @@ fn phantoms(noise_slots: u64, paths: Vec<String>) {
                 .expect("single pass");
             for row in r.rows {
                 n += 1;
-                found.push(format!("noise {progress:?}: {}", row.decoded.text));
+                found.push(format!(
+                    "noise {progress:?}: {} (hard errors {:?}, pass {:?})",
+                    row.decoded.text, row.detail.hard_errors, row.detail.pass
+                ));
             }
         }
         println!("noise-only, {progress:?}: {noise_slots} slots, {n} decodes");
@@ -420,6 +423,162 @@ fn phantoms(noise_slots: u64, paths: Vec<String>) {
     }
 }
 
+/// The hard errors of the true decodes at the partner's frequency, by reply and SNR: where a limit on them can sit between these and the noise's.
+fn errors(trials: u64) {
+    for (label, field, progress) in [
+        ("Rogers   RR73", "RR73", QsoProgress::Rogers),
+        ("Report   -15 ", "-15", QsoProgress::Replying),
+        ("Calling  grid", "KN07", QsoProgress::Calling),
+    ] {
+        let msg = format!("{MYCALL} {PARTNER} {field}");
+        let bits = pack77(MYCALL, PARTNER, field).expect("pack");
+        let clean = synthesize_i16::<Ft8>(&message_to_tones::<Ft8>(&bits), 12_000, F0, 6_000);
+        for snr in [-18.0f32, -20.0, -22.0, -24.0] {
+            let mut errs: Vec<u32> = Vec::new();
+            for seed in 1..=trials {
+                let pcm = slot(Some(&clean), 6_000.0, snr, 7_000 + seed);
+                let r = Decoder::<Ft8>::new(ctx_params(progress, ApMode::Full))
+                    .with_extras(extras(Some(Ft8Strategy::SinglePass)))
+                    .decode_candidates(&SlotInput::i16(&pcm), &[Ft8Candidate::new(F0 + 1.0, 0.02)])
+                    .expect("single pass");
+                for row in r.rows.iter().filter(|r| r.decoded.text == msg) {
+                    errs.push(row.detail.hard_errors.unwrap_or(999));
+                }
+            }
+            errs.sort_unstable();
+            println!(
+                "{label} {snr:6.1} dB: {} of {trials} decoded, hard errors {:?}",
+                errs.len(),
+                errs
+            );
+        }
+    }
+}
+
+/// The cells flow's window (`p0_window`'s staircase and the capped OSD) with and without the QSO context: the AP rung of the cells flow and the partner's own candidates
+/// (`CellsWorker::with_ap_context`, `decode_partner`). `None`: no context.
+#[cfg(feature = "fixed-point")]
+fn cells_ap(
+    pcm: &[i16],
+    ctx: Option<mfsk_core::ft8::decode_block::ApContext>,
+) -> Vec<(String, u32)> {
+    use mfsk_core::engine::dsp::resample::resample_to_8k;
+    use mfsk_core::engine::scalar::Cmplx;
+    use mfsk_core::engine::source::SliceSource;
+    use mfsk_core::ft8::decode_block::{
+        CellTables, CellsOptions, CellsWorker, Ft8BpScratch, Ft8Rate, GatedSearch,
+        coarse_sync_gated_cells,
+    };
+    use mfsk_core::msg::wsjt77::unpack77;
+    let a = resample_to_8k(pcm, 12_000);
+    let opts = CellsOptions::p0_window();
+    let search = GatedSearch::new(200.0, 3000.0, 1.3, 30);
+    let (cands, cells) =
+        coarse_sync_gated_cells(&mut SliceSource(&a), Ft8Rate::Hz8000, &search, 1).expect("8 kHz");
+    let tables = CellTables::new();
+    let mut cs: Box<[[Cmplx<f32>; 8]; 79]> = vec![[Cmplx::<f32>::default(); 8]; 79]
+        .try_into()
+        .expect("79 x 8");
+    let mut bp = Box::new(Ft8BpScratch::new());
+    let mut w = CellsWorker::new(&mut cs, &mut bp, &tables)
+        .with_options(&opts)
+        .with_ap_context(ctx);
+    let mut known = Vec::new();
+    w.decode_round_osd(
+        &cells,
+        &cands,
+        opts.max_cand,
+        opts.depth(),
+        0.25,
+        &mut known,
+        6,
+    );
+    w.decode_partner(&cells, opts.depth(), 0.25, &mut known);
+    known
+        .iter()
+        .filter_map(|f| {
+            unpack77(f.res.message77()).map(|m| {
+                (
+                    m.split_whitespace().collect::<Vec<_>>().join(" "),
+                    f.res.hard_errors,
+                )
+            })
+        })
+        .collect()
+}
+
+/// `cellsap`: AWGN band, the reply at the partner's frequency: the cells window without the context, with it, and the false accepts (noise-only slots with it).
+#[cfg(feature = "fixed-point")]
+fn cellsap(trials: u64, phantom_slots: u64) {
+    use mfsk_core::ft8::decode_block::{ApContext, ApStage};
+    let amp = 6_000.0f32;
+    println!(
+        "cells window: hits of {trials} (mean ms) without the context | with it (+ the partner's candidates) | hard errors of its decodes"
+    );
+    for (label, field, stage) in [
+        ("Rogers   RR73", "RR73", ApStage::Rogers),
+        ("Report   -15 ", "-15", ApStage::Replying),
+        ("Calling  grid", "KN07", ApStage::Calling),
+    ] {
+        let msg = format!("{MYCALL} {PARTNER} {field}");
+        let bits = pack77(MYCALL, PARTNER, field).expect("pack");
+        let clean = synthesize_i16::<Ft8>(&message_to_tones::<Ft8>(&bits), 12_000, F0, amp as i16);
+        let ctx = ApContext::new(MYCALL, PARTNER, stage, F0 + 1.0, 0.02);
+        for snr in [-18.0f32, -20.0, -22.0, -24.0] {
+            let (mut h0, mut h1) = (0u32, 0u32);
+            let (mut m0, mut m1) = (0f64, 0f64);
+            let mut errs: Vec<u32> = Vec::new();
+            for seed in 1..=trials {
+                let pcm = slot(Some(&clean), amp, snr, seed);
+                let t = Instant::now();
+                let r0 = cells_ap(&pcm, None);
+                m0 += t.elapsed().as_secs_f64() * 1e3;
+                let t = Instant::now();
+                let r1 = cells_ap(&pcm, ctx);
+                m1 += t.elapsed().as_secs_f64() * 1e3;
+                h0 += u32::from(r0.iter().any(|m| m.0 == msg));
+                h1 += u32::from(r1.iter().any(|m| m.0 == msg));
+                for m in r1.iter().filter(|m| m.0 == msg) {
+                    errs.push(m.1);
+                }
+                for m in r1.iter().filter(|m| m.0 != msg) {
+                    println!(
+                        "PHANTOM cells ctx {label} {snr}: {} (hard errors {})",
+                        m.0, m.1
+                    );
+                }
+            }
+            let n = trials as f64;
+            errs.sort_unstable();
+            println!(
+                "{label} {snr:6.1} dB: {h0:2} ({:5.1}) | {h1:2} ({:5.1}) | hard errors {errs:?}",
+                m0 / n,
+                m1 / n
+            );
+        }
+    }
+    let mut count = 0u32;
+    for stage in [ApStage::Rogers, ApStage::Replying] {
+        let ctx = ApContext::new(MYCALL, PARTNER, stage, F0, 0.0);
+        let mut n = 0u32;
+        for seed in 1..=phantom_slots {
+            let pcm = slot(None, amp, -20.0, 90_000 + seed);
+            for m in cells_ap(&pcm, ctx) {
+                n += 1;
+                println!(
+                    "PHANTOM cells noise {stage:?}: {} (hard errors {})",
+                    m.0, m.1
+                );
+            }
+        }
+        println!("cells, noise-only, {stage:?}: {phantom_slots} slots, {n} decodes");
+        count += n;
+    }
+    let _ = count;
+}
+#[cfg(not(feature = "fixed-point"))]
+fn cellsap(_: u64, _: u64) {}
+
 fn main() {
     let mut args = std::env::args().skip(1).peekable();
     match args.peek().map(String::as_str) {
@@ -430,6 +589,15 @@ fn main() {
         Some("fading") => {
             args.next();
             awgn(&mut args, true);
+        }
+        Some("cellsap") => {
+            args.next();
+            let t = args.next().map_or(10, |x| x.parse().unwrap());
+            cellsap(t, args.next().map_or(100, |x| x.parse().unwrap()));
+        }
+        Some("errors") => {
+            args.next();
+            errors(args.next().map_or(200, |x| x.parse().unwrap()));
         }
         Some("phantoms") => {
             args.next();

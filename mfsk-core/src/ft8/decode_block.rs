@@ -58,6 +58,8 @@
 // the tree is stage-shaped (spectrogram → coarse_sync →
 // fill_symbol_spectra → per-candidate processing). The parent file
 // owns only module declarations + re-exports + tests.
+#[cfg(feature = "fixed-point")]
+mod ap_context;
 pub(crate) mod band_bb;
 mod cd0_fir;
 #[cfg(feature = "fixed-point")]
@@ -72,6 +74,8 @@ mod coarse_lib;
 mod ft8dec_sic;
 #[cfg(feature = "fixed-point")]
 mod pre_bp_gate;
+#[cfg(feature = "fixed-point")]
+pub use ap_context::{ApContext, ApLock, ApStage};
 #[cfg(feature = "fixed-point")]
 pub use cells_flow::{
     CELLS_D_MIN_SCORE, CellTables, CellsWorker, Found, Grid, OsdAttempt, SnrBaseline,
