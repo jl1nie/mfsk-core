@@ -104,7 +104,6 @@ impl ChannelSetting {
             tx_freq_hz: positive("Tx frequency", self.tx_freq_hz)?,
             depth,
             ap,
-            profile: None,
             averaging: self.averaging,
             deep_search: self.deep_search,
             eme_delay: self.eme_delay,

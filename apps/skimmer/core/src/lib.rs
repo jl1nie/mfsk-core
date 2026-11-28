@@ -47,7 +47,7 @@ pub mod waterfall;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-pub use mfsk_core::decoder::{ApMode, Contest, Profile};
+pub use mfsk_core::decoder::{ApMode, Contest};
 use mfsk_core::decoder::{BudgetCheck, PeriodBudget, Stage, default_params};
 pub use mfsk_core::iq::Channelizer;
 // The receiver's own: a channel's mode and prefix points, from its decoder. Not this crate's
@@ -112,14 +112,10 @@ pub struct ChannelOptions {
     pub rx_freq_hz: Option<f32>,
     pub tol_hz: Option<f32>,
     pub tx_freq_hz: Option<f32>,
-    /// `ndepth & 7`; `None` is Deep, the GUI default (or the profile's).
+    /// `ndepth & 7`; `None` is Deep, the GUI default.
     pub depth: Option<Depth>,
-    /// AP (`lft8apon` / `lapcqonly`); `None` is the mode's GUI default (or the profile's).
+    /// AP (`lft8apon` / `lapcqonly`); `None` is the mode's GUI default.
     pub ap: Option<ApMode>,
-    /// A named set of values for a hardware class (`mfsk_core::decoder::Profile`): its depth and AP stand in for the ones above
-    /// that are `None`; an explicit `depth` or `ap` wins. The profile's lanes and slot budget are [`Config`]'s, set by
-    /// [`Config::apply_profile`].
-    pub profile: Option<Profile>,
     /// `ndepth & 16` (JT65, Q65), `ndepth & 32` (JT65), `emedelay`.
     pub averaging: bool,
     pub deep_search: bool,
@@ -333,12 +329,8 @@ fn apply_options(d: &mut AnyDecoder, o: &ChannelOptions, station: &Station) {
     p.rx_freq_hz = o.rx_freq_hz;
     p.tol_hz = o.tol_hz;
     p.tx_freq_hz = o.tx_freq_hz;
-    // the mode's defaults, then the profile's, then what the channel names
-    let base = o
-        .profile
-        .map_or_else(|| dflt.clone(), |pr| pr.apply(dflt.clone()));
-    p.depth = o.depth.unwrap_or(base.depth);
-    p.ap = o.ap.unwrap_or(base.ap);
+    p.depth = o.depth.unwrap_or(dflt.depth);
+    p.ap = o.ap.unwrap_or(dflt.ap);
     p.averaging = o.averaging;
     p.deep_search = o.deep_search;
     p.eme_delay = o.eme_delay;
@@ -1054,22 +1046,6 @@ impl Config {
             }
         }
         (m, at)
-    }
-
-    /// Put `profile` on this server: it becomes the profile of every channel that names none, and its lanes and slot budget become
-    /// [`decode_lanes`](Self::decode_lanes) and [`slot_budget`](Self::slot_budget) unless `keep_lanes` / `keep_budget` say the operator set them
-    /// (an explicit `--lanes`, `--slot-budget`, including `off`, wins).
-    pub fn apply_profile(&mut self, profile: Profile, keep_lanes: bool, keep_budget: bool) {
-        let spec = profile.spec();
-        for ch in &mut self.channels {
-            ch.options.profile.get_or_insert(profile);
-        }
-        if !keep_lanes {
-            self.decode_lanes = spec.lanes;
-        }
-        if !keep_budget {
-            self.slot_budget = Some(spec.slot_budget);
-        }
     }
 
     pub fn new(server: impl Into<String>, channels: Vec<ChannelSpec>) -> Self {
@@ -3178,73 +3154,6 @@ mod tests {
         );
         assert_eq!(c.decode_lanes, 4);
         assert!(c.early_decode, "FT8 rows at ~11.8 s, as WSJT-X shows them");
-    }
-
-    /// A profile is a stand-in for the channel's own `depth` and `ap`, never a copy over them; the mode's defaults come first.
-    #[test]
-    fn a_profile_stands_in_for_what_a_channel_leaves_unset() {
-        use mfsk_core::decoder::Depth;
-        let station = Station::default();
-        let params = |mode: Mode, o: ChannelOptions| {
-            let mut d = AnyDecoder::with_defaults(mode);
-            apply_options(&mut d, &o, &station);
-            d.params().clone()
-        };
-        let with = |profile, depth, ap| ChannelOptions {
-            profile,
-            depth,
-            ap,
-            ..Default::default()
-        };
-        // no profile: as before (FT8: Deep, AP off)
-        let none = params(Mode::Ft8, ChannelOptions::default());
-        assert_eq!((none.depth, none.ap), (Depth::Deep, ApMode::Off));
-        // P1: Normal and AP on; P2: Deep and AP on
-        let p1 = params(Mode::Ft8, with(Some(Profile::P1), None, None));
-        assert_eq!((p1.depth, p1.ap), (Depth::Normal, ApMode::CqOnly));
-        let p2 = params(Mode::Ft8, with(Some(Profile::P2), None, None));
-        assert_eq!((p2.depth, p2.ap), (Depth::Deep, ApMode::CqOnly));
-        // what the channel names wins
-        let own = params(
-            Mode::Ft8,
-            with(Some(Profile::P1), Some(Depth::Fast), Some(ApMode::Off)),
-        );
-        assert_eq!((own.depth, own.ap), (Depth::Fast, ApMode::Off));
-        // a mode that runs AP by itself keeps it
-        let ft4 = params(Mode::Ft4, with(Some(Profile::P1), None, None));
-        let ft4_default = params(Mode::Ft4, ChannelOptions::default());
-        let want = if ft4_default.ap == ApMode::Off {
-            ApMode::CqOnly
-        } else {
-            ft4_default.ap
-        };
-        assert_eq!(ft4.ap, want);
-    }
-
-    /// `--profile` sets the lanes, the budget and the channels' profile; what the operator set wins, and a channel's own profile stays.
-    #[test]
-    fn a_profile_on_a_server_sets_lanes_and_budget_unless_the_operator_did() {
-        let mut ch = ChannelSpec::new(Mode::Ft8, 7_074_000.0);
-        let mut own = ChannelSpec::new(Mode::Ft8, 14_074_000.0);
-        own.options.profile = Some(Profile::P2);
-        ch.options.profile = None;
-        let mut c = Config::new("x", vec![ch, own]);
-        c.apply_profile(Profile::P1, false, false);
-        assert_eq!(c.decode_lanes, 2);
-        assert_eq!(c.slot_budget, Some(0.8));
-        assert_eq!(c.channels[0].options.profile, Some(Profile::P1));
-        assert_eq!(c.channels[1].options.profile, Some(Profile::P2));
-        let mut c = Config::new("x", vec![ChannelSpec::new(Mode::Ft8, 7_074_000.0)]);
-        c.decode_lanes = 3;
-        c.slot_budget = None; // `--slot-budget off`
-        c.apply_profile(Profile::P2, true, true);
-        assert_eq!((c.decode_lanes, c.slot_budget), (3, None));
-        // no profile: the defaults of before
-        let d = Config::new("x", Vec::new());
-        assert_eq!(
-            (d.decode_lanes, d.slot_budget, d.early_decode),
-            (4, None, true)
-        );
     }
 
     /// A budget that is already spent stops an FT8 slot, and says so: the

@@ -99,13 +99,13 @@ Per-channel options follow the dial (WSJT-X's parameter block, `--mycall`/`--myg
 `:depth=fast|normal|deep` (WSJT-X's `ndepth`; default deep), `:rx=`/`:tol=`/`:tx=`
 (Hz), `:ap=off|cq|full`, `:hiscall=`/`:hisgrid=`/`:progress=0..5` (the QSO the
 QSO-context AP is derived from), `:contest=NAME`, `:avg=1`, `:deepsearch=1`,
-`:eme=1`, `:profile=p1|p2` (a hardware class's depth and AP; an explicit `:depth=` / `:ap=` wins). In the GUI they are under each channel's ⚙ dialog (search, a-priori,
+`:eme=1`. In the GUI they are under each channel's ⚙ dialog (search, a-priori,
 QSO in progress, other) and the operator's call and grid under Settings > Server (per server) and apply to a running skimmer at
 the channel's next slot, without a reconnect.
 
 Options: `--yield` (leave control to an SDR# started later), `--tune` (hold control
 and tune even with `--yield`), `--center HZ`,
-`--profile p1|p2` (a hardware class: p1 Cortex-A9 = `normal`, AP on, 2 lanes, budget 0.8; p2 Pi 3B = `deep`, AP on, 4 lanes, budget 0.9; `--lanes` and `--slot-budget` win; **extrapolated from the host's time, not measured on the hardware**), `--slot-budget SHARE|off` (a slot's decode may run this share of its period, then stops and reports what it has; off by default; the status line counts the slots it cut), `--lanes N` (decoder threads per channel, 4 by default: the next slot is decoded on another thread while the last is still being decoded, even if that outlasts its slot; each thread has its own callsign table, and a channel with averaging uses one), `--no-early` (FT8 rows only when the slot ends; by default the rows found by ~11.8 s are printed then, as WSJT-X shows them, and the rest at the end), `--detail` (each row's sync score, the errors the FEC corrected and its message key),
+`--slot-budget SHARE|off` (a slot's decode may run this share of its period, then stops and reports what it has; off by default; the status line counts the slots it cut), `--lanes N` (decoder threads per channel, 4 by default: the next slot is decoded on another thread while the last is still being decoded, even if that outlasts its slot; each thread has its own callsign table, and a channel with averaging uses one), `--no-early` (FT8 rows only when the slot ends; by default the rows found by ~11.8 s are printed then, as WSJT-X shows them, and the rest at the end), `--detail` (each row's sync score, the errors the FEC corrected and its message key),
 `--rate S/s`, `--gain N` (the device gain index, when this client holds control;
 the GUI sets it live under Settings → Radio), `--format float|int16`
 (default float), `--pfb` (polyphase channelizer; cheaper from a handful of

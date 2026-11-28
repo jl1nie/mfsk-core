@@ -31,7 +31,7 @@ it buys has not been measured.
 
 ```text
 mfsk-serve                                    serve requests from stdin until it closes
-mfsk-serve decode FILE [--mode M] [--depth D] [--profile P] [--band LO-HI]    one request, answers on stdout
+mfsk-serve decode FILE [--mode M] [--depth D] [--band LO-HI]    one request, answers on stdout
 mfsk-serve bench FILE [--mode M] [--iters N]                    time the decoder on FILE
 ```
 
@@ -51,8 +51,7 @@ Requests are served in order, one at a time. A line that cannot be served gets o
 |---|---|---|
 | `mode` | required | mode name |
 | `wav` | required | path; `.raw` is read as s16le, anything else as WAV |
-| `depth` | | `fast`, `normal`, `deep` (the profile's, else the library's default, `deep`, when absent) |
-| `profile` | | `p1` (Cortex-A9 class: `normal`, AP on, budget 0.8 of the period) or `p2` (Pi 3B class: `deep`, AP on, budget 0.9). An explicit `depth` and `budget_ms` win. **The values are extrapolated from the host's time, not measured on that hardware** (`PROFILES.md`, `PI3_JT9_GAP.md` section 13) |
+| `depth` | | `fast`, `normal`, `deep` (the library's default, `deep`, when absent) |
 | `band` | | `[lo, hi]` Hz (the mode's default band when absent) |
 | `period` | | the period's index on the UTC grid; `prefix` needs it, and state that spans periods is used only when it is given |
 | `budget_ms` | | stop taking candidates once this many milliseconds have passed |

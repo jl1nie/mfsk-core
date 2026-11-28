@@ -19,7 +19,7 @@ use serde_json::json;
 fn usage() -> ExitCode {
     eprintln!(
         "usage: mfsk-serve\n\
-         \x20      mfsk-serve decode FILE [--mode MODE] [--depth fast|normal|deep] [--profile p1|p2] [--band LO-HI]\n\
+         \x20      mfsk-serve decode FILE [--mode MODE] [--depth fast|normal|deep] [--band LO-HI]\n\
          \x20      mfsk-serve bench FILE [--mode MODE] [--iters N]\n\
          FILE: .wav (mono, 12 kHz, s16 or f32) or .raw (s16le, mono, 12 kHz); MODE defaults to FT8\n\
          any command: --threads N (or MFSK_SERVE_THREADS=N) caps the worker threads; default: every core"
@@ -104,7 +104,6 @@ fn one_shot(args: &[String], bench: bool) -> ExitCode {
         return usage();
     };
     let (mut mode, mut depth, mut band, mut iters) = ("FT8".to_string(), None, None, 6usize);
-    let mut profile = None;
     let mut i = 1;
     while i < args.len() {
         let Some(value) = args.get(i + 1) else {
@@ -113,8 +112,6 @@ fn one_shot(args: &[String], bench: bool) -> ExitCode {
         match args[i].as_str() {
             "--mode" => mode = value.clone(),
             "--depth" if !bench => depth = Some(value.clone()),
-            // a hardware class (p1: Cortex-A9, p2: Pi 3B): its depth and AP, and its share of the period as the budget; --depth wins
-            "--profile" if !bench => profile = Some(value.clone()),
             "--band" if !bench => {
                 let Some((lo, hi)) = value.split_once('-') else {
                     return usage();
@@ -145,7 +142,8 @@ fn one_shot(args: &[String], bench: bool) -> ExitCode {
             }
         };
     }
-    let request = json!({ "op": "decode", "mode": mode, "wav": file, "depth": depth, "profile": profile, "band": band });
+    let request =
+        json!({ "op": "decode", "mode": mode, "wav": file, "depth": depth, "band": band });
     let lines = Server::new().handle(&request.to_string());
     let failed = lines.iter().any(|l| l["type"] == "error");
     if emit(&lines).is_err() || failed {

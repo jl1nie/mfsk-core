@@ -44,7 +44,6 @@ mod frame;
 ))]
 mod fst4w;
 mod params;
-mod profile;
 #[cfg(feature = "q65")]
 mod q65;
 #[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65"))]
@@ -95,7 +94,6 @@ pub use params::SearchTuning;
 pub use params::{
     ApMode, Contest, DecodeParams, Depth, ParamField, ParamFields, QsoContext, QsoProgress, Station,
 };
-pub use profile::{Profile, ProfileSpec};
 
 use alloc::vec::Vec;
 

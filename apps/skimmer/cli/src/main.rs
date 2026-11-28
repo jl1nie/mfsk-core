@@ -20,7 +20,7 @@ use skimmer_core::pskreporter::{
     Endpoint, PskConfig, PskReporter, spot_from_decode, spot_from_jtty,
 };
 use skimmer_core::rtltcp::RtlFormat;
-use skimmer_core::{Channelizer, Config, Event, Profile, Protocol, Step, WireFormat, all_txt_line};
+use skimmer_core::{Channelizer, Config, Event, Protocol, Step, WireFormat, all_txt_line};
 use skimmer_core::{PrepStage, Station};
 
 fn usage() -> ExitCode {
@@ -30,7 +30,7 @@ fn usage() -> ExitCode {
          \x20      (several servers: repeat --server [NAME=]HOST:PORT with its own options and --ch; a rotation: --step MINUTES before the --ch heard in that step)\n\
          \x20      [--protocol spyserver|rtl_tcp [--rtl-format auto|8|16] [--rtl-calibrate SECS] [--rtl-adc-clock-offset]]   (rtl_tcp: also SDRplay's rsp_tcp; 16 = rsp_tcp -E -b 16)\n\
          \x20      [--tune] [--yield] [--ntp HOST] [--net-delay MS] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
-         \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS] [--profile p1|p2] [--slot-budget SHARE|off] [--lanes N] [--no-early] [--detail]\n\
+         \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS] [--slot-budget SHARE|off] [--lanes N] [--no-early] [--detail]\n\
          \x20      [--psk-reporter [--psk-grid GRID] [--psk-ant TEXT] [--psk-rig TEXT] [--psk-interval SECS] [--psk-to HOST:PORT]]\n\
          PSK Reporter: needs --mycall and the receiver's locator (--psk-grid, else --mygrid). Spots go to PSK Reporter\n\
          \x20      (pskreporter.info), or to --psk-to, a listener of your own.\n\
@@ -50,20 +50,9 @@ fn usage() -> ExitCode {
 /// What the command line asked for: the servers, the log file, `--detail`, and PSK Reporter.
 type Parsed = (Vec<Config>, Option<String>, bool, Option<PskConfig>);
 
-/// What one server's command line said about `--profile`.
-#[derive(Default)]
-struct ServerProfile {
-    profile: Option<Profile>,
-    lanes_set: bool,
-    budget_set: bool,
-}
-
 fn parse_args() -> Option<Parsed> {
     let mut cfgs: Vec<Config> = Vec::new();
     let mut cfg = Config::new("127.0.0.1:5555", Vec::new());
-    // per server: its --profile, and whether --lanes / --slot-budget were given (they win over the profile's)
-    let mut profiles: Vec<ServerProfile> = Vec::new();
-    let mut prof = ServerProfile::default();
     let mut started = false;
     let mut log = None;
     let mut detail = false;
@@ -77,7 +66,6 @@ fn parse_args() -> Option<Parsed> {
             "--server" => {
                 if started {
                     cfgs.push(cfg);
-                    profiles.push(std::mem::take(&mut prof));
                     cfg = Config::new("127.0.0.1:5555", Vec::new());
                 }
                 started = true;
@@ -147,7 +135,6 @@ fn parse_args() -> Option<Parsed> {
             // A slot may decode this share of its period, then stops and reports
             // what it has; off (the default) decodes every slot to the end.
             "--slot-budget" => {
-                prof.budget_set = true;
                 cfg.slot_budget = match it.next()?.as_str() {
                     "off" => None,
                     v => Some(v.parse::<f32>().ok().filter(|x| *x > 0.0)?),
@@ -155,21 +142,7 @@ fn parse_args() -> Option<Parsed> {
             }
             // Decoder threads per channel (4 by default): the next slot is
             // decoded on another thread while the last is still being decoded.
-            "--lanes" => {
-                prof.lanes_set = true;
-                cfg.decode_lanes = it.next()?.parse::<usize>().ok().filter(|n| *n > 0)?
-            }
-            // A hardware class's depth, AP, lanes and slot budget (p1: Cortex-A9, p2: Pi 3B); `--lanes`, `--slot-budget`
-            // and a channel's own :profile= / :depth= / :ap= win. The values are extrapolations, not measured there.
-            "--profile" => {
-                prof.profile = match Profile::from_name(&it.next()?) {
-                    Some(p) => Some(p),
-                    None => {
-                        eprintln!("--profile: expected p1|p2");
-                        return None;
-                    }
-                }
-            }
+            "--lanes" => cfg.decode_lanes = it.next()?.parse::<usize>().ok().filter(|n| *n > 0)?,
             // FT8 rows at the end of the slot only, not from ~11.8 s on.
             "--no-early" => cfg.early_decode = false,
             "--detail" => detail = true,
@@ -200,11 +173,7 @@ fn parse_args() -> Option<Parsed> {
         }
     }
     cfgs.push(cfg);
-    profiles.push(prof);
     for (i, c) in cfgs.iter_mut().enumerate() {
-        if let Some(p) = profiles[i].profile {
-            c.apply_profile(p, profiles[i].lanes_set, profiles[i].budget_set);
-        }
         if c.name.is_empty() {
             c.name = if i == 0 && c.server == "127.0.0.1:5555" {
                 String::new()
