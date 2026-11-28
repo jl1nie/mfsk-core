@@ -36,6 +36,11 @@ path = "src/bin/icap-cands.rs"
 required-features = ["fixed-point"]
 
 [[bin]]
+name = "icap-p0"
+path = "src/bin/icap-p0.rs"
+required-features = ["fixed-point"]
+
+[[bin]]
 name = "icap-early"
 path = "src/bin/icap-early.rs"
 required-features = ["fixed-point"]

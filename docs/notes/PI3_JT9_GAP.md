@@ -326,3 +326,21 @@ AP, on the 60 slots (1 338 of `jt9`'s; ms a slot, host):
 
 Tier B (`tests/profile_conformance.rs`, the 22 recordings, `jt9`'s 402): **P2 finds 402 of 402** with no unattested extra (the same as `ft8_real_recordings_vs_jt9.rs`); **P1 finds 387 of 402** (96.3 %), no unattested extra, floor 385. With P1 at `Depth::Fast` it finds 326 (the mutation that shows the floor can fail).
 
+## 21. Correction: the cells flow of sections 15-19 ran the blind-CQ AP rung the board does not have (2026-11-28; host, one thread, quiet machine, `hosttest/icap-app` `icap-p0`)
+
+`pi3_sweep` is built with `full`, which has `fft-rustfft`, and `process_candidates.rs` step 4 (the AP rung: the blind-CQ pass on every candidate that failed BP and OSD) is `#[cfg(feature = "fft-rustfft")]`. **So every cells-flow figure of sections 15-19 included an AP pass the board (`fft-extern` only) does not run.** `icap-p0` (new: `CellsOptions::p0_window()` / `p0_late()` over the same 60 slots, resampled by the crate's own `resample`, in the board's build) measures the cells flow as the board runs it:
+
+| 60 slots, host, one thread | decodes of the 1 338 | extras | ms a slot |
+|---|---|---|---|
+| `p0_window`, no AP (`icap-p0`) | 985 | 34 | **9.7** |
+| `p0_window`, blind-CQ AP (`pi3_sweep`) | 980 | 32 | 28.1 |
+| `p0_late`, no AP (`icap-p0`) | 1 171 | 62 | **24.8** |
+| `p0_late`, blind-CQ AP (`pi3_sweep`) | 1 169 | 67 | 51.5 |
+
+(the resampler differs, so the decodes are not compared to the unit; `pi3_sweep`'s ms include its resample, about 3-5 ms; `qso3_busy`: 11 ms and 23 ms without AP, 35 ms and 55 ms with.) **The AP rung is 2-3x the time of the whole call and adds no decode that shows** (`S3_CELLS_IMPLEMENTATION_PLAN.md` measured 1 531 M against 924 M instructions for +6 hits and +8 extras).
+
+What changes:
+* **Section 18's ms** (the window path's table) were 2-3x too high for the board's flow; the decodes stand. The window path (P = 1, M = 30) is 9.7 ms, **0.24-0.39 s on a Pi 3B core** (25-40x); `p0_late` (P = 2) 24.8 ms, **0.62-1.0 s**, which fits the 1.2-2 s of the window, not the 1.0-1.6 s section 18 said.
+* **Section 19's ratios** were against a host figure with the AP rung. Against the board's own flow: the window path's jobs (about 1 340 ms) are **about 120x** the host's 11 ms; the SIC job (3.79 s) is **about 165-200x** the host's 19-23 ms (`p0_late` less the first search). The ESP32-S3 is slower than section 13's "25-40x" by 3-5x, not 1-2x.
+* The hybrid's cells half (sections 15-17) used `pi3_sweep`'s cells; its ms are 15-26 ms a slot too high (cells 46 ms a slot is about 25 ms); its recall stands.
+
