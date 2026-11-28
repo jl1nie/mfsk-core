@@ -270,6 +270,37 @@ fn cells(name: &str, audio: &[i16]) -> Vec<String> {
             &GatedSearch::new(200.0, 3000.0, 1.3, 30),
             &CellsOptions::p0_window(),
         ),
+        // `o:c<M>,k<K>,p<P>`: `p0_window`'s configuration with M candidates (and search size), the OSD capped at K (0 = off), P passes (1 = no subtraction)
+        o if o.starts_with("o:") => {
+            use mfsk_core::ft8::decode_block::{OsdOptions, OsdSeeds, SicOptions};
+            let (mut m, mut k, mut p) = (30usize, 6usize, 1usize);
+            for t in o[2..].split(',') {
+                if let Some(v) = t.strip_prefix('c') {
+                    m = v.parse().expect("c");
+                } else if let Some(v) = t.strip_prefix('k') {
+                    k = v.parse().expect("k");
+                } else if let Some(v) = t.strip_prefix('p') {
+                    p = v.parse().expect("p");
+                }
+            }
+            let opts = CellsOptions::p0_window()
+                .with_max_cand(m)
+                .with_osd(if k == 0 {
+                    OsdOptions::Off
+                } else {
+                    OsdOptions::Capped {
+                        seeds: OsdSeeds::AD,
+                        k,
+                    }
+                })
+                .with_sic((p > 1).then(|| SicOptions::new(p)));
+            decode_block_cells_with(
+                &a,
+                Ft8Rate::Hz8000,
+                &GatedSearch::new(200.0, 3000.0, 1.3, m),
+                &opts,
+            )
+        }
         "p0_late" => decode_block_cells_with(
             &a,
             Ft8Rate::Hz8000,

@@ -269,3 +269,25 @@ Two more cheap variants on the same ruler (`p0_late` decodes of the 1 338; the b
 
 Neither helps: a denser sampling of a symbol-long window changes the depth by 0.8 dB and the decodes by -7, and **the unbiased amplitude (gain 1.0) is the optimum** of the scale (a smaller one leaves the signal, a larger one subtracts the neighbour). So `ft8dec`'s per-symbol amplitude with linear interpolation is at a local optimum for these knobs, on this corpus: the place, the amplitude resolution, the sampling and the scale have each been moved and none improves the decodes. What is left of the 1.5-4 dB to the faithful subtractor is its different construction (a continuous low-pass of the whole-slot correlation, 12 kHz, the refined place); it is not reached by a cheap change of this one. The two experiments are not in the tree (`seg_sliding_gain_experiment.patch` in the study's scratch).
 
+## 18. The window path: what the cells flow can do in the time after the signal (2026-11-28; host, one thread, the 60 slots, `pi3_sweep cells:o:c<M>,k<K>,p<P>`)
+
+The reply that can still be sent has about 1.2-2 s after the signal's audio is in (section 15). The cells flow's search and demux are streamed while the slot is received (the search and the cells of 30 candidates cost about **12 ms a slot** on the host, `cands:30` including the wav read and the resample: not in the window); what is in the window is the candidate rounds and, with the subtraction, the second pass (a read of the slot through `ResidualSource`, a new search, a second round). `p0_window`'s configuration with M candidates (also the search's size), the OSD capped at K (0 = off) and P passes:
+
+| P | K | M = 10 | 15 | 20 | 30 | 50 |
+|---|---|---|---|---|---|---|
+| 1 | 0 | 527 / 13 | 741 / 14 | 876 / 16 | 942 / 22 | 944 / 30 |
+| 1 | 3 | 533 / 14 | 755 / 15 | 902 / 19 | 975 / 27 | 977 / 42 |
+| 1 | 6 | 534 / 13 | 756 / 15 | 906 / 19 | **980 / 28** | 982 / 43 |
+| 2 | 0 | 663 / 24 | 892 / 27 | 1 029 / 31 | 1 111 / 40 | 1 115 / 53 |
+| 2 | 3 | 684 / 27 | 924 / 30 | 1 077 / 37 | 1 158 / 49 | 1 162 / 71 |
+| 2 | 6 | 687 / 28 | 927 / 31 | 1 085 / 38 | **1 169 / 52** | 1 173 / 72 |
+
+(decodes of the 1 338 / ms a slot, all of it, the streamed part included.)
+
+* **30 candidates is the knee**: 50 adds 2-4 decodes for 15-20 ms; below 30 the decodes fall fast (20: -74 at P = 1, -84 at P = 2).
+* **The OSD cap**: K = 6 against K = 3 is +5 / +11 decodes for 1-3 ms; no OSD costs 38-58 decodes for 5-7 ms. Keep 6 (the CoreS3's value).
+* **The subtraction pass (P = 2)** is the lever: +189 decodes for +24 ms at M = 30, +179 for +19 at M = 20.
+* **The frontier** (ms a slot: decodes): 13: 534 (M 10) - 15: 756 (15) - 19: 906 (20) - **28: 980 (30, P 1)** - 38: 1 085 (20, P 2) - **52: 1 169 (30, P 2)**. M = 15 with P = 2 (31: 927) is beaten by M = 30 with P = 1 (28: 980).
+* **What is in the window**, the part after the streamed 12 ms (host, then a Pi 3B core at 25-40x, an upper bound: the streamed part is not all hidden): P = 1, M = 30: about 16 ms, **0.4-0.65 s**, 980 decodes (73 %); P = 2, M = 20: about 26 ms, **0.65-1.0 s**, 1 085 (81 %); P = 2, M = 30: about 40 ms, **1.0-1.6 s**, 1 169 (87 %): inside the 1.2-2 s at the lower ratio and at the edge of it at the upper one. The late path adds the faithful pass on top (section 16).
+* **Not measured:** the Pi, and the split of a pass between its streamed and its post-signal part on the board (the host's 12 ms is the search alone; the demux of the cells is in it, the second pass's read is not).
+
