@@ -344,3 +344,24 @@ What changes:
 * **Section 19's ratios** were against a host figure with the AP rung. Against the board's own flow: the window path's jobs (about 1 340 ms) are **about 120x** the host's 11 ms; the SIC job (3.79 s) is **about 165-200x** the host's 19-23 ms (`p0_late` less the first search). The ESP32-S3 is slower than section 13's "25-40x" by 3-5x, not 1-2x.
 * The hybrid's cells half (sections 15-17) used `pi3_sweep`'s cells; its ms are 15-26 ms a slot too high (cells 46 ms a slot is about 25 ms); its recall stands.
 
+## 22. The QSO-context AP at the reply window, measured on the host (2026-11-28; `mfsk-core/examples/ap_qso.rs`, AWGN band, 10 trials a cell, one thread)
+
+A synthetic reply to the operator (`K1JT HA0DU` + `RR73` / `-15` / `KN07`, at 1 500 Hz, 0.5 s start) in AWGN, SNR in 2 500 Hz, decoded by: `cells` (`p0_late`, as the board runs it: no AP for a reply), `blind` (faithful Deep, AP off), `ap` (faithful Deep with the QSO context and the Rx frequency: its own search), `c1` / `c9` (`decode_candidates` of **only the partner's frequency**, one candidate 1 Hz and 20 ms off, or a 3 x 3 grid of 3.125 Hz and 40 ms, with the QSO-context AP). Hits of 10; the 50 % crossing is interpolated, +-1 dB.
+
+**The AP passes alone** (`AP_QSO_NOGRID=1`: no grid for the partner, so the a8 list decoder, which needs both calls, a grid and the Rx frequency, does not run):
+
+| reply (QSO progress) | cells | blind Deep | AP passes at the partner (`c1` / `c9`) | gain over blind |
+|---|---|---|---|---|
+| `RR73` (Rogers: passes 8-11) | -17.7 dB | -20.0 | **-22.6** (10 / 10 at -20; 8 / 10 at -22) | +2.6 dB |
+| `-15` (Replying: 5, 8) | -18.4 | -19.8 | -21.8 (10 at -20; 4 / 5 at -22) | +2.0 |
+| `KN07` (Calling: 5, 12) | -18.7 | -20.5 | -20.8 (7 / 8 at -20; 0 at -22) | +0.3 |
+
+* **The cost at the partner's frequency is almost nothing**: `c1` 0.3-3.2 ms and `c9` 0.8-25 ms **a slot on the host** (**10-130 ms on a Pi 3B core, 25-40x**), against 80-110 ms for the faithful decode of the whole slot. The same hits as the whole-slot AP (`ap`, no grid): the partner's candidate is all the AP needs.
+* **The cells flow's window threshold for a reply is about -18 dB**; the AP passes at the partner's frequency take it to **-20.8 to -22.6 dB**: **+3 to +5 dB** on the replies QSO is made of.
+
+**With the a8 list decoder as well** (the grid given: `ap`, `c1`, `c9`): the 50 % crossing is about **-23.2 to -23.4 dB for all three replies** (10 / 10 at -22; 1-3 / 10 at -24): another **+1 to +2.6 dB** over the AP passes (`KN07` +2.5: 0 / 10 against 10 / 10 at -22 dB). But a8 costs **about 110 ms a slot on the host** (it works on the 192 000-point FFT cache): **2.8-4.4 s on a Pi 3B core**, 13 s on the ESP32-S3: not a window job as it is.
+
+**Phantoms** (the band holds nothing but the reply): over 3 scenarios x 6 SNRs x 10 trials x 5 decoders (900 decodes) **4 rows that are not the reply**: `CQ XW6GWL GC94` from `cells` at -16 dB (this build has the blind-CQ rung); `K1JT HA0DU NQ35` from `ap` at -24 dB (**both calls locked: a message that looks like the partner's** and is false); `RK4NCK 0I8GOJ 539 0450` from `blind` and `ap` at -22 dB (a free-text-like decode without any AP). **300 noise-only slots with the context set** (`c9`, 100 for each progress): 0. The rate of the 61-bit lock's false accept is not bounded by this size of test (`ft8_ap_osd_false_accept.rs` measures it per CRC-valid draw).
+
+**What it says for the QSO window**: the AP at the partner's frequency is worth +3-5 dB over what the window decodes now, for a few ms of the host's time (the cells' side of the work is the same BP and OSD with a mask, shared code); the a8 list decoder is worth up to 2.6 dB more but is a different, heavier mechanism. **Not measured:** a busy band (the replies are alone in AWGN), the cells flow's own AP (not written), the board, fading, a larger noise test for the 61-bit lock.
+
