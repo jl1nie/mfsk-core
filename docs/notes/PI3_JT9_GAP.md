@@ -140,3 +140,23 @@ The same measurement with a fourth row (`probe11`, (d)): the cells flow's pass-0
 | every other reference signal, `jt9`'s precise places (the oracle) | 24 |
 
 **The cells flow's estimate of a decoded signal's place (about 0.4 Hz and 28 ms) is too coarse to subtract it; refined on the 12 kHz audio it is almost as good as `jt9`'s (14 against 16).** 14 of the 60 misses (23 %) come back from one refinement of the places of what the flow already decodes. The 10 more of the oracle are the undecoded signals. Next: a cells SIC that holds the 12 kHz audio, refines and subtracts there and makes the cells again, measured on the 60 slots (not an estimate from the misses).
+
+## 11. The causes, taken apart on `jt9`'s own audio (2026-11-28)
+
+`jt9` was run with a dump of its audio (`dd0`) at the decode of each of the signals the cells flow misses (an environment variable of the trace build picks the message; 59 of 60 dumped). Everything below is on **that audio**, so the subtraction history is the same for `jt9` and for us:
+
+| from `jt9`'s audio at the decode, of the 59 misses | decoded |
+|---|---|
+| the cells flow (1 pass, no OSD / OSD, 3 passes) | 8 / **14** |
+| the faithful `deep:off` | **43** |
+| the cells flow, **decoding at `jt9`'s precise place** (OSD) / any of the 9 places | 16 / 21: the search is not what fails |
+| hard-decision tone errors of 79 at that place: `jt9`'s own `s8` / a 12 kHz rectangular DFT / the cells | 25.9 / 35.2 / 35.7 (medians 25 / 28 / 30): for 47 of 57 the three agree; for **10 `jt9`'s `s8` is 20 or more errors cleaner** than the DFT at the same place |
+| `llra` bit errors of 174: `jt9`'s / **this crate's LLR function applied to `jt9`'s `s8`** | 30.3 / 30.5 (and 22 of 57 decoded by this crate's BP + OSD from either): **the LLR formation is the same** |
+
+**What this crate's BP + OSD decodes from `jt9`'s own LLR variants** (53 of the misses; `llra`, `llrb`, `llrc`, `llrd`, `llre`): 22 / 27 / 27 / 26 / 31 alone; the union of **`a` + `d` (what magnitudes alone can make) 30, + `b` + `c` (coherent over two and three symbols, which need phase) 42, + `e` 44 (83 %)**. For the ones the cells flow finds the union of `a` + `d` is 292 of 319 and of all five 296: the coherent variants matter only for the weak ones.
+
+**So, for the misses** (53, on `jt9`'s audio): 44 can be decoded from `jt9`'s LLR; 30 from magnitude-only variants of `jt9`'s symbol energies (what a cells flow without phase could reach at best); the cells flow decodes 14.
+* **A. No phase** (`im: 0`): the coherent variants are worth about **14** (30 -> 44). The comment of `fill_mask` (phase worth at most 3 of 1 338, `FT8_WINDOW_AND_COARSE_DESIGN.md` section 12) does not hold for the weak signals that `jt9` decodes and the cells flow misses.
+* **B. The symbol energies**: about **16** (30 -> 14), among them the 10 signals whose `s8` is far cleaner than a DFT at the same place. **Not explained**: `jt9`'s front end (`ft8_downsample`: a 192 000-point FFT of the slot, the band cut with cosine tapers, `twkfreq` and the 0.5 Hz / 5 ms fine search of `ft8b`) gives the cleaner energies; `probe6` reproduces its `s8` (12-13 wrong of 79 on `CU2DX`'s `dd0`), so the difference can be taken apart step by step.
+* **C. The subtraction** (section 10): 14 of the 60 from refining the places of what is decoded.
+* The rest (9): `RR73` and hashed-call messages, whose transmitted bits this study builds with `pack77` and may not equal.
