@@ -117,6 +117,130 @@ fn hybrid(spec: &str, audio: &[i16]) -> Vec<String> {
     msgs
 }
 
+/// `hybrid2:<N1>:<N2>[:<K>]`: [`hybrid`] with the faithful pass fed from **both** cells passes: the first N1 candidates of the first pass's search that no decode sits on, then the first N2 of
+/// the **second pass's search on the cells flow's residual** that no decode sits on (`p0_late`: 30 candidates, the OSD capped at 6, two passes). Prints `H2 <cells ms> <faithful ms> <cells
+/// decodes> <faithful decodes> <pass-0 sent> <pass-1 sent>` on stderr.
+#[cfg(feature = "fixed-point")]
+fn hybrid2(spec: &str, audio: &[i16]) -> Vec<String> {
+    use mfsk_core::decoder::{Ft8Candidate, Ft8Strategy};
+    use mfsk_core::engine::dsp::resample::resample_to_8k;
+    use mfsk_core::engine::scalar::Cmplx;
+    use mfsk_core::engine::source::SliceSource;
+    use mfsk_core::engine::sync::SyncCandidate;
+    use mfsk_core::ft8::decode_block::{
+        CellTables, CellsOptions, CellsWorker, Ft8BpScratch, Ft8Rate, GatedSearch, SicStorage,
+        coarse_sync_gated_cells, sic_passes_with, sic_signal_capacity,
+    };
+    use mfsk_core::msg::wsjt77::unpack77;
+    let mut parts = spec.split(':');
+    let n1: usize = parts.next().unwrap().parse().expect("N1");
+    let n2: usize = parts.next().unwrap().parse().expect("N2");
+    let k: usize = parts.next().map_or(2, |x| x.parse().expect("K"));
+    // `known`: hand the cells flow's decodes to the faithful pass, which subtracts them at 12 kHz before it decodes the candidates
+    // `known` hands all of them, `known<M>` the M strongest (by the cells flow's SNR)
+    let known_spec = parts.next();
+    let known_n: Option<usize> = known_spec.and_then(|t| t.strip_prefix("known")).map(|r| {
+        if r.is_empty() {
+            usize::MAX
+        } else {
+            r.parse().expect("M")
+        }
+    });
+    let a = resample_to_8k(audio, 12_000);
+    let search = GatedSearch::new(200.0, 3000.0, 1.3, 100);
+    let opts = CellsOptions::p0_late();
+    let t0 = Instant::now();
+    let (cands, mut cells) =
+        coarse_sync_gated_cells(&mut SliceSource(&a), Ft8Rate::Hz8000, &search, 1).expect("8 kHz");
+    let tables = CellTables::new();
+    let mut cs: Box<[[Cmplx<f32>; 8]; 79]> = vec![[Cmplx::<f32>::default(); 8]; 79]
+        .try_into()
+        .expect("79 x 8");
+    let mut bp = Box::new(Ft8BpScratch::new());
+    let mut worker = CellsWorker::new(&mut cs, &mut bp, &tables).with_options(&opts);
+    let depth = opts.depth();
+    let passes = 2;
+    let mut storage = SicStorage::new(Ft8Rate::Hz8000, sic_signal_capacity(opts.max_cand, passes));
+    // `cells_flow::RETRY_MIN_SHIFT` (not exported): a quarter cell
+    const RETRY_MIN_SHIFT: f32 = 0.25;
+    let mut failed: Vec<Vec<SyncCandidate>> = Vec::new();
+    let max_cand = opts.max_cand;
+    let results = sic_passes_with(
+        &mut SliceSource(&a),
+        Ft8Rate::Hz8000,
+        &search,
+        max_cand,
+        passes,
+        &cands,
+        &mut cells,
+        &tables,
+        &mut storage.scratch(),
+        |cells, cands, max_cand, known| {
+            worker.decode_round_osd(cells, cands, max_cand, depth, RETRY_MIN_SHIFT, known, 6);
+            failed.push(
+                cands
+                    .iter()
+                    .map(|(c, _)| c.clone())
+                    .filter(|c| {
+                        !known.iter().any(|f| {
+                            (f.res.freq_hz - c.freq_hz).abs() < 4.0
+                                && (f.res.dt_sec - c.dt_sec).abs() < 0.08
+                        })
+                    })
+                    .collect(),
+            );
+        },
+    );
+    let cells_ms = t0.elapsed().as_secs_f64() * 1e3;
+    let mut msgs: Vec<String> = results
+        .iter()
+        .filter_map(|d| unpack77(d.message77()))
+        .map(|m| norm(&m))
+        .collect();
+    let mut open: Vec<Ft8Candidate> = Vec::new();
+    for (i, n) in [n1, n2].into_iter().enumerate() {
+        if let Some(f) = failed.get(i) {
+            open.extend(
+                f.iter()
+                    .take(n)
+                    .map(|c| Ft8Candidate::new(c.freq_hz, c.dt_sec).score(c.score)),
+            );
+        }
+    }
+    let sent0 = failed.first().map_or(0, |f| f.len().min(n1));
+    let known_list: Vec<_> = {
+        let mut v: Vec<_> = results.iter().cloned().collect();
+        v.sort_by(|a, b| b.snr_db.total_cmp(&a.snr_db));
+        v.truncate(known_n.unwrap_or(0));
+        v
+    };
+    let (mut faith_ms, mut faith_n) = (0.0, 0);
+    if !open.is_empty() {
+        let mut e = mfsk_core::decoder::Ft8Extras::default();
+        e.tuning.strategy = Some(Ft8Strategy::SicRounds(k));
+        e.tuning.max_cand = Some(open.len());
+        let params = DecodeParams::for_band((200.0, 3000.0))
+            .depth(Depth::Deep)
+            .ap(ApMode::Off);
+        let t1 = Instant::now();
+        let r = Decoder::<Ft8>::new(params)
+            .with_extras(e)
+            .decode_candidates_after(&SlotInput::i16(audio), &open, &known_list)
+            .expect("strategy");
+        faith_ms = t1.elapsed().as_secs_f64() * 1e3;
+        for row in r.rows {
+            faith_n += 1;
+            msgs.push(norm(&row.decoded.text));
+        }
+    }
+    eprintln!(
+        "H2 {cells_ms:.0} {faith_ms:.0} {} {faith_n} {sent0} {}",
+        results.len(),
+        open.len() - sent0
+    );
+    msgs
+}
+
 /// `p0_window`, `p0_late`, or `sic<N>[osd][:c<M>][:gate]`: N passes (1 = the plain flow), the faithful OSD at once with `osd`, M candidates (the search keeps M; default 30), the pre-BP gate with `gate`.
 #[cfg(feature = "fixed-point")]
 fn cells(name: &str, audio: &[i16]) -> Vec<String> {
@@ -1604,6 +1728,17 @@ fn main() {
                 {
                     let _ = spec;
                     panic!("hybrid needs --features fixed-point")
+                }
+            }
+            Some(("hybrid2", spec)) => {
+                #[cfg(feature = "fixed-point")]
+                {
+                    hybrid2(spec, &audio)
+                }
+                #[cfg(not(feature = "fixed-point"))]
+                {
+                    let _ = spec;
+                    panic!("hybrid2 needs --features fixed-point")
                 }
             }
             Some((d, a)) => {

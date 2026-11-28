@@ -260,7 +260,19 @@ fn a_dense_grid_of_candidates_on_busy_recordings_adds_no_phantom_at_the_default_
                 .ap(ApMode::Full),
         )
         .with_extras(e);
-        let r = d.decode_candidates(&SlotInput::i16(&a), &grid).unwrap();
+        let known: Vec<_> = Decoder::<Ft8>::new(
+            DecodeParams::for_band((200.0, 3000.0))
+                .depth(Depth::Normal)
+                .ap(ApMode::Full),
+        )
+        .decode(&SlotInput::i16(&a))
+        .rows
+        .iter()
+        .map(|r| r.native.clone())
+        .collect();
+        let r = d
+            .decode_candidates_after(&SlotInput::i16(&a), &grid, &known)
+            .unwrap();
         let truth = jt9_messages(file);
         let got: std::collections::BTreeSet<String> =
             r.rows.iter().map(|x| x.decoded.text.clone()).collect();
@@ -272,10 +284,19 @@ fn a_dense_grid_of_candidates_on_busy_recordings_adds_no_phantom_at_the_default_
             extras.is_empty(),
             "{name}: not in jt9's list and not attested: {extras:?}"
         );
+        // what is `known` is not returned again: the recall is of the two together
+        let all: std::collections::BTreeSet<String> = got
+            .iter()
+            .cloned()
+            .chain(known.iter().filter_map(|k| {
+                mfsk_core::msg::wsjt77::unpack77(k.message77())
+                    .map(|m| m.split_whitespace().collect::<Vec<_>>().join(" "))
+            }))
+            .collect();
         assert!(
-            got.intersection(&truth).count() * 2 >= truth.len(),
+            all.intersection(&truth).count() * 2 >= truth.len(),
             "{name}: only {} of jt9's {} (the guard would be vacuous)",
-            got.intersection(&truth).count(),
+            all.intersection(&truth).count(),
             truth.len()
         );
     }
@@ -338,4 +359,38 @@ fn the_order_of_the_given_candidates_loses_no_decode() {
         "lost with the reversed order: {:?}",
         texts(&fwd).difference(&texts(&back)).collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn what_another_decoder_found_is_subtracted_and_not_returned_again() {
+    // `known` = what a cheaper decoder found (here a single pass, standing in for the cells flow): the faithful call subtracts it at the full rate before round 0 and does not return it again.
+    // Fails if `known` is ignored (its messages come back), or if giving it loses a decode that the same call without it makes (the subtraction must not make the rest harder).
+    for name in ["qso3_busy", "websdr_test4"] {
+        let a = audio(name);
+        let cands = search(&a);
+        let first = decoder(Ft8Strategy::SinglePass).decode(&SlotInput::i16(&a));
+        let known: Vec<_> = first.rows.iter().map(|r| r.native.clone()).collect();
+        assert!(known.len() >= 5, "{name}: {} known", known.len());
+        let texts = |r: &mfsk_core::decoder::SlotResult<mfsk_core::engine::frame::DecodeResult>| -> std::collections::BTreeSet<String> { r.rows.iter().map(|x| x.decoded.text.clone()).collect() };
+        let plain = decoder(Ft8Strategy::SicRounds(2))
+            .decode_candidates(&SlotInput::i16(&a), &cands)
+            .unwrap();
+        let after = decoder(Ft8Strategy::SicRounds(2))
+            .decode_candidates_after(&SlotInput::i16(&a), &cands, &known)
+            .unwrap();
+        let known_texts: std::collections::BTreeSet<String> =
+            first.rows.iter().map(|r| r.decoded.text.clone()).collect();
+        assert!(
+            texts(&after).is_disjoint(&known_texts),
+            "{name}: known returned again: {:?}",
+            texts(&after).intersection(&known_texts).collect::<Vec<_>>()
+        );
+        let union: std::collections::BTreeSet<String> =
+            texts(&after).union(&known_texts).cloned().collect();
+        assert!(
+            texts(&plain).is_subset(&union),
+            "{name}: lost with known: {:?}",
+            texts(&plain).difference(&union).collect::<Vec<_>>()
+        );
+    }
 }

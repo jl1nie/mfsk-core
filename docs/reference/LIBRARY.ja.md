@@ -1081,9 +1081,9 @@ C では、デコーダを持つ全モードが `MFSK_CAP_BUDGET` を公開し�
 候補を渡せば行は bit 単位で同じになる。`SicRounds(n)` 戦略では、ラウンド 0 がリストを復号し、以降のラウンドは**残差上で新しい探索をせずに**、まだ復号が乗って
 いない候補を試す。重複除去は呼び出し側の仕事（リストは探索の 4 Hz / 40 ms の抑制を通らない。重複は時間を食うだけ）、有限でない候補や帯域・周期の外の候補は捨て、
 リストの先頭から `Tuning::max_cand` 件までを（全ラウンド合わせて）与えた順に試し、a7 / a8 リスト復号は前の周期に対して従来どおり走り、その周期の a7 リストは置き換えない。`SicEarly`（`Depth::Normal` と `Deep` の既定）は各チェックポイントに探索を持ち、
-sniper は独自の窓を持つので、どちらも `CandidatesError::UnsupportedStrategy` を返す。`tuning.strategy` を `SinglePass` か `SicRounds(n)` にする。用途: 安価な
+sniper は独自の窓を持つので、どちらも `CandidatesError::UnsupportedStrategy` を返す。`tuning.strategy` を `SinglePass` か `SicRounds(n)` にする。**`decode_candidates_after(&slot, &candidates, &known)`** は、別のデコーダが既に `known`（`DecodeResult`、`Row` の `native`）を復号した周期向けの同じ入口で、`known` はラウンド 0 の前に、精密化した位置で全サンプルレートで引かれ、再び返されない（`SicRounds(n)` のみ）。用途: 安価な
 自前の探索（`decode_block` の cells フロー、外部のスキャン）を候補生成器にし、それが失敗した候補にだけ faithful の復号を使う。60 スロットのコーパスでは cells フローの
-`p0_late`（`jt9` の 1 338 件中 1 169 件）に faithful の 10 候補を足すと、Normal の約 3 分の 1 のコストで 1 226 件に届く（`docs/notes/PI3_JT9_GAP.md` §15）。
+`p0_late`（`jt9` の 1 338 件中 1 169 件）に faithful の 10 候補を足すと、Normal の約 3 分の 1 のコストで 1 226 件に届き、cells の復号を引いた後の 30 + 30 候補では 1 277 件（Normal 1 245、Deep 1 299）、Deep の 44 % の時間になる（`docs/notes/PI3_JT9_GAP.md` §15-16）。
 `decode_block` の cells フローと同様、ホスト / 組込み計測用の入口で、`AnyDecoder` と C ABI には出さない。
 
 **sniper モードを sniper モードにしているのはヒントではなく窓である。** `Sniper` は探索を

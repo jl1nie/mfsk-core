@@ -1146,10 +1146,10 @@ SNR as `decode()`, and given the candidates `coarse_sync` found it returns the s
 each later round the candidates no decode sits on yet, **on the residual, without a new search**. The caller de-duplicates (a list does not pass the search's 4 Hz /
 40 ms suppression; a duplicate costs time only), a candidate that is not finite or outside the band or the period is dropped, at most `Tuning::max_cand` of the list are tried (all rounds together)
 in the order given, the a7 / a8 list decoders still run on the previous periods, and the period's a7 list is not replaced. `SicEarly` (the default at `Depth::Normal` and `Deep`) has a search at each checkpoint and a sniper has
-its own window: both return `CandidatesError::UnsupportedStrategy`; set `tuning.strategy` to `SinglePass` or `SicRounds(n)`. Use: a cheap search of your own
+its own window: both return `CandidatesError::UnsupportedStrategy`; set `tuning.strategy` to `SinglePass` or `SicRounds(n)`. **`decode_candidates_after(&slot, &candidates, &known)`** is the same for a period another decoder has already decoded `known` (`DecodeResult`s, a `Row`'s `native`): they are subtracted at the full rate with the refined place before round 0 and not returned again (`SicRounds(n)` only). Use: a cheap search of your own
 (the cells flow of `decode_block`, an external scan) as the candidate generator and the faithful decode only for the candidates it fails: on the 60-slot corpus
-the cells flow's `p0_late` (1 169 of `jt9`'s 1 338) plus the faithful decode of 10 more candidates reaches 1 226 for about a third of Normal's cost
-(`docs/notes/PI3_JT9_GAP.md` section 15). Like `decode_block`'s cells flow it is a host / embedded-measurement entry, not on `AnyDecoder` or the C ABI.
+the cells flow's `p0_late` (1 169 of `jt9`'s 1 338) plus the faithful decode of 10 more candidates reaches 1 226 for about a third of Normal's cost, and with 30 + 30 candidates after subtracting
+the cells flow's decodes 1 277 (Normal 1 245, Deep 1 299) at 44 % of Deep's time (`docs/notes/PI3_JT9_GAP.md` sections 15-16). Like `decode_block`'s cells flow it is a host / embedded-measurement entry, not on `AnyDecoder` or the C ABI.
 
 **What makes sniper mode is the window, not the hint.** `Sniper` confines the
 search to ±`search_hz` around `rx_freq_hz`, and it exists because the

@@ -226,6 +226,21 @@ impl super::Decoder<crate::Ft8> {
         slot: &SlotInput<'_>,
         candidates: &[Ft8Candidate],
     ) -> Result<SlotResult<DecodeResult>, CandidatesError> {
+        self.decode_candidates_after(slot, candidates, &[])
+    }
+
+    /// [`decode_candidates`](Self::decode_candidates) for a period of which **another decoder has already decoded `known`** (a cheaper one, such as the cells flow): the signals of `known`
+    /// are subtracted from the audio at the full sample rate, with the refined place, before round 0 (as `DecodeRequest::known` does), the candidates are decoded on that residual, and a
+    /// message of `known` is not returned again. The subtraction happens for `SicRounds(n)` only; a `SinglePass` decode only skips what `known` holds.
+    ///
+    /// # Errors
+    /// [`CandidatesError::UnsupportedStrategy`] for `SicEarly` and for a sniper.
+    pub fn decode_candidates_after(
+        &mut self,
+        slot: &SlotInput<'_>,
+        candidates: &[Ft8Candidate],
+        known: &[DecodeResult],
+    ) -> Result<SlotResult<DecodeResult>, CandidatesError> {
         let params = self.params.normalised();
         let search = ft8_search(params.depth).tuned(&self.extras.tuning);
         if matches!(search.0.strategy, Ft8Strategy::SicEarly)
@@ -260,7 +275,7 @@ impl super::Decoder<crate::Ft8> {
             slot,
             None,
             None,
-            Some(&list),
+            Some((&list, known)),
         ))
     }
 }
@@ -932,7 +947,7 @@ fn ft8_decode(
         crate::ft8::decode::StagedStep,
     )>,
     // The caller's candidates (`Decoder::<Ft8>::decode_candidates`) in place of the search's.
-    given: Option<&[crate::engine::sync::SyncCandidate]>,
+    given: Option<(&[crate::engine::sync::SyncCandidate], &[DecodeResult])>,
 ) -> SlotResult<DecodeResult> {
     use crate::ft8::decode::StagedStep;
     let last = staged
@@ -985,7 +1000,10 @@ fn ft8_decode(
             .contest(params.contest != super::Contest::None)
             .eme_delay(params.eme_delay);
             req.wsjtx_low_depth = s.low_depth;
-            req.given_candidates = given;
+            req.given_candidates = given.map(|g| g.0);
+            if let Some(g) = given {
+                req.known = g.1;
+            }
             req = match s.strategy {
                 Ft8Strategy::SinglePass => req.single_pass(),
                 Ft8Strategy::SicRounds(n) => req.sic_rounds(n),
