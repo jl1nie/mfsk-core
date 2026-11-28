@@ -245,3 +245,27 @@ Section 15 put the 92.3 % ceiling on the candidate list (no search on the residu
 * The timings of an earlier run of this section were taken while `scripts/verify.sh` ran and are discarded; these are from a quiet machine.
 
 **Not measured:** a Pi; other choices of which of `known` to subtract (the SNR order and the 30 Hz window are tried; the signals whose skirts overlap a candidate in time as well, or by the candidate's own hard-sync loss, are not); the cells flow's own subtraction left in (`known` is subtracted by the faithful subtractor again from the original audio, so the cells flow's residual is not used).
+
+## 17. The light subtraction: the place is not what limits it, and a finer amplitude makes it deeper and worse (2026-11-28; host, 60 slots / the 22 recordings)
+
+Section 15 left the cells subtractor's 1.5-4 dB on real signals unexplained, with the place of the estimate the suspect. **Measured against `jt9`'s precise places** (286 decoded signals matched by message, `ft8dec_sic.rs` measurement `place_error_and_depth_at_jt9s_place`, `PI3_SCRATCH`): the cells estimate is off by **0.19 Hz and 2.9 ms (median; 90th percentile 0.45 Hz, 9.4 ms)**, not the 28 ms / 0.4 Hz said earlier, with a bias of -2.5 ms in DT. Given `jt9`'s places the cells subtraction is **not deeper**: median left -25.2 dB at its own place and -21.3 dB at `jt9`'s on the strong signals (+8 dB and up), -20.7 / -19.2 at 0..8 dB, and the earlier 2 of 60 recovered stays 2. The place is not the limit; `ft8dec_orig.c` and the port are the same line by line (section 15), so the limit is the model.
+
+**The model's resolution**: `ft8dec` estimates one complex amplitude per symbol and interpolates linearly between symbol centres. Splitting each symbol into R correlation segments (the partial sums of the correlation the loop already computes; the amplitude interpolated between the segment centres; R = 1 reproduces the current residual exactly):
+
+| R | own-tone energy left, +8 dB and up (mean) | `p0_late` decodes of the 1 338 | `sic3osd` |
+|---|---|---|---|
+| 1 (`ft8dec`) | -24.9 dB | **1 169** | **1 190** |
+| 2 | -29.3 dB (the faithful: -26.7) | 1 154 | 1 176 |
+| 4 | -31.9 dB | 1 099 | 1 114 |
+
+The subtraction gets **deeper on the signal's own tones and finds fewer signals**: the neighbours are lost, and neighbours of a strong signal are what a SIC is for. Hypothesis, not tested here: a correlation over a segment shorter than a symbol is not orthogonal to the tones 6.25 Hz away, so the amplitude absorbs a neighbour's energy and subtracts it too; the per-symbol correlation's orthogonality is the design, and the metric "the signal's own tone energy left" (section 15's table and `depth_against_the_faithful_subtraction`) cannot see that damage. A depth that counts should be measured on the neighbouring tones' energy, or, as here, on the decodes. **Not changed**; the experiment is not kept in the tree (`seg_amplitude_experiment.patch` in the study's scratch).
+
+Two more cheap variants on the same ruler (`p0_late` decodes of the 1 338; the baseline 1 169):
+
+| variant | decodes | depth, +8 dB and up |
+|---|---|---|
+| amplitude sampled every half symbol from a window of **one symbol** (two segments summed, so the orthogonality to the neighbouring tones of a symbol-long window is kept) | 1 162 (`sic3osd` 1 184 against 1 190) | -25.7 dB (against -24.9) |
+| the subtracted amplitude scaled by 0.9 / 0.95 / **1.0** / 1.05 | 1 111 / 1 139 / **1 169** / 1 156 | |
+
+Neither helps: a denser sampling of a symbol-long window changes the depth by 0.8 dB and the decodes by -7, and **the unbiased amplitude (gain 1.0) is the optimum** of the scale (a smaller one leaves the signal, a larger one subtracts the neighbour). So `ft8dec`'s per-symbol amplitude with linear interpolation is at a local optimum for these knobs, on this corpus: the place, the amplitude resolution, the sampling and the scale have each been moved and none improves the decodes. What is left of the 1.5-4 dB to the faithful subtractor is its different construction (a continuous low-pass of the whole-slot correlation, 12 kHz, the refined place); it is not reached by a cheap change of this one. The two experiments are not in the tree (`seg_sliding_gain_experiment.patch` in the study's scratch).
+
