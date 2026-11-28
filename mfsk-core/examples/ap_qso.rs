@@ -625,12 +625,17 @@ fn a8cells(trials: u64, cal: u64, fa: u64) {
     let ptab: Vec<f32> = (0..256u32).map(|h| pow_of(h as u8)).collect();
     let costas_syms: Vec<usize> = (0..7).chain(36..43).chain(72..79).collect();
     let best_ns = std::cell::Cell::new((0u128, 0u64));
-    let best = |cells: &HalfDbCells, list: &[(String, [u8; 79])]| -> [(f32, usize); 2] {
+    let last_veto = std::cell::Cell::new(0u32);
+    let best_at = |cells: &HalfDbCells,
+                   list: &[(String, [u8; 79])],
+                   fc: f32,
+                   dtc: f32|
+     -> [(f32, usize); 2] {
         let t_start = Instant::now();
         let bin_hz = 3.125f32;
         let tstep = 0.08f32;
-        let k0 = ((F0 + 1.0) / bin_hz).round() as i64;
-        let j00 = ((0.02 + 0.5) / tstep).round() as i32;
+        let k0 = (fc / bin_hz).round() as i64;
+        let j00 = ((dtc + 0.5) / tstep).round() as i32;
         let (top, kr, jr) = fast.unwrap_or((usize::MAX, 3, 5));
         let spectra =
             |k: i64, j0: i32, syms: &mut dyn Iterator<Item = usize>| -> Vec<(usize, [f32; 8])> {
@@ -694,6 +699,20 @@ fn a8cells(trials: u64, cal: u64, fa: u64) {
                 }
                 if s2 > out[1].0 {
                     out[1] = (s2, hi);
+                    // the symbols that say another tone, plainly: a data symbol whose strongest tone has >= 0.7 of the energy and is not the hypothesis's
+                    let mut veto = 0u32;
+                    for sym in (7..36).chain(43..72) {
+                        let (mut mx, mut at) = (0f32, 0usize);
+                        for t in 0..8 {
+                            if sh[sym][t] > mx {
+                                (mx, at) = (sh[sym][t], t);
+                            }
+                        }
+                        if mx >= 0.7 && at != tones[sym] as usize {
+                            veto += 1;
+                        }
+                    }
+                    last_veto.set(veto);
                 }
             }
         }
@@ -701,6 +720,70 @@ fn a8cells(trials: u64, cal: u64, fa: u64) {
         best_ns.set((a + t_start.elapsed().as_nanos(), n + 1));
         out
     };
+    let best =
+        |cells: &HalfDbCells, list: &[(String, [u8; 79])]| best_at(cells, list, F0 + 1.0, 0.02);
+    if let Ok(v) = std::env::var("A8_REC") {
+        // recorded slots: the partner's place slid over the band (every 12.5 Hz, three DTs) on each recording; the hypotheses carry calls that are not on the air, so any score
+        // over the AWGN threshold is a false accept of a real band
+        let mut qs: Vec<(String, Vec<f32>)> =
+            vec![("Rogers".into(), vec![]), ("Report".into(), vec![])];
+        let mut nrec = 0;
+        let mut vetoes: [Vec<u32>; 2] = [vec![], vec![]];
+        for path in v.split(',') {
+            let pcm = load_wav(path);
+            let cells = cells_of(&pcm);
+            nrec += 1;
+            for (li, list) in [&rogers, &reports].into_iter().enumerate() {
+                let mut f = 300.0f32;
+                while f < 2_800.0 {
+                    for dtc in [0.02f32, 0.9, 1.8] {
+                        let sc = best_at(&cells, list, f, dtc)[1].0;
+                        qs[li].1.push(sc);
+                        let thr = if li == 0 { 74.66 + 1.0 } else { 78.17 + 1.0 };
+                        if sc > thr {
+                            if last_veto.get() <= 3 {
+                                println!(
+                                    "  low veto: {path} {} f {f} dt {dtc} score {sc:.1} veto {}",
+                                    ["Rogers", "Report"][li],
+                                    last_veto.get()
+                                );
+                            }
+                            vetoes[li].push(last_veto.get());
+                        }
+                    }
+                    f += 12.5;
+                }
+            }
+        }
+        for (li, vs) in vetoes.iter().enumerate() {
+            let mut h = [0u32; 8];
+            for &x in vs {
+                h[(x as usize / 2).min(7)] += 1;
+            }
+            println!(
+                "{}: vetoes of the places over the threshold, by 2s (0-1, 2-3, ..., 14+): {h:?}",
+                ["Rogers", "Report"][li]
+            );
+        }
+        for (name, v) in &mut qs {
+            v.sort_by(|a, b| a.total_cmp(b));
+            let n = v.len();
+            let thr = if name == "Rogers" {
+                74.66 + 1.0
+            } else {
+                78.17 + 1.0
+            };
+            println!(
+                "{name}: {nrec} recordings, {n} places: median {:.2}, 99th {:.2}, 99.9th {:.2}, max {:.2}; over the AWGN threshold ({thr:.2}): {}",
+                v[n / 2],
+                v[n * 99 / 100],
+                v[n * 999 / 1000],
+                v[n - 1],
+                v.iter().filter(|x| **x > thr).count()
+            );
+        }
+        return;
+    }
     println!(
         "noncoherent list decision on the cells ({} Rogers hypotheses, {} report hypotheses)",
         rogers.len(),
@@ -728,18 +811,19 @@ fn a8cells(trials: u64, cal: u64, fa: u64) {
                     &cells_of(&slot(None, amp, -20.0, 5_000_000 + seed0 + seed)),
                     list,
                 );
-                println!("N {label} {:.3} {:.3}", b[0].0, b[1].0);
+                println!("N {label} {:.3} {:.3} v{}", b[0].0, b[1].0, last_veto.get());
             }
             for snr in [-22.0f32, -23.0, -24.0, -25.0, -26.0, -27.0] {
                 for seed in 1..=trials {
                     let pcm = slot(Some(&clean), amp, snr, seed0 + seed);
                     let b = best(&cells_of(&pcm), list);
                     println!(
-                        "D {label} {snr} {:.3} {:.3} {} {}",
+                        "D {label} {snr} {:.3} {:.3} {} {} v{}",
                         b[0].0,
                         b[1].0,
                         u8::from(b[0].1 == truth),
-                        u8::from(b[1].1 == truth)
+                        u8::from(b[1].1 == truth),
+                        last_veto.get()
                     );
                 }
             }
