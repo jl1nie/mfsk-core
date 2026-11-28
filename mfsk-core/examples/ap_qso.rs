@@ -616,44 +616,89 @@ fn a8cells(trials: u64, cal: u64, fa: u64) {
             .expect("8 kHz")
             .1
     };
-    // best (score, hypothesis index) of `list` over the places; two statistics
+    // `A8_FAST=<top>,<dk>,<dj>`: the places (+-dk bins, +-dj rows) are ranked on the 21 Costas symbols (they do not depend on the hypothesis) and only the `top` best are
+    // scored against the hypotheses, from a table of the energy shares made once for the place. Without it: every place, every hypothesis (the first run).
+    let fast: Option<(usize, i64, i32)> = std::env::var("A8_FAST").ok().map(|v| {
+        let x: Vec<i64> = v.split(',').map(|n| n.parse().unwrap()).collect();
+        (x[0] as usize, x[1], x[2] as i32)
+    });
+    let ptab: Vec<f32> = (0..256u32).map(|h| pow_of(h as u8)).collect();
+    let costas_syms: Vec<usize> = (0..7).chain(36..43).chain(72..79).collect();
+    let best_ns = std::cell::Cell::new((0u128, 0u64));
     let best = |cells: &HalfDbCells, list: &[(String, [u8; 79])]| -> [(f32, usize); 2] {
+        let t_start = Instant::now();
         let bin_hz = 3.125f32;
         let tstep = 0.08f32;
         let k0 = ((F0 + 1.0) / bin_hz).round() as i64;
         let j00 = ((0.02 + 0.5) / tstep).round() as i32;
-        let mut out = [(f32::MIN, 0usize); 2];
-        for dk in -3..=3i64 {
-            for dj in -5..=5i32 {
-                let (k, j0) = (k0 + dk, j00 + dj);
-                let mut p = vec![[0f32; 8]; 79];
-                for (sym, row) in p.iter_mut().enumerate() {
+        let (top, kr, jr) = fast.unwrap_or((usize::MAX, 3, 5));
+        let spectra =
+            |k: i64, j0: i32, syms: &mut dyn Iterator<Item = usize>| -> Vec<(usize, [f32; 8])> {
+                syms.map(|sym| {
+                    let mut row = [0f32; 8];
                     for (t, v) in row.iter_mut().enumerate() {
                         let (r, b) = (j0 + 2 * sym as i32, k + 2 * t as i64);
-                        *v = if r < 0 || b < 0 {
-                            0.0
-                        } else {
-                            cells.cell(r as usize, b as usize).map_or(0.0, pow_of)
-                        };
+                        if r >= 0 && b >= 0 {
+                            *v = cells
+                                .cell(r as usize, b as usize)
+                                .map_or(0.0, |h| ptab[h as usize]);
+                        }
                     }
+                    (sym, row)
+                })
+                .collect()
+            };
+        // rank the places
+        let mut places: Vec<(f32, i64, i32)> = Vec::new();
+        for dk in -kr..=kr {
+            for dj in -jr..=jr {
+                let (k, j0) = (k0 + dk, j00 + dj);
+                let sc = if fast.is_some() {
+                    spectra(k, j0, &mut costas_syms.iter().copied())
+                        .iter()
+                        .map(|(sym, row)| {
+                            row[list[0].1[*sym] as usize] / (row.iter().sum::<f32>() + 1e-30)
+                        })
+                        .sum::<f32>()
+                } else {
+                    0.0
+                };
+                places.push((sc, k, j0));
+            }
+        }
+        if fast.is_some() {
+            places.sort_by(|a, b| b.0.total_cmp(&a.0));
+            places.truncate(top);
+        }
+        let mut out = [(f32::MIN, 0usize); 2];
+        for &(_, k, j0) in &places {
+            let p = spectra(k, j0, &mut (0..79));
+            // the share and the log-likelihood-ratio term of every (symbol, tone), once for the place
+            let mut sh = [[0f32; 8]; 79];
+            let mut ll = [[0f32; 8]; 79];
+            for (sym, row) in &p {
+                let tot: f32 = row.iter().sum::<f32>() + 1e-30;
+                for t in 0..8 {
+                    sh[*sym][t] = row[t] / tot;
+                    ll[*sym][t] = (1.0 + 7.0 * row[t] / (tot - row[t] + 1e-30)).ln();
                 }
-                for (hi, (_, tones)) in list.iter().enumerate() {
-                    let (mut s1, mut s2) = (0f32, 0f32);
-                    for (sym, row) in p.iter().enumerate() {
-                        let tot: f32 = row.iter().sum::<f32>() + 1e-30;
-                        let e = row[tones[sym] as usize];
-                        s1 += e / tot;
-                        s2 += (1.0 + 7.0 * e / (tot - e + 1e-30)).ln();
-                    }
-                    if s1 > out[0].0 {
-                        out[0] = (s1, hi);
-                    }
-                    if s2 > out[1].0 {
-                        out[1] = (s2, hi);
-                    }
+            }
+            for (hi, (_, tones)) in list.iter().enumerate() {
+                let (mut s1, mut s2) = (0f32, 0f32);
+                for sym in 0..79 {
+                    s1 += sh[sym][tones[sym] as usize];
+                    s2 += ll[sym][tones[sym] as usize];
+                }
+                if s1 > out[0].0 {
+                    out[0] = (s1, hi);
+                }
+                if s2 > out[1].0 {
+                    out[1] = (s2, hi);
                 }
             }
         }
+        let (a, n) = best_ns.get();
+        best_ns.set((a + t_start.elapsed().as_nanos(), n + 1));
         out
     };
     println!(
@@ -712,6 +757,11 @@ fn a8cells(trials: u64, cal: u64, fa: u64) {
             );
         }
     }
+    let (a, n) = best_ns.get();
+    println!(
+        "the list decision alone: {:.2} ms a call on average over {n} calls (host)",
+        a as f64 / n as f64 / 1e6
+    );
 }
 #[cfg(not(feature = "fixed-point"))]
 fn a8cells(_: u64, _: u64, _: u64) {}

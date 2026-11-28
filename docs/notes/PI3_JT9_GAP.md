@@ -450,3 +450,19 @@ The question (section 25's plan): how much of a8's +1-2.6 dB over the AP passes 
 
 **Decision for B2** (the plan says: only with a new approval): the gain is large enough to justify the product step, the false-accept budget and the cost on the board are the two things B2 must settle first. Nothing here is wired into the library.
 
+### 26.1 The speed (2026-11-29; `A8_FAST=<top>,<dk>,<dj>`)
+
+**Correction of section 26's cost**: it said the experiment "makes about 0.8 M lookups, 5-10 ms on the host, 0.6-1.2 s on the LX7". It was written without a timer. Measured, the list decision alone (`best`, mean over the Rogers list of 3 and the report list of 126) is **0.26 ms on the host** with every place and every hypothesis: 20-40 times less than that estimate.
+
+The faster form ranks the places on the 21 Costas symbols (they do not depend on the hypothesis), builds the table of energy shares once for each of the best `top` places, and scores the hypotheses from the table (79 lookups and additions a hypothesis). Detection on the same slots (20 seeds, thresholds from 300 noise slots each: the false-accept counts of 1-3 in 300 are the coarse calibration, not a result):
+
+| form | places | host ms a call | Rogers hits at -24 / -26 dB | report hits at -24 / -26 dB |
+|---|---|---|---|---|
+| every place, every hypothesis | 77 | 0.26 | 20 / 8 (S1) | 17 / 4 |
+| Costas rank, top 3 | 77 | 0.03 | 19 / 7 | 16 / 2 |
+| Costas rank, top 3 | 15 (+-1 bin, +-2 rows) | 0.01 | 20 / 13 | 18 / 3 |
+
+* **The rank on the Costas symbols loses nothing measurable** (within the 20-seed noise; the 15-place row looks better because its smaller place set has a lower noise threshold, **and it assumes the place is known to +-1 bin and +-2 rows**, which the test gives it exactly).
+* **On the board**: with the window jobs' ratio (about 122, section 21) the full form is about 30 ms, the Costas-ranked forms **about 1-4 ms**; this counts the `ln` of the second statistic, which the LX7 does slowly (S1, the plain share, needs none and hits as often): an estimate, **not measured on the board**.
+* Still open as in section 26: the false-accept budget, the place the app really knows, the busy band and fading.
+
