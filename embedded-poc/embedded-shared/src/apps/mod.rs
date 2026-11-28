@@ -15,6 +15,9 @@ pub mod sic_bench;
 /// The cells flow stage by stage on the board: the demux, `band_best`, and a candidate's BP against the passes it ran (the host-to-board time ratio of each stage).
 #[cfg(feature = "stage-bench")]
 pub mod stage_bench;
+/// The cells flow's QSO-context AP rung on the board: its time, its decodes against the host's, the stack and the heap (`PI3_JT9_GAP.md` sections 24-25).
+#[cfg(feature = "ap-bench")]
+pub mod ap_bench;
 #[cfg(feature = "osd-bench")]
 pub mod osd_bench;
 #[cfg(feature = "two-core-bench")]

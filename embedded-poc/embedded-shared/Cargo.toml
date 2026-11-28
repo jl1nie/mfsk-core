@@ -38,6 +38,8 @@ cells-bench = []
 # `apps::sic_bench`: `sic_passes` over caller memory on the board, the ring in PSRAM against internal DRAM (SIC-on-ESP32 step S2).
 sic-bench = ["mfsk-core/osd"]
 stage-bench = ["mfsk-core/osd"]
+# `apps::ap_bench`: the cells flow's QSO-context AP rung (masked BP and OSD) on the board.
+ap-bench = ["mfsk-core/osd"]
 # FT8's OSD on the board: `osd174_91` against `osd174_91_into` (`apps/osd_bench.rs`).
 osd-bench = ["mfsk-core/osd"]
 # stage 3, the OSD pass and the band search on one core and on two (`apps/two_core_bench.rs`).

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### `ft8-ap-bench`: the cells flow's AP rung on the CoreS3 (embedded; measured)
+
+- **What**: `embedded-shared::apps::ap_bench` and the `ft8-ap-bench` bin of the CoreS3 crate: the window round without and with a QSO context, then `decode_partner`, on slots made on the board (AWGN + a reply), with the stack and heap. **Measured**: the context decodes the replies the window does not (hits at -20 dB 9 of 10 against 1), adds **49-182 ms** a slot where the reply decodes and up to 0.9 s where the partner's candidates fail; **the rung's stack is 1.9 KB**; no phantom in 8 noise slots. Does not fit the window path on core 0 (120 ms of slack): core 1 from the emit. `PI3_JT9_GAP.md` section 25. Not wired in the app.
+
 ### The cells flow's QSO-context AP rung: `ApContext`, `CellsWorker::with_ap_context` / `decode_partner` (fixed-point build; host)
 
 - **What**: a QSO context (`ApContext`: both calls as `pack28` words, the stage, the partner's frequency and DT; `Copy`, no allocation) locks the bits of the message the partner is expected to send (`ft8b.f90` passes 5, 8-11) on the candidates within 50 Hz and 0.4 s of the partner: masked NMS BP and masked OSD, the shared code with the mask they already took; `decode_partner` searches the partner's band and decodes its candidates ungated. A divergence from WSJT-X, off unless a context is set (`None`: every decode as before, `tests/cells_ap.rs`).

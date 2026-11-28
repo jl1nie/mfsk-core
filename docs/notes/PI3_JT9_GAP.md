@@ -415,3 +415,21 @@ The rung costs **+2-5 ms a slot on the host** (the partner's candidates and, on 
 
 **Not done:** the application (the partner's frequency and DT have to reach `HeardItem` and the `Activator`, `ApContext::new` at the reply deadline), the board (cost and memory of the rung: estimated 25-100 ms a candidate; stack of `ap_rung_cells` estimated +0.5-2 KB, `#[inline(never)]`), a larger noise test for the 61- and 77-bit locks (0 in 12 000 is a bound near 2.5e-4 a slot at 95 %), fading and a busy band for the cells rung (section 23 measured the faithful one), the narrow-band a8.
 
+## 25. The cells flow's AP rung on the CoreS3 (2026-11-28; `ft8-ap-bench`, `embedded-shared/src/apps/ap_bench.rs`, logs `embedded-poc/m5stack-cores3-app/logs/ft8-ap-bench_{third,fourth}_2026-11-28.log`, not committed)
+
+One core, no WiFi / USB host, the slots made on the board (AWGN, the reply `K1JT HA0DU RR73` or `-15` at 1 500 Hz, 0.5 s in, 5 seeds a cell), the search once a slot and the window round (`p0_window`'s staircase, the capped OSD K = 6) run without and with the context, then `decode_partner`. The predictions were written in the module doc before the first run.
+
+| reply, SNR | hits without -> with the context | the round without | the context adds (round + partner - round without), median (max) | `decode_partner` alone, median (max) |
+|---|---|---|---|---|
+| `RR73`, -20 dB | 0 -> **4** of 5 | 534 ms | **182 ms** (658) | 110 ms (372) |
+| `RR73`, -22 dB | 0 -> 2 | 587 ms | 478 ms (894) | 271 ms (441) |
+| `-15`, -20 dB | 1 -> **5** | 496 ms | **49 ms** (68) | 40 ms (46) |
+| `-15`, -22 dB | 0 -> 2 | 566 ms | 222 ms (245) | 123 ms (134) |
+
+* **Against the predictions** (written first; the stop rule was 25 %): a reply that decodes **20-150 ms** for `decode_partner`: 40 ms (report) and 110 ms (`RR73`), inside; the worst case, the partner's four candidates failing every pass: **0.4-0.9 s for Rogers** (observed 0.27 s median, up to 0.44 s alone and **0.89 s added** in a slot) and **0.2-0.45 s for Replying** (observed 0.12-0.13 s alone, **0.22-0.25 s added**): inside, at the low end for Replying. The host's hit counts (12 of 12 at -20 dB in section 24) are not reproduced 5 seeds at a time (4 of 5): the generator differs (a sum of twelve uniforms for the board's Gaussian: no double-precision `ln` / `cos` on the LX7, which cost 14 s a slot and tripped the task watchdog in the first run).
+* **The -27 dB runs were not a worst case**: the partner's search finds no candidate in the DT window (0 BP calls, 10 ms), so the failing cost above is read from -22 dB.
+* **Stack**: after the window round without the context 25 036 B free of the 48 KB bench thread (the staircase and the OSD use 15.9 KB of the 40.9 KB there was), after the context's round and `decode_partner` **23 132 B**: **the rung adds 1.9 KB** (predicted 0.5-2). In the app's decode task (40 KB, 10.8 KB free at its lowest, section 34) that leaves about 8.9 KB. Heap: the minimum free internal DRAM 244 KB (boot 258 KB), PSRAM 6.1 MB.
+* **Self-check**: hits at -20 dB 9 with against 1 without, no message with the locked calls in 8 noise slots (`ap-bench: done ok`). Two runs agree (the context adds 182.1 and 181.9 ms, the median over 20 slots).
+
+**What it means for the window** (list out 380-390 ms after the slot's end, the reply's deadline 500 ms: about 120 ms of slack on core 0): the context costs 50-180 ms in the slots where the reply decodes and up to 0.9 s in the slots where the partner's candidates fail. **On core 0, in the window path, it does not fit**. `decode_partner` alone is 40-440 ms; on **core 1**, started at the emit (0.81 s before the boundary: about 1.3 s to the deadline) with the two-core factor of 1.5, 60-660 ms: that fits, and the round's own +0.05-0.27 s (the rung inside `decode_round_osd`) is avoided by setting the context on core 1's worker only. **Not measured:** both cores running, the app (WiFi, the panel, the real emit time of a slot whose reply is complete), a busy band at a calibrated level (the busy rows are at a nominal amplitude), the partner's frequency and DT reaching the worker.
+
