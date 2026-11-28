@@ -1144,8 +1144,8 @@ and, per mode:
 goes through the same fine sync (±2.5 Hz, ±50 ms: a candidate farther off decodes nothing), hard-sync gate, LLR variants, BP, OSD, AP, subtraction, dedupe and
 SNR as `decode()`, and given the candidates `coarse_sync` found it returns the same rows bit for bit. For a `SicRounds(n)` strategy round 0 decodes the list and
 each later round the candidates no decode sits on yet, **on the residual, without a new search**. The caller de-duplicates (a list does not pass the search's 4 Hz /
-40 ms suppression; a duplicate costs time only), a candidate that is not finite or outside the band or the period is dropped, at most `Tuning::max_cand` are tried
-in the order given, and the period's a7 list is not replaced. `SicEarly` (the default at `Depth::Normal` and `Deep`) has a search at each checkpoint and a sniper has
+40 ms suppression; a duplicate costs time only), a candidate that is not finite or outside the band or the period is dropped, at most `Tuning::max_cand` of the list are tried (all rounds together)
+in the order given, the a7 / a8 list decoders still run on the previous periods, and the period's a7 list is not replaced. `SicEarly` (the default at `Depth::Normal` and `Deep`) has a search at each checkpoint and a sniper has
 its own window: both return `CandidatesError::UnsupportedStrategy`; set `tuning.strategy` to `SinglePass` or `SicRounds(n)`. Use: a cheap search of your own
 (the cells flow of `decode_block`, an external scan) as the candidate generator and the faithful decode only for the candidates it fails: on the 60-slot corpus
 the cells flow's `p0_late` (1 169 of `jt9`'s 1 338) plus the faithful decode of 10 more candidates reaches 1 226 for about a third of Normal's cost

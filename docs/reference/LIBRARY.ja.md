@@ -1080,7 +1080,7 @@ C では、デコーダを持つ全モードが `MFSK_CAP_BUDGET` を公開し�
 精密同期（±2.5 Hz、±50 ms: これより外れた候補は復号されない）、ハード同期ゲート、LLR 変種、BP、OSD、AP、減算、重複除去、SNR を通り、`coarse_sync` が見つけた
 候補を渡せば行は bit 単位で同じになる。`SicRounds(n)` 戦略では、ラウンド 0 がリストを復号し、以降のラウンドは**残差上で新しい探索をせずに**、まだ復号が乗って
 いない候補を試す。重複除去は呼び出し側の仕事（リストは探索の 4 Hz / 40 ms の抑制を通らない。重複は時間を食うだけ）、有限でない候補や帯域・周期の外の候補は捨て、
-`Tuning::max_cand` 件までを与えた順に試し、その周期の a7 リストは置き換えない。`SicEarly`（`Depth::Normal` と `Deep` の既定）は各チェックポイントに探索を持ち、
+リストの先頭から `Tuning::max_cand` 件までを（全ラウンド合わせて）与えた順に試し、a7 / a8 リスト復号は前の周期に対して従来どおり走り、その周期の a7 リストは置き換えない。`SicEarly`（`Depth::Normal` と `Deep` の既定）は各チェックポイントに探索を持ち、
 sniper は独自の窓を持つので、どちらも `CandidatesError::UnsupportedStrategy` を返す。`tuning.strategy` を `SinglePass` か `SicRounds(n)` にする。用途: 安価な
 自前の探索（`decode_block` の cells フロー、外部のスキャン）を候補生成器にし、それが失敗した候補にだけ faithful の復号を使う。60 スロットのコーパスでは cells フローの
 `p0_late`（`jt9` の 1 338 件中 1 169 件）に faithful の 10 候補を足すと、Normal の約 3 分の 1 のコストで 1 226 件に届く（`docs/notes/PI3_JT9_GAP.md` §15）。

@@ -672,11 +672,11 @@ fn decode_frame_inner<Pol: MessagePolicy>(
     let trace_stage = crate::ft8::decode_block::stage_trace_enabled();
     #[cfg(feature = "std")]
     let __trace_t0 = trace_stage.then(std::time::Instant::now);
-    let spec = crate::ft8::decode_block::compute_spectrogram(audio, freq_max);
     // the caller's candidates, if any, in place of the search's (`Decoder::<Ft8>::decode_candidates`); everything after is the same path
     let mut candidates = match given {
         Some(g) => g.iter().take(max_cand).cloned().collect(),
         None => {
+            let spec = crate::ft8::decode_block::compute_spectrogram(audio, freq_max);
             crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand)
         }
     };
@@ -983,20 +983,21 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
             break;
         }
 
-        let spec = crate::ft8::decode_block::compute_spectrogram(residual, freq_max);
         let mut candidates: Vec<SyncCandidate> = match given {
-            // a decode sits on a candidate within the search's own dedupe window (4 Hz, 40 ms): it is subtracted, nothing is left there to try
-            Some(g) => g
+            // The given list, cut to `max_cand` once (not per round), minus the candidates a decode sits on: a decode is subtracted, nothing is left there to try. "Sits on" is
+            // 4 Hz and 70 ms (the fine sync's own reach: +-10 samples of 200 Hz, then +-4 more), in the frame `all_results` holds (shifted by `eme_delay`'s 2 s).
+            Some(g) => g[..g.len().min(max_cand)]
                 .iter()
                 .filter(|c| {
                     !all_results.iter().any(|r| {
-                        (r.freq_hz - c.freq_hz).abs() < 4.0 && (r.dt_sec - c.dt_sec).abs() < 0.04
+                        let dt = r.dt_sec - if eme_delay { 2.0 } else { 0.0 };
+                        (r.freq_hz - c.freq_hz).abs() < 4.0 && (dt - c.dt_sec).abs() < 0.07
                     })
                 })
-                .take(max_cand)
                 .cloned()
                 .collect(),
             None => {
+                let spec = crate::ft8::decode_block::compute_spectrogram(residual, freq_max);
                 crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand)
             }
         };

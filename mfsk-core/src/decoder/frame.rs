@@ -150,8 +150,8 @@ impl Default for Sniper {
 /// A candidate for [`Decoder::<Ft8>::decode_candidates`](super::Decoder::decode_candidates): where a signal may be, from a search of the caller's own.
 ///
 /// The decode refines it (`fine_refine_3stage`: +-2.5 Hz in 0.5 Hz steps, +-10 samples of 200 Hz in time) and keeps what decodes, so `freq_hz` is the frequency of tone 0 to within about
-/// 2.5 Hz and `dt_sec` the DT (WSJT-X's `xdt`, relative to the nominal 0.5 s start) to within about 50 ms: a candidate farther off decodes nothing. `score` orders a decode under a time
-/// budget and is otherwise unused (the decode computes its own).
+/// 2.5 Hz and `dt_sec` the DT (WSJT-X's `xdt`, relative to the nominal 0.5 s start) to within about 50 ms (the refinement's second stage reaches 70 ms at its edge): a candidate farther off decodes
+/// nothing. `score` is only reported (`BudgetReport::cut_at_score`): under a time budget the decode orders by its own hard-sync count, the given order breaking ties.
 #[cfg(feature = "ft8")]
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
@@ -166,6 +166,7 @@ pub struct Ft8Candidate {
 
 #[cfg(feature = "ft8")]
 impl Ft8Candidate {
+    /// A candidate at `freq_hz` (tone 0) and `dt_sec`, with score 0.
     pub const fn new(freq_hz: f32, dt_sec: f32) -> Self {
         Self {
             freq_hz,
@@ -214,7 +215,9 @@ impl super::Decoder<crate::Ft8> {
     /// decodes the list in round 0 and in each later round the candidates no decode already sits on (4 Hz, 40 ms), on the residual; `SinglePass` decodes it once.
     ///
     /// The caller de-duplicates: a list is not put through the search's 4 Hz / 40 ms suppression (a duplicate costs time, its rows are removed as repeats). A candidate outside the band
-    /// or the period is dropped; at most `Tuning::max_cand` are tried, in the order given (the ones nearest `rx_freq_hz` first). The period's a7 list is not replaced.
+    /// or the period is dropped; at most `Tuning::max_cand` of the list, in the order given (the ones nearest `rx_freq_hz` first), are tried in all rounds together. The a7 / a8 list decoders
+    /// still run on the previous periods' decodes (so a row may come from them, not from a given candidate), the hash table learns as in `decode()`, and the period's a7 list is **not**
+    /// replaced (`remember` is not called: a caller that uses only this entry has no a7 list). `SlotResult::candidates` is the given list after the band / period filter.
     ///
     /// # Errors
     /// [`CandidatesError::UnsupportedStrategy`] for `SicEarly` and for a sniper.
