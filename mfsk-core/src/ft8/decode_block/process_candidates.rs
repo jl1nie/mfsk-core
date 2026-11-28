@@ -2663,6 +2663,11 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
             policy,
             pass,
         );
+        // an AP decode is a decode: the blind OSD attempt this candidate queued (`OsdMode::Defer`, above) must not take one of the slot's `k` places
+        #[cfg(any(feature = "fft-rustfft", feature = "osd"))]
+        if accepted.is_some() && depth.osd && pass.osd_mode == super::types::OsdMode::Defer {
+            bp_scratch.osd_work().deferred = None;
+        }
     }
 
     let (bp, pass_id) = accepted?;
@@ -2703,30 +2708,17 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     })
 }
 
-/// The hard-error ceiling of the cells flow's AP rung for a lock of `locked` bits: [`DecodeStrictness::ap_max_errors`]'s, and for a lock of 70 bits or more (`RRR`, `RR73`, `73`:
-/// the whole message is fixed, only the 97 parity bits are free) [`AP_FULL_LOCK_MAX_ERRORS`]. The errors are counted against the *locked* LLRs, so the 77 locked bits agree by
-/// construction and the count is over the unlocked bits alone: on noise 97 bits give 48.5 +- 4.9 errors, and the generic ceiling of 36 is 2.5 sigma from that
-/// (`docs/notes/PI3_JT9_GAP.md` section 23: a false `RR73` about once in a thousand noise slots).
-#[cfg(feature = "fixed-point")]
-fn ap_cells_max_errors(locked: usize, strictness: DecodeStrictness) -> u32 {
-    let base = strictness.ap_max_errors(locked);
-    if locked >= 70 {
-        base.min(AP_FULL_LOCK_MAX_ERRORS)
-    } else {
-        base
-    }
-}
-
-/// See [`ap_cells_max_errors`]: measured on the cells flow's own rung (`tests/cells_ap.rs`).
-#[cfg(feature = "fixed-point")]
-pub(in crate::ft8) const AP_FULL_LOCK_MAX_ERRORS: u32 = 32;
-
 /// The cells flow's AP rung (`ft8b.f90` `ipass` 5..11, the passes that need a known partner): for each pass of the QSO's stage, the pass's bits locked to `+-apmag` in the one-symbol
-/// LLRs `a` and `d` (`apmag = 1.1 * max |llr|`), then the masked NMS BP, and with `osd` the masked OSD of the BP sum after one and two iterations (`decode174_91`'s order). An accept needs
-/// the hard errors under [`ap_cells_max_errors`], every locked bit to come out as locked, a message that unpacks and the acceptance policy. Memory: the locked LLRs on the stack, the
-/// scratch and the OSD's work are the candidate's own (`BpScratch::osd_work`): nothing is allocated per call but a decode's `Vec`s.
+/// LLRs `a` and `d` (`apmag = 1.1 * max |llr|`; **a divergence**: `ft8b.f90` starts a pass from `llra` and `llrc`, and `c` is the nsym = 3 metric `LlrEffort::Minimal` does not make), then
+/// the masked NMS BP, and with `osd` the masked OSD of the BP sum after one and two iterations (`decode174_91`'s order). An accept needs the hard errors under
+/// [`DecodeStrictness::ap_max_errors`], every locked bit to come out as locked, a message that unpacks and the acceptance policy. **The ceiling does not separate the false accepts of a
+/// full lock from the true decodes** (measured, section 24: true replies up to 35 errors at -22 dB, a false `RR73` at 24), so a tighter one for the 77-bit locks was tried and dropped
+/// (it lost 8 % of the true decodes at -22 dB for no measured gain): what keeps the false accepts down is the window the rung may run in ([`ApContext::is_near`]). The AP decodes
+/// that the rung's candidate already queued for the deferred OSD are dequeued by the caller. Memory: the locked LLRs on the stack (`#[inline(never)]`, so that the AP-less frame
+/// of the candidate path does not carry them), the scratch and the OSD's work are the candidate's own (`BpScratch::osd_work`): nothing is allocated per call but a decode's `Vec`s.
 #[cfg(feature = "fixed-point")]
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 fn ap_rung_cells<Pol: MessagePolicy>(
     ctx: &super::ap_context::ApContext,
     llrs: [&[LlrT; LDPC_N]; 2],
@@ -2745,7 +2737,7 @@ fn ap_rung_cells<Pol: MessagePolicy>(
         let Some(lock) = ctx.lock(pass_id) else {
             continue;
         };
-        let max_errors = ap_cells_max_errors(lock.locked, strictness);
+        let max_errors = strictness.ap_max_errors(lock.locked);
         let validate = |msg77: &[u8; 77], hard_errors: u32| -> bool {
             if hard_errors >= max_errors {
                 return false;

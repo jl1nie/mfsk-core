@@ -8,8 +8,14 @@
 //! pass 12 is the staircase's own, and a station that is *calling CQ* has no partner's frequency to aim at (`ApStage::Calling` gives no pass here: pass 5 on every candidate failed
 //! by BP would cost 2-3x the round, for +0.3 dB measured, `docs/notes/PI3_JT9_GAP.md` section 22).
 //!
-//! **A divergence from WSJT-X** (off unless the application sets a context): the rung runs only on a candidate within [`ApContext::WINDOW_HZ`] of the partner's frequency, for
-//! every pass (upstream runs `iaptype` 2 on every candidate and only 3.. near `nfqso`), to bound its time on a board.
+//! **Divergences from WSJT-X** (the rung is off unless the application sets a context):
+//! - it runs only on a candidate within [`ApContext::WINDOW_HZ`] of the partner's frequency **and** [`ApContext::WINDOW_DT_S`] of its DT, for every pass (upstream runs `iaptype` 2 on every
+//!   candidate and only 3.. near `nfqso`, with no DT window): to bound its time on a board, and its false accepts (section 24);
+//! - it locks the bits in the one-symbol LLRs `a` and `d` that the staircase has already made (`ft8b.f90` starts each pass from `llra` and `llrc`; `c` is the nsym = 3 metric that
+//!   `LlrEffort::Minimal` does not compute);
+//! - the passes of a stage are tried in `[9, 10, 11, 8]` order (the deepest lock first, as `msg::pipeline_ap::ap_passes` does), not upstream's `iaptype` 3, 4, 5, 6.
+//!
+//! The lock bits are *derived* from `msg::ap::ApHint::build_bits` by test, not shared with it: that function allocates (`Vec`), this one is `Copy` and fixed-size for a board.
 
 use crate::msg::wsjt77::pack28;
 
@@ -58,6 +64,7 @@ pub struct ApContext {
 
 /// The lock of one pass: which of the 174 codeword bits the hypothesis fixes, and to what.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ApLock {
     pub mask: [bool; N],
     pub value: [bool; N],
@@ -73,7 +80,8 @@ impl ApContext {
     pub const WINDOW_DT_S: f32 = 0.4;
 
     /// The context of a QSO with `his_call` (the operator's own call `my_call`) in `stage`, the partner last heard at `freq_hz` and `dt_sec` (a decode's `freq_hz` and `dt_sec`). `None` if
-    /// either call is not a standard one `pack28` can lock (a hashed or compound call has no fixed 28 bits).
+    /// either call is not a standard one `pack28` can lock (a hashed or compound call has no fixed 28 bits) or is one of the tokens `CQ`, `DE`, `QRZ` (which `pack28` also packs, but which
+    /// are no station's call). Mind the order: the **operator's call first, the partner's second**, then the frequency, then the DT.
     pub fn new(
         my_call: &str,
         his_call: &str,
@@ -81,6 +89,14 @@ impl ApContext {
         freq_hz: f32,
         dt_sec: f32,
     ) -> Option<Self> {
+        let is_token = |c: &str| {
+            ["CQ", "DE", "QRZ"]
+                .iter()
+                .any(|t| c.trim().eq_ignore_ascii_case(t))
+        };
+        if is_token(my_call) || is_token(his_call) {
+            return None;
+        }
         Some(Self {
             my: pack28(my_call)?,
             his: pack28(his_call)?,
@@ -100,6 +116,7 @@ impl ApContext {
         f32::from_bits(self.dt_bits)
     }
 
+    /// The stage of the QSO this context is for.
     pub fn stage(&self) -> ApStage {
         self.stage
     }
@@ -247,6 +264,11 @@ mod tests {
         );
         // a call `pack28` cannot lock (a hash) makes no context
         assert!(ApContext::new("K1JT", "<...>", ApStage::Rogers, 1500.0, 0.0).is_none());
+        // ... nor the tokens `pack28` also packs
+        for token in ["CQ", "de", "QRZ"] {
+            assert!(ApContext::new(token, "HA0DU", ApStage::Rogers, 1500.0, 0.0).is_none());
+            assert!(ApContext::new("K1JT", token, ApStage::Rogers, 1500.0, 0.0).is_none());
+        }
         assert!(ctx.lock(6).is_none() && ctx.lock(12).is_none());
     }
 }

@@ -518,6 +518,9 @@ impl<'a> CellsWorker<'a> {
         cands.truncate(PARTNER_CANDIDATES);
         let gate = self.gate.take();
         let before = known.len();
+        // The partner's candidates get the AP rung (inline) and no blind OSD of their own: a deferred attempt would be queued in `pending`, to be run against **another slot's** cells by the
+        // next `osd_pass` and to take one of its `k` places. The round has tried these places blind already; what is queued here is dropped.
+        let queued = self.pending.len();
         for (cand, hs) in &cands {
             if let Some(f) = self.decode_candidate_hs(cells, cand, *hs, depth, min_shift)
                 && !known.iter().any(|o| o.res.message77() == f.res.message77())
@@ -525,6 +528,7 @@ impl<'a> CellsWorker<'a> {
                 known.push(f);
             }
         }
+        self.pending.truncate(queued);
         self.gate = gate;
         known.len() - before
     }

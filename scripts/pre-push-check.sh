@@ -142,7 +142,8 @@ RUSTFLAGS="-D warnings" MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core --release 
   --test ft8_rate_8k \
   --test cells_flow_host_reference \
   --test cells_flow_accuracy \
-  --test cells_worker_reuse
+  --test cells_worker_reuse \
+  --test cells_ap
 # The fixed-point *unit* tests (`--lib`: `coarse_lib`'s `carrier_scores_are_the_scores_at_every_position`, the cells flow's) exist only under `fixed-point`, which no CI job
 # runs with `--lib`; this is where they run.
 RUSTFLAGS="-D warnings" MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core --release --no-default-features \

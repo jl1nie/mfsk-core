@@ -5,8 +5,11 @@
 //! **Fails if** (1) a context that cannot apply (a stage with no pass, a partner far away in frequency or in DT) changes a decode of the recordings in any bit of the message, frequency,
 //! DT or SNR (the rung or the partner's search leaks into the AP-less flow); (2) a weak reply to the operator (`MyCall DxCall RR73` at -20 dB in AWGN, 20 seeds) is not decoded with the
 //! context far more often than without it (the lock's polarity, its bit positions, the masked BP or OSD, or the partner's candidates are wrong); (3) the context decodes a message with the
-//! locked calls out of noise-only slots more than the measured bound (the hard-error ceiling, the lock check or the DT window is gone); (4) the reply is decoded when the context puts the
-//! partner 200 Hz or 1.5 s away (the window of the rung is gone).
+//! locked calls out of noise-only slots more than the bound (only a **gross** failure trips this one: 300 slots see 0-1 of the 3-4 in 6 000 that the DT window removes, so it does not
+//! pin the window; the window is pinned by (4)); (4) the reply is decoded when the context puts the partner 200 Hz or 1.5 s away (the window of the rung is gone); (5) a context whose
+//! calls are in none of the recordings, put at every place a decode sits in them (where the rung runs on real signals), decodes a message with those calls (the rung accepts a message
+//! it should not: `max_extra` 0); (6) an AP decode leaves the blind OSD attempt of its candidate in the queue, or the partner's candidates leave theirs in it (they would take places of
+//! the next slot's `osd_pass`).
 #![cfg(all(feature = "fixed-point", feature = "internal-testing"))]
 #[allow(dead_code)]
 mod common;
@@ -202,4 +205,94 @@ fn the_context_adds_no_message_with_the_locked_calls_out_of_noise() {
         n <= 1,
         "{n} messages with the locked calls out of 600 noise slots"
     );
+}
+
+/// The decodes of the AP-less window at `(f, dt)` are where the rung runs on real signals: a context whose calls are in none of the recordings must decode nothing with them there.
+#[test]
+fn a_context_with_calls_nobody_has_decodes_nothing_on_real_recordings() {
+    let (mine, his) = ("JA1ZZZ", "VK3YYY");
+    let mut places = 0;
+    for name in ["qso3_busy", "websdr_test4", "websdr_test7", "191111_110630"] {
+        let a = assets(name);
+        let base = window(&a, None);
+        for found in &base {
+            for stage in [ApStage::Rogers, ApStage::Replying] {
+                let ctx = ApContext::new(mine, his, stage, found.res.freq_hz, found.res.dt_sec);
+                places += 1;
+                for f in window(&a, ctx) {
+                    let text = unpack77(f.res.message77()).unwrap_or_default();
+                    assert!(
+                        !text.contains(mine) && !text.contains(his),
+                        "{name} {stage:?} at {} Hz: {text}",
+                        found.res.freq_hz
+                    );
+                }
+            }
+        }
+    }
+    assert!(places >= 60, "{places} places: the guard would be thin");
+}
+
+/// An AP decode is a decode: the blind OSD attempt its candidate queued must not stay in the queue (`OsdMode::Defer`), and the partner's own candidates queue none: one place fewer than
+/// without the context (the reply's candidate), never more.
+#[test]
+fn an_ap_decode_and_the_partners_candidates_leave_nothing_in_the_osd_queue() {
+    let clean = reply("RR73");
+    let queue = |audio: &[i16], ctx: Option<ApContext>| -> usize {
+        let a = resample_to_8k(audio, 12_000);
+        let opts = CellsOptions::p0_window();
+        let (cands, cells) = coarse_sync_gated_cells(
+            &mut SliceSource(&a),
+            Ft8Rate::Hz8000,
+            &GatedSearch::new(200.0, 3000.0, 1.3, 30),
+            1,
+        )
+        .expect("8 kHz");
+        let tables = CellTables::new();
+        let mut cs: Box<[[Cmplx<f32>; 8]; 79]> = vec![[Cmplx::<f32>::default(); 8]; 79]
+            .try_into()
+            .expect("79 x 8");
+        let mut bp = Box::new(Ft8BpScratch::new());
+        let mut w = CellsWorker::new(&mut cs, &mut bp, &tables)
+            .with_options(&opts)
+            .with_ap_context(ctx);
+        let mut known = Vec::new();
+        // the round alone (the OSD deferred, not run), then the partner's candidates: what is left queued
+        w.decode_round(
+            &cells,
+            &cands,
+            opts.max_cand,
+            opts.depth(),
+            0.25,
+            &mut known,
+        );
+        w.decode_partner(&cells, opts.depth(), 0.25, &mut known);
+        w.take_osd_attempts().len()
+    };
+    let ctx = ApContext::new(MYCALL, PARTNER, ApStage::Rogers, F0 + 1.0, 0.02);
+    let (mut fewer, mut more) = (0, 0);
+    for seed in 1..=10u64 {
+        let audio = slot(Some(&clean), -20.0, seed);
+        let (without, with) = (queue(&audio, None), queue(&audio, ctx));
+        fewer += usize::from(with < without);
+        more += usize::from(with > without);
+    }
+    assert_eq!(
+        more, 0,
+        "the context queued an attempt that there was none for"
+    );
+    assert!(
+        fewer >= 7,
+        "the reply's candidate stayed queued in {} of 10",
+        10 - fewer
+    );
+    // a reply too weak for the AP: the partner's candidates fail, and must still queue nothing of their own (they would run against the next slot's cells)
+    for seed in 1..=10u64 {
+        let audio = slot(Some(&clean), -27.0, seed);
+        let (without, with) = (queue(&audio, None), queue(&audio, ctx));
+        assert!(
+            with <= without,
+            "seed {seed}: {with} queued with the context, {without} without"
+        );
+    }
 }
