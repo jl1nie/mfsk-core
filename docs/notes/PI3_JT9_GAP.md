@@ -365,3 +365,29 @@ A synthetic reply to the operator (`K1JT HA0DU` + `RR73` / `-15` / `KN07`, at 1 
 
 **What it says for the QSO window**: the AP at the partner's frequency is worth +3-5 dB over what the window decodes now, for a few ms of the host's time (the cells' side of the work is the same BP and OSD with a mask, shared code); the a8 list decoder is worth up to 2.6 dB more but is a different, heavier mechanism. **Not measured:** a busy band (the replies are alone in AWGN), the cells flow's own AP (not written), the board, fading, a larger noise test for the 61-bit lock.
 
+## 23. The QSO-context AP: a busy band, fading, and the false accepts of the locks (2026-11-28; `ap_qso busy | fading | phantoms`, host, one thread; AP passes alone, `AP_QSO_NOGRID=1`, so no a8)
+
+**A busy band** (the reply added into 5 real recordings, `qso3_busy`, `websdr_test7/5/11`, `191111_110630`, at the recording's free frequency, 2 start times: 10 trials a cell; the level on the decoder's own SNR scale from a calibration probe, so these dB are not section 22's AWGN ones). Hits of 10 at -22 / -24 dB; `c1o` is `c1` with the AP off (the location alone):
+
+| reply | cells | blind Deep | `c1` (location + AP) | `c1o` (location only) |
+|---|---|---|---|---|
+| `RR73` | 5 / 3 | 6 / 2 | **10 / 9** | 7 / 4 |
+| `-15` | 7 / 4 | 6 / 1 | **10 / 7** | 7 / 7 |
+| `KN07` | 7 / 6 | 7 / 3 | **9 / 6** | 6 / 4 |
+
+In a busy band the cells flow and the faithful whole-slot decode fail together at about -22 dB (the candidate search): **knowing where the partner is adds about 1 dB, the AP another 1.5-2 dB**, 2.5-3 dB over the window's decode in all; `c1` costs 0.3-2 ms (`c9` 0.7-15 ms) a slot.
+
+**Fading** (flat Rayleigh, about 1 Hz Doppler, mean SNR, AWGN band, 20 trials; the 50 % crossing interpolated, +-1 dB):
+
+| reply | cells | blind Deep | `ap` whole slot | gain over blind |
+|---|---|---|---|---|
+| `RR73` | -16.6 | -18.6 | **-22.0** | +3.4 dB |
+| `-15` | -16.7 | -18.6 | -21.0 | +2.4 |
+| `KN07` | -17.0 | -18.6 | -19.6 | +1.0 |
+
+(`c1` / `c9` equal `ap`: 20 / 20 at -20 for `RR73`; the cells flow loses 2 dB to fading more than the faithful decode does.)
+
+**The false accepts** (the part that matters in a QSO). **Noise-only slots, the context set, the partner's frequency given (`c9`: 9 candidates), 2 000 slots for each progress: Rogers 2, Replying 1, Calling 0 decodes**: `K1JT HA0DU RR73` (**a false RR73 from the partner**), `K1JT HA0DU R FA89` (twice). That is about **5 x 10^-4 a slot** (3 in 6 000), about 10^-3 a slot in the Rogers stage: a QSO machine that takes an `RR73` as its end would log a QSO that did not happen about once in a thousand slots of waiting. **Real recordings with calls nobody in them has** (22 recordings x 3 progress x 5 Rx frequencies, 15 candidates each, 390 decodes): **0** with the locked calls. The faithful pipeline's own guards (`ap_max_errors`, the locked calls reappearing in the message) are what let these through; WSJT-X's AP has the same property. A design that acts on an AP decode needs a stricter acceptance for the 61- and 77-bit locks (fewer hard errors, a DT and frequency consistent with the partner's, or a second sighting) and a noise test sized for it.
+
+**Phantoms outside the context** in the fading run: 5 rows in 1 800 decodes (blind decodes `H99JNS LP4ZVB PO38`, `SF4IKM RR73; 4P3UMO <...> -28`, a `CQ N5MAX AO31` of the AP decode): the faithful pipeline's own, as in section 22.
+

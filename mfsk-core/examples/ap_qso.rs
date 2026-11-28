@@ -116,8 +116,331 @@ fn texts(r: mfsk_core::decoder::SlotResult<mfsk_core::engine::frame::DecodeResul
     r.rows.into_iter().map(|r| r.decoded.text).collect()
 }
 
+/// A flat Rayleigh fade on the reply (about 1 Hz of Doppler spread, unit mean power) in AWGN: the SNR is the average one.
+fn faded_slot(clean: &[i16], amp: f32, snr_db: f32, seed: u64) -> Vec<i16> {
+    let mut rng = Rng(seed.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1);
+    // a complex gain at 100 Hz, one-pole low-passed (1 Hz), then |g|, normalised to unit mean power
+    let a = (-2.0 * std::f32::consts::PI * 1.0 / 100.0).exp();
+    let (mut gr, mut gi) = (0f32, 0f32);
+    let mut g = Vec::with_capacity(1_900);
+    for _ in 0..400 {
+        gr = a * gr + (1.0 - a) * rng.gauss();
+        gi = a * gi + (1.0 - a) * rng.gauss();
+    }
+    for _ in 0..1_900 {
+        gr = a * gr + (1.0 - a) * rng.gauss();
+        gi = a * gi + (1.0 - a) * rng.gauss();
+        g.push((gr * gr + gi * gi).sqrt());
+    }
+    let mean_sq = g.iter().map(|x| x * x).sum::<f32>() / g.len() as f32;
+    let norm = 1.0 / mean_sq.sqrt();
+    let faded: Vec<i16> = clean
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            let t = (START + i) as f32 / 120.0; // 100 Hz at 12 kHz
+            let k = (t as usize).min(g.len() - 2);
+            let f = t - k as f32;
+            let e = (g[k] * (1.0 - f) + g[k + 1] * f) * norm;
+            (f32::from(v) * e).round().clamp(-32768.0, 32767.0) as i16
+        })
+        .collect();
+    slot(Some(&faded), amp, snr_db, seed)
+}
+
+fn load_wav(path: &str) -> Vec<i16> {
+    let w = std::fs::read(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    w[44..]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .take(180_000)
+        .map(|b| i16::from_le_bytes(*b))
+        .collect()
+}
+
+/// The reply added into a real recording at `f0`, at `snr_db` on the decoder's own scale: `snr0` is what the faithful decode reports for the reply at amplitude `a0`, and the
+/// level is linear in the amplitude.
+fn into_recording(
+    rec: &[i16],
+    clean: &[i16],
+    a0: f32,
+    snr0: f32,
+    snr_db: f32,
+    start: usize,
+) -> Vec<i16> {
+    let gain = 10f32.powf((snr_db - snr0) / 20.0);
+    let mut out: Vec<i16> = rec.to_vec();
+    let _ = a0;
+    for (i, &v) in clean.iter().enumerate() {
+        if start + i < out.len() {
+            let x = f32::from(out[start + i]) + gain * f32::from(v);
+            out[start + i] = x.round().clamp(-32768.0, 32767.0) as i16;
+        }
+    }
+    out
+}
+
+/// A frequency of the recording with nothing decoded within 40 Hz, in 800-2400 Hz.
+fn free_frequency(rec: &[i16]) -> f32 {
+    let rows = Decoder::<Ft8>::new(
+        DecodeParams::for_band((200.0, 3000.0))
+            .depth(Depth::Deep)
+            .ap(ApMode::Off),
+    )
+    .with_extras(extras(None))
+    .decode(&SlotInput::i16(rec))
+    .rows;
+    let busy: Vec<f32> = rows.iter().map(|r| r.decoded.freq_hz).collect();
+    let mut best = (0f32, 1_500.0f32);
+    let mut f = 800.0f32;
+    while f <= 2_400.0 {
+        let d = busy.iter().map(|b| (b - f).abs()).fold(f32::MAX, f32::min);
+        if d > best.0 {
+            best = (d, f);
+        }
+        f += 12.5;
+    }
+    best.1
+}
+
+/// Real recordings as the background: the reply goes at a free frequency, at two start times, so a cell is the recordings x 2 trials.
+fn busy(paths: Vec<String>) {
+    let scenarios: [(&str, &str, QsoProgress); 3] = [
+        ("Rogers   RR73", "RR73", QsoProgress::Rogers),
+        ("Report   -15 ", "-15", QsoProgress::Replying),
+        ("Calling  grid", "KN07", QsoProgress::Calling),
+    ];
+    let recs: Vec<Vec<i16>> = paths.iter().map(|p| load_wav(p)).collect();
+    let fs: Vec<f32> = recs.iter().map(|r| free_frequency(r)).collect();
+    println!(
+        "busy bands: {} recordings, free frequencies {:?}",
+        recs.len(),
+        fs
+    );
+    println!(
+        "hits of {} trials (mean ms) for cells | blind | ap | c1 | c9",
+        recs.len() * 2
+    );
+    for (label, field, progress) in scenarios {
+        let msg = format!("{MYCALL} {PARTNER} {field}");
+        let bits = pack77(MYCALL, PARTNER, field).expect("pack");
+        let clean_at = |f0: f32, amp: i16| {
+            synthesize_i16::<Ft8>(&message_to_tones::<Ft8>(&bits), 12_000, f0, amp)
+        };
+        for snr in [-16.0f32, -18.0, -20.0, -22.0, -24.0] {
+            let mut hits = [0u32; 6];
+            let mut ms = [0f64; 6];
+            let mut trials = 0u32;
+            for (rec, &f0) in recs.iter().zip(&fs) {
+                // the decoder's own reading of the reply at a level it can decode and that is not saturated (-14..+2 dB): the ruler
+                let mut ruler = None;
+                for a in [100i16, 200, 400, 800, 1_600, 3_200] {
+                    let probe =
+                        into_recording(rec, &clean_at(f0, a), f32::from(a), 0.0, 0.0, START);
+                    let snr = Decoder::<Ft8>::new(
+                        DecodeParams::for_band((200.0, 3000.0))
+                            .depth(Depth::Deep)
+                            .ap(ApMode::Off),
+                    )
+                    .with_extras(extras(None))
+                    .decode(&SlotInput::i16(&probe))
+                    .rows
+                    .iter()
+                    .find(|r| r.decoded.text == msg)
+                    .map(|r| r.decoded.snr_db);
+                    if let Some(x) = snr.filter(|x| (-14.0..=2.0).contains(x)) {
+                        ruler = Some((a, x));
+                        break;
+                    }
+                }
+                let Some((a0, snr0)) = ruler else {
+                    eprintln!("no ruler for {f0} Hz");
+                    continue;
+                };
+                for start in [START, START + 2_400] {
+                    let pcm =
+                        into_recording(rec, &clean_at(f0, a0), f32::from(a0), snr0, snr, start);
+                    trials += 1;
+                    let params = |ap| {
+                        DecodeParams::for_band((200.0, 3000.0))
+                            .depth(Depth::Deep)
+                            .ap(ap)
+                            .station(MYCALL, "FN20")
+                            .qso(PARTNER, "", progress)
+                            .rx_freq(f0)
+                    };
+                    let dt = (start as f32 / 12_000.0) - 0.5;
+                    let mut run = |i: usize, f: &mut dyn FnMut() -> Vec<String>| {
+                        let t = Instant::now();
+                        let r = f();
+                        ms[i] += t.elapsed().as_secs_f64() * 1e3;
+                        hits[i] += u32::from(r.iter().any(|m| m == &msg));
+                    };
+                    run(0, &mut || cells(&pcm));
+                    run(1, &mut || {
+                        texts(
+                            Decoder::<Ft8>::new(params(ApMode::Off))
+                                .with_extras(extras(None))
+                                .decode(&SlotInput::i16(&pcm)),
+                        )
+                    });
+                    run(2, &mut || {
+                        texts(
+                            Decoder::<Ft8>::new(params(ApMode::Full))
+                                .with_extras(extras(None))
+                                .decode(&SlotInput::i16(&pcm)),
+                        )
+                    });
+                    let c1 = [Ft8Candidate::new(f0 + 1.0, dt + 0.02)];
+                    let g9: Vec<Ft8Candidate> = [-3.125f32, 0.0, 3.125]
+                        .iter()
+                        .flat_map(|df| {
+                            [-0.04f32, 0.0, 0.04]
+                                .iter()
+                                .map(move |d| Ft8Candidate::new(f0 + df, dt + d))
+                        })
+                        .collect();
+                    let cand = |l: &[Ft8Candidate]| {
+                        texts(
+                            Decoder::<Ft8>::new(params(ApMode::Full))
+                                .with_extras(extras(Some(Ft8Strategy::SinglePass)))
+                                .decode_candidates(&SlotInput::i16(&pcm), l)
+                                .expect("single pass"),
+                        )
+                    };
+                    run(3, &mut || cand(&c1));
+                    run(4, &mut || cand(&g9));
+                    run(5, &mut || {
+                        texts(
+                            Decoder::<Ft8>::new(params(ApMode::Off))
+                                .with_extras(extras(Some(Ft8Strategy::SinglePass)))
+                                .decode_candidates(&SlotInput::i16(&pcm), &c1)
+                                .expect("single pass"),
+                        )
+                    });
+                }
+            }
+            let n = trials.max(1) as f64;
+            println!(
+                "{label} {snr:6.1} dB ({trials}): {:2} ({:5.1}) | {:2} ({:5.1}) | {:2} ({:5.1}) | {:2} ({:5.1}) | {:2} ({:5.1}) | {:2} ({:5.1})",
+                hits[0],
+                ms[0] / n,
+                hits[1],
+                ms[1] / n,
+                hits[2],
+                ms[2] / n,
+                hits[3],
+                ms[3] / n,
+                hits[4],
+                ms[4] / n,
+                hits[5],
+                ms[5] / n
+            );
+        }
+    }
+}
+
+/// The false accepts of the context's locks: noise-only slots, and real recordings with calls nobody in them has (any decode with those calls is a phantom).
+fn phantoms(noise_slots: u64, paths: Vec<String>) {
+    let amp = 6_000.0f32;
+    let grid9: Vec<Ft8Candidate> = [-3.125f32, 0.0, 3.125]
+        .iter()
+        .flat_map(|df| {
+            [-0.04f32, 0.0, 0.04]
+                .iter()
+                .map(move |d| Ft8Candidate::new(F0 + df, *d))
+        })
+        .collect();
+    let mut found = Vec::new();
+    for progress in [
+        QsoProgress::Rogers,
+        QsoProgress::Replying,
+        QsoProgress::Calling,
+    ] {
+        let mut n = 0u32;
+        for seed in 1..=noise_slots {
+            let pcm = slot(None, amp, -20.0, 50_000 + seed);
+            let r = Decoder::<Ft8>::new(ctx_params(progress, ApMode::Full))
+                .with_extras(extras(Some(Ft8Strategy::SinglePass)))
+                .decode_candidates(&SlotInput::i16(&pcm), &grid9)
+                .expect("single pass");
+            for row in r.rows {
+                n += 1;
+                found.push(format!("noise {progress:?}: {}", row.decoded.text));
+            }
+        }
+        println!("noise-only, {progress:?}: {noise_slots} slots, {n} decodes");
+    }
+    // real recordings: other people's calls locked, five Rx frequencies a recording
+    let (mine, his) = ("JA1ZZZ", "VK3YYY");
+    let mut n_rec = 0u32;
+    let mut n_ph = 0u32;
+    for path in &paths {
+        let rec = load_wav(path);
+        for progress in [
+            QsoProgress::Rogers,
+            QsoProgress::Replying,
+            QsoProgress::Calling,
+        ] {
+            for rx in [500.0f32, 900.0, 1_300.0, 1_700.0, 2_100.0] {
+                let params = DecodeParams::for_band((200.0, 3000.0))
+                    .depth(Depth::Deep)
+                    .ap(ApMode::Full)
+                    .station(mine, "PM95")
+                    .qso(his, "", progress)
+                    .rx_freq(rx);
+                let list: Vec<Ft8Candidate> = [-3.125f32, 0.0, 3.125]
+                    .iter()
+                    .flat_map(|df| {
+                        [-0.04f32, 0.0, 0.04, 0.5, 1.0]
+                            .iter()
+                            .map(move |d| Ft8Candidate::new(rx + df, *d))
+                    })
+                    .collect();
+                let r = Decoder::<Ft8>::new(params)
+                    .with_extras(extras(Some(Ft8Strategy::SinglePass)))
+                    .decode_candidates(&SlotInput::i16(&rec), &list)
+                    .expect("single pass");
+                n_rec += 1;
+                for row in r.rows {
+                    if row.decoded.text.contains(mine) || row.decoded.text.contains(his) {
+                        n_ph += 1;
+                        found.push(format!("{path} {progress:?} rx {rx}: {}", row.decoded.text));
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "real recordings, other people's calls: {n_rec} decodes of a recording x progress x Rx frequency (15 candidates each), {n_ph} with the locked calls"
+    );
+    for f in found {
+        println!("PHANTOM {f}");
+    }
+}
+
 fn main() {
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args().skip(1).peekable();
+    match args.peek().map(String::as_str) {
+        Some("busy") => {
+            args.next();
+            busy(args.collect());
+        }
+        Some("fading") => {
+            args.next();
+            awgn(&mut args, true);
+        }
+        Some("phantoms") => {
+            args.next();
+            let n: u64 = args.next().expect("noise slots").parse().unwrap();
+            phantoms(n, args.collect());
+        }
+        _ => awgn(&mut args, false),
+    }
+}
+
+fn awgn(args: &mut impl Iterator<Item = String>, fading: bool) {
     let trials: u64 = args.next().map_or(10, |x| x.parse().unwrap());
     let phantom_slots: u64 = args.next().map_or(100, |x| x.parse().unwrap());
     let amp = 6_000.0f32;
@@ -148,7 +471,11 @@ fn main() {
             let mut hits = [0u32; 5];
             let mut ms = [0f64; 5];
             for seed in 1..=trials {
-                let pcm = slot(Some(&clean), amp, snr, seed);
+                let pcm = if fading {
+                    faded_slot(&clean, amp, snr, seed)
+                } else {
+                    slot(Some(&clean), amp, snr, seed)
+                };
                 let t = Instant::now();
                 let r0 = cells(&pcm);
                 ms[0] += t.elapsed().as_secs_f64() * 1e3;
