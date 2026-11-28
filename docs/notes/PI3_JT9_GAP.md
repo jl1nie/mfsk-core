@@ -227,9 +227,21 @@ Section 15 put the 92.3 % ceiling on the candidate list (no search on the residu
 | 100 + 100, all of `known` | 1 281 (95.7 %) | |
 | faithful Normal, Deep (section 1) | 1 245 (93.0 %), 1 299 (97.1 %) | 199, 358 |
 
+* **Subtract only what is near a candidate** (`known` filtered to the signals within P Hz of a candidate that is sent, `hybrid2:..:near<P>`; quiet machine, ms a slot as cells + faithful):
+
+| | decodes | ms a slot | signals subtracted a slot |
+|---|---|---|---|
+| 10 + 0, no `known` | 1 223 | 44 + 18 = 61 | 0 |
+| 10 + 10, within 10 Hz | 1 246 | 45 + 41 = 86 | 4.9 |
+| **10 + 10, within 30 Hz** | **1 256 (93.9 %)** | 45 + 55 = **100** | 8.9 |
+| 10 + 10, all | 1 261 | 45 + 96 = 141 | 20.6 |
+| **30 + 30, within 30 Hz** | **1 275 (95.3 %)** | 44 + 97 = **141** | 15.8 |
+| 30 + 30, all | 1 277 (95.4 %) | 44 + 113 = 157 | 20.6 |
+
+  Within 30 Hz loses 2-5 decodes and saves 21-57 % of the subtractions; **10 + 10 within 30 Hz (100 ms, 1 256) beats Normal (197 ms, 1 245) at half the time**, and at the same 141 ms 30 + 30 within 30 Hz (1 275) beats 10 + 10 with all (1 261): spend the time on candidates, not on subtracting far signals. The frontier (ms a slot: decodes): 46: 1 169, 61: 1 223, 86: 1 246, 100: 1 256, 141: 1 275, 157: 1 277, Deep 360: 1 299.
 * **A subtracted signal costs 4.4 ms on the host** (the faithful pass's time minus the same without `known`, over the 1 176 signals handed over) and each is worth about 1.1 decodes at 30 + 30: that is the knob. All of `known`: **98.3 % of Deep's decodes at 44 % of its time, and 103 % of Normal's at 80 %**.
 * On a Pi 3B core at the 25-40x of section 13: 30 + 30 with all of `known` 4.0-6.4 s, 10 + 0 without `known` 1.6-2.6 s (91.4 %). The late path's budget (seconds), not the window's (about 2 s): the window keeps the cells flow alone, or 10 + 0 at its edge.
 * **Extras**: 129 at 30 + 30 with all of `known` (Deep 115); 122 of the 129 (94.6 %) carry a callsign that is a `jt9` decode in another slot (Deep 107 of 115, 93 %). 83 are also Deep's. Same indirect evidence as section 15, not proof; the precision guard is `ft8_decode_candidates.rs` (noise candidates, a dense grid at `ApMode::Full` with `known`).
 * The timings of an earlier run of this section were taken while `scripts/verify.sh` ran and are discarded; these are from a quiet machine.
 
-**Not measured:** a Pi; which of `known` to subtract (the 12 strongest by SNR is one choice: the ones that mask a candidate would be better, not tried); the cells flow's own subtraction left in (`known` is subtracted by the faithful subtractor again from the original audio, so the cells flow's residual is not used).
+**Not measured:** a Pi; other choices of which of `known` to subtract (the SNR order and the 30 Hz window are tried; the signals whose skirts overlap a candidate in time as well, or by the candidate's own hard-sync loss, are not); the cells flow's own subtraction left in (`known` is subtracted by the faithful subtractor again from the original audio, so the cells flow's residual is not used).

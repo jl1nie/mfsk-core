@@ -6,7 +6,7 @@
 set -euo pipefail
 corpus=${1:?corpus dir}; out=${2:?out dir}; shift 2
 configs=("$@")
-[ ${#configs[@]} -gt 0 ] || configs=(fast:off normal:off normal:cq normal:full deep:off deep:cq deep:full cells:p0_window cells:p0_late cells:sic2osd cells:sic3osd hybrid:0:2:late hybrid:10:2:late hybrid:30:2:late hybrid:100:2:late hybrid2:10:0:2:x hybrid2:10:10:2:known hybrid2:30:30:2:known)
+[ ${#configs[@]} -gt 0 ] || configs=(fast:off normal:off normal:cq normal:full deep:off deep:cq deep:full cells:p0_window cells:p0_late cells:sic2osd cells:sic3osd hybrid:0:2:late hybrid:10:2:late hybrid:30:2:late hybrid:100:2:late hybrid2:10:0:2:x hybrid2:10:10:2:known hybrid2:30:30:2:known hybrid2:10:10:2:near30 hybrid2:30:30:2:near30)
 mkdir -p "$out"
 cd "$(dirname "$0")/.."
 cargo build -p mfsk-core --release --features full,fixed-point,internal-testing --example pi3_sweep >&2

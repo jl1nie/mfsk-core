@@ -139,13 +139,20 @@ fn hybrid2(spec: &str, audio: &[i16]) -> Vec<String> {
     // `known`: hand the cells flow's decodes to the faithful pass, which subtracts them at 12 kHz before it decodes the candidates
     // `known` hands all of them, `known<M>` the M strongest (by the cells flow's SNR)
     let known_spec = parts.next();
-    let known_n: Option<usize> = known_spec.and_then(|t| t.strip_prefix("known")).map(|r| {
-        if r.is_empty() {
-            usize::MAX
-        } else {
-            r.parse().expect("M")
-        }
-    });
+    // `near<P>`: the ones within P Hz of a candidate that is sent
+    let near_hz: Option<f32> = known_spec
+        .and_then(|t| t.strip_prefix("near"))
+        .map(|r| r.parse().expect("P"));
+    let known_n: Option<usize> = known_spec
+        .and_then(|t| t.strip_prefix("known"))
+        .map(|r| {
+            if r.is_empty() {
+                usize::MAX
+            } else {
+                r.parse().expect("M")
+            }
+        })
+        .or(near_hz.map(|_| usize::MAX));
     let a = resample_to_8k(audio, 12_000);
     let search = GatedSearch::new(200.0, 3000.0, 1.3, 100);
     let opts = CellsOptions::p0_late();
@@ -211,6 +218,9 @@ fn hybrid2(spec: &str, audio: &[i16]) -> Vec<String> {
     let known_list: Vec<_> = {
         let mut v: Vec<_> = results.iter().cloned().collect();
         v.sort_by(|a, b| b.snr_db.total_cmp(&a.snr_db));
+        if let Some(p) = near_hz {
+            v.retain(|k| open.iter().any(|c| (c.freq_hz - k.freq_hz).abs() <= p));
+        }
         v.truncate(known_n.unwrap_or(0));
         v
     };
@@ -234,9 +244,10 @@ fn hybrid2(spec: &str, audio: &[i16]) -> Vec<String> {
         }
     }
     eprintln!(
-        "H2 {cells_ms:.0} {faith_ms:.0} {} {faith_n} {sent0} {}",
+        "H2 {cells_ms:.0} {faith_ms:.0} {} {faith_n} {sent0} {} {}",
         results.len(),
-        open.len() - sent0
+        open.len() - sent0,
+        known_list.len()
     );
     msgs
 }
